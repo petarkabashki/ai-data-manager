@@ -1,0 +1,10 @@
+[project]
+name = "ai-data-manager"
+version = "0.1.0"
+description = "Price data management across asset classes and providers"
+requires-python = ">=3.12"
+dependencies = [
+    "pandas>=3.0.3",
+    "pyarrow>=24.0.0",
+    "pyyaml>=6.0.3",
+]
