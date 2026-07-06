@@ -30,13 +30,24 @@ def load_ohlcv(file_path: str | Path) -> pd.DataFrame:
     return pd.read_csv(path, index_col=0, parse_dates=True)
 
 
-def asset_path(symbol: str, timeframe: str = "1d") -> Path | None:
-    """Return resolved Path for a symbol/timeframe, or None if not found."""
+def asset_path(symbol: str, timeframe: str = "1d", provider: str | None = None) -> Path | None:
+    """Return resolved Path for a symbol/timeframe, or None if not found.
+
+    Handles both the flat timeframe_dates shape (crypto/index/commodity/macro,
+    single provider per timeframe) and the nested-by-provider shape (stocks,
+    where timeframe_dates[tf] is itself a dict keyed by provider name)."""
     assets = load_assets()
     entry = assets.get(symbol)
     if not entry:
         return None
-    fp = entry.get("timeframe_dates", {}).get(timeframe, {}).get("file_path")
+    node = entry.get("timeframe_dates", {}).get(timeframe)
+    if not node:
+        return None
+    if "file_path" in node:
+        fp = node["file_path"]
+    else:
+        chosen = node.get(provider) if provider else next(iter(node.values()), None)
+        fp = chosen.get("file_path") if chosen else None
     if not fp:
         return None
     return Path(__file__).parent.parent / fp

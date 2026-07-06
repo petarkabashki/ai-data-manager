@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//home/grenada/work/price-data/**)",
+      "Read(//home/grenada/work/price-data/cryptos/**)",
+      "Read(//home/grenada/work/price-data/indexes/**)",
+      "Read(//home/grenada/work/price-data/commodities/**)",
+      "Read(//home/grenada/work/price-data/macro/**)",
+      "Read(//home/grenada/work/price-data/market-cap/**)",
+      "Read(//home/grenada/work/price-data/crypto-futures/**)",
+      "WebSearch",
+      "WebFetch(domain:www.interactivebrokers.com)",
+      "WebFetch(domain:www.interactivebrokers.co.uk)",
+      "Bash(ls -la /home/grenada/work/ai-data-manager/price-data/ | head -30; echo \"---\"; head -40 /home/grenada/work/ai-data-manager/price-data/assets.yaml; echo \"---sizes---\"; du -sh /home/grenada/work/ai-data-manager/price-data/* 2>/dev/null)"
+    ]
+  }
+}

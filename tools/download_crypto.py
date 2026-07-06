@@ -33,20 +33,32 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from utils.catalog import (
+    CANONICAL_COLS,
     CRYPTO_EXCHANGES,
     FREQTRADE_BIN,
+    TF_TO_MS,
     DATA_ROOT,
     REPO_ROOT,
     catalog_key,
     crypto_file_path,
+    crypto_futures_file_path,
     ft_timeframe,
+    futures_pair_to_ft_symbol,
+    futures_pair_to_symbol,
     load_crypto_catalog,
+    load_crypto_futures_catalog,
     normalize_ohlcv,
     pair_to_symbol,
     read_parquet_range,
     save_crypto_catalog,
+    save_crypto_futures_catalog,
     update_catalog_entry,
 )
+
+# Exchanges where freqtrade doesn't support futures — use ccxt directly instead
+CCXT_FUTURES_CLASS: dict[str, str] = {
+    "kucoin": "kucoinfutures",
+}
 
 
 def _date_to_yyyymmdd(date_str: str) -> str:
@@ -88,6 +100,7 @@ def build_timerange(
     full: bool,
     since: str | None,
     prepend: bool,
+    trading_mode: str = "spot",
 ) -> str | None:
     """Compute --timerange argument for freqtrade.
     Returns None to download everything (no restriction).
@@ -130,7 +143,11 @@ def build_timerange(
             last_date = result[1]
     # 2. Fall back to the canonical parquet path (handles legacy YAML with .json paths)
     if last_date is None:
-        canonical = crypto_file_path(exchange, symbol, timeframe)
+        canonical = (
+            crypto_futures_file_path(exchange, symbol, timeframe)
+            if trading_mode == "futures"
+            else crypto_file_path(exchange, symbol, timeframe)
+        )
         result = read_parquet_range(canonical)
         if result:
             last_date = result[1]
@@ -205,21 +222,31 @@ def process_downloads(
     datadir: Path,
     catalog: dict,
     dry_run: bool = False,
+    trading_mode: str = "spot",
 ) -> list[tuple[str, str, int, int]]:
     """Move downloaded files into price-data/, merge with existing, return change log."""
     changes: list[tuple[str, str, int, int]] = []
 
+    is_futures = trading_mode == "futures"
+    # freqtrade writes futures files into a futures/ subdir
+    src_dir = datadir / "futures" if is_futures else datadir
+
     for pair in pairs:
-        symbol = pair_to_symbol(pair)
+        symbol = futures_pair_to_symbol(pair) if is_futures else pair_to_symbol(pair)
+        ft_sym = futures_pair_to_ft_symbol(pair) if is_futures else pair_to_symbol(pair)
         for tf in timeframes:
             ft_tf = ft_timeframe(tf)
-            # freqtrade stores flat in the datadir root: {datadir}/{symbol}-{ft_tf}.parquet
-            src = datadir / f"{symbol}-{ft_tf}.parquet"
+            src_suffix = "-futures" if is_futures else ""
+            src = src_dir / f"{ft_sym}-{ft_tf}{src_suffix}.parquet"
             if not src.exists():
                 print(f"  [warn] expected {src.name} not found in download output")
                 continue
 
-            dst = crypto_file_path(exchange, symbol, tf)
+            dst = (
+                crypto_futures_file_path(exchange, symbol, tf)
+                if is_futures
+                else crypto_file_path(exchange, symbol, tf)
+            )
 
             if dry_run:
                 print(f"  [dry-run] would merge {src.name} → {dst}")
@@ -230,11 +257,116 @@ def process_downloads(
             changes.append((symbol, tf, old_rows, new_rows))
             print(f"  {symbol}/{tf}: {old_rows}→{new_rows} rows (+{added})")
 
-            # Update catalog metadata from actual merged file
             result = read_parquet_range(dst)
             if result:
                 start, end, _ = result
-                update_catalog_entry(catalog, exchange, symbol, tf, dst, start, end)
+                update_catalog_entry(
+                    catalog, exchange, symbol, tf, dst, start, end,
+                    categories=["Crypto Futures"] if is_futures else None,
+                    common_name=pair if is_futures else None,
+                )
+
+    return changes
+
+
+def _fetch_ohlcv_paginated(
+    ccxt_ex, pair: str, tf_ccxt: str, since_ms: int, tf_ms: int, limit: int = 200
+) -> pd.DataFrame:
+    """Paginate ccxt fetch_ohlcv from since_ms to now. Skips forward when API returns empty."""
+    import time as _time
+
+    all_rows: list = []
+    current = since_ms
+    now_ms = int(_time.time() * 1000)
+    skip_ms = max(limit * tf_ms, 30 * 86_400_000)
+
+    while current < now_ms:
+        rows = ccxt_ex.fetch_ohlcv(pair, tf_ccxt, since=current, limit=limit)
+        if not rows:
+            current += skip_ms
+            _time.sleep(0.1)
+            continue
+        all_rows.extend(rows)
+        last_ts = rows[-1][0]
+        if len(rows) < limit or last_ts >= now_ms:
+            break
+        current = last_ts + tf_ms
+        _time.sleep(0.1)
+
+    if not all_rows:
+        return pd.DataFrame(columns=CANONICAL_COLS).astype(
+            {"timestamp": "int64", "open": "float64", "high": "float64",
+             "low": "float64", "close": "float64", "volume": "float64"}
+        )
+    df = pd.DataFrame(all_rows, columns=CANONICAL_COLS)
+    df["timestamp"] = df["timestamp"].astype("int64")
+    for c in ["open", "high", "low", "close", "volume"]:
+        df[c] = df[c].astype("float64")
+    return df.drop_duplicates(subset=["timestamp"]).sort_values("timestamp").reset_index(drop=True)
+
+
+def download_and_merge_ccxt_futures(
+    exchange: str,
+    pairs: list[str],
+    timeframes: list[str],
+    catalog: dict,
+    since: str = "2020-01-01",
+    dry_run: bool = False,
+) -> list[tuple[str, str, int, int]]:
+    """Download futures OHLCV via ccxt directly (for exchanges freqtrade doesn't support in futures mode)."""
+    import ccxt as _ccxt
+
+    ccxt_class_name = CCXT_FUTURES_CLASS[exchange]
+    ccxt_ex: _ccxt.Exchange = getattr(_ccxt, ccxt_class_name)()
+    supported_tfs = set(ccxt_ex.timeframes.keys())
+    since_ms = int(_ccxt.Exchange.parse8601(f"{since}T00:00:00Z"))
+
+    changes: list[tuple[str, str, int, int]] = []
+
+    for pair in pairs:
+        symbol = futures_pair_to_symbol(pair)
+        for tf in timeframes:
+            tf_ccxt = ft_timeframe(tf)
+            if tf_ccxt not in supported_tfs:
+                print(f"  [skip] {symbol}/{tf}: {tf_ccxt} not supported by {ccxt_class_name}")
+                continue
+
+            tf_ms = TF_TO_MS.get(tf)
+            if tf_ms is None:
+                print(f"  [skip] {symbol}/{tf}: variable-length timeframe not supported for ccxt pagination")
+                continue
+
+            dst = crypto_futures_file_path(exchange, symbol, tf)
+
+            if dry_run:
+                print(f"  [dry-run] {symbol}/{tf} → {dst.relative_to(REPO_ROOT)}")
+                continue
+
+            df = _fetch_ohlcv_paginated(ccxt_ex, pair, tf_ccxt, since_ms, tf_ms)
+            if df.empty:
+                print(f"  [warn] {symbol}/{tf}: no data returned")
+                continue
+
+            with tempfile.NamedTemporaryFile(suffix=".parquet", delete=False) as tmp:
+                tmp_path = Path(tmp.name)
+            try:
+                df.to_parquet(tmp_path, index=False)
+                old_rows, new_rows = merge_parquet(tmp_path, dst)
+            finally:
+                tmp_path.unlink(missing_ok=True)
+
+            added = new_rows - old_rows
+            changes.append((symbol, tf, old_rows, new_rows))
+            print(f"  {symbol}/{tf}: {old_rows}→{new_rows} rows (+{added})")
+
+            result = read_parquet_range(dst)
+            if result:
+                start, end, _ = result
+                update_catalog_entry(
+                    catalog, exchange, symbol, tf, dst, start, end,
+                    categories=["Crypto Futures"],
+                    common_name=pair,
+                )
 
     return changes
 
@@ -265,11 +397,23 @@ def main() -> None:
     if not args.pairs and not args.all_pairs:
         p.error("Specify --pairs or --all-pairs")
 
-    catalog = load_crypto_catalog(args.exchange)
+    is_futures = args.trading_mode == "futures"
+    catalog = (
+        load_crypto_futures_catalog(args.exchange)
+        if is_futures
+        else load_crypto_catalog(args.exchange)
+    )
 
     if args.all_pairs:
-        pairs = [entry.get("name", k).replace("_", "/", 1)
-                 for k, entry in catalog.items()]
+        if is_futures:
+            # common_name stores the full futures pair (BTC/USDT:USDT)
+            pairs = [
+                entry.get("common_name") or futures_pair_to_symbol(entry.get("name", k)).replace("_", "/", 1) + ":USDT"
+                for k, entry in catalog.items()
+            ]
+        else:
+            pairs = [entry.get("name", k).replace("_", "/", 1)
+                     for k, entry in catalog.items()]
     else:
         pairs = args.pairs
 
@@ -283,96 +427,113 @@ def main() -> None:
     elif len(pairs) > 10:
         log_file = Path(f"/tmp/ft_download_{_dt.datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
 
+    use_ccxt = is_futures and args.exchange in CCXT_FUTURES_CLASS
+    since_str = args.since or "2020-01-01"
+
     print(f"\nDownloading {len(pairs)} pair(s) × {len(timeframes)} timeframe(s) from {args.exchange}")
     print(f"Pairs   : {', '.join(pairs[:5])}{'…' if len(pairs) > 5 else ''}")
     print(f"TFs     : {', '.join(timeframes)}")
-    print(f"Mode    : {'full from ' + (args.since or '2020-01-01') if args.full else 'prepend since ' + str(args.since) if args.prepend else 'append'}")
-    if log_file:
-        print(f"FT log  : {log_file}  (tail -f to follow)")
-
-    # Group pairs by computed timerange so we can batch freqtrade calls
-    # For simplicity: compute the minimum start across all pairs per timeframe
-    # and run one freqtrade call per timeframe (or one per pair if ranges differ significantly)
-    # Pragmatic approach: run per-batch of pairs that share the same timerange
+    print(f"Mode    : {'full from ' + since_str if args.full else 'prepend since ' + str(args.since) if args.prepend else 'append'}")
+    if use_ccxt:
+        print(f"Backend : ccxt/{CCXT_FUTURES_CLASS[args.exchange]} (freqtrade does not support {args.exchange} futures)")
 
     if args.dry_run:
         print("\n[dry-run mode — no files will be changed]\n")
 
-    with tempfile.TemporaryDirectory(prefix="ai_dm_ft_") as tmpdir:
-        tmppath = Path(tmpdir)
+    if use_ccxt:
+        changes = download_and_merge_ccxt_futures(
+            args.exchange, pairs, timeframes, catalog,
+            since=since_str, dry_run=args.dry_run,
+        )
+        if args.dry_run:
+            return
+    else:
+        # Auto-redirect freqtrade output to log file for bulk runs
+        import datetime as _dt
+        log_file: Path | None = None
+        if args.log_file:
+            log_file = Path(args.log_file)
+        elif len(pairs) > 10:
+            log_file = Path(f"/tmp/ft_download_{_dt.datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
 
-        if args.full or args.prepend:
-            # Single timerange for all pairs
-            # Use the most common case: all pairs same range
-            tr_example = build_timerange(
-                args.exchange,
-                pair_to_symbol(pairs[0]),
-                timeframes[0],
-                catalog,
-                args.full,
-                args.since,
-                args.prepend,
-            )
-            if tr_example == "SKIP":
-                print("Nothing to do.")
-                return
-            print(f"Timerange: {tr_example}\n")
-            if not args.dry_run:
-                ok = run_freqtrade_download(
-                    args.exchange, pairs, timeframes, tmppath,
-                    tr_example, prepend=args.prepend,
-                    trading_mode=args.trading_mode, log_file=log_file,
+        if log_file:
+            print(f"FT log  : {log_file}  (tail -f to follow)")
+
+        with tempfile.TemporaryDirectory(prefix="ai_dm_ft_") as tmpdir:
+            tmppath = Path(tmpdir)
+
+            if args.full or args.prepend:
+                sym0 = futures_pair_to_symbol(pairs[0]) if is_futures else pair_to_symbol(pairs[0])
+                tr_example = build_timerange(
+                    args.exchange, sym0, timeframes[0], catalog,
+                    args.full, args.since, args.prepend, trading_mode=args.trading_mode,
                 )
-                if not ok:
-                    print(f"\nfreqtrade exited with an error. Check {log_file or 'output above'}.")
-                    sys.exit(1)
-        else:
-            # Append mode: compute per-pair start dates and group into batches
-            # Group pairs by their timerange to minimise freqtrade invocations
-            from collections import defaultdict
-            tr_groups: dict[str, list[str]] = defaultdict(list)
-            for pair in pairs:
-                sym = pair_to_symbol(pair)
-                # Use the earliest start across all requested timeframes
-                earliest: str | None = None
-                for tf in timeframes:
-                    tr = build_timerange(args.exchange, sym, tf, catalog, False, args.since, False)
-                    if tr and tr != "SKIP":
-                        if earliest is None or tr < earliest:
-                            earliest = tr
-                tr_groups[earliest or "20200101-"].append(pair)
-
-            print(f"Batches: {len(tr_groups)} distinct timerange(s)\n")
-            for tr, batch_pairs in tr_groups.items():
-                print(f"  [{tr}] {len(batch_pairs)} pairs")
+                if tr_example == "SKIP":
+                    print("Nothing to do.")
+                    return
+                print(f"Timerange: {tr_example}\n")
                 if not args.dry_run:
                     ok = run_freqtrade_download(
-                        args.exchange, batch_pairs, timeframes, tmppath,
-                        tr, trading_mode=args.trading_mode, log_file=log_file,
+                        args.exchange, pairs, timeframes, tmppath,
+                        tr_example, prepend=args.prepend,
+                        trading_mode=args.trading_mode, log_file=log_file,
                     )
                     if not ok:
-                        print(f"\nfreqtrade failed for batch [{tr}]. Continuing with others…")
+                        print(f"\nfreqtrade exited with an error. Check {log_file or 'output above'}.")
+                        sys.exit(1)
+            else:
+                from collections import defaultdict
+                tr_groups: dict[str, list[str]] = defaultdict(list)
+                for pair in pairs:
+                    sym = futures_pair_to_symbol(pair) if is_futures else pair_to_symbol(pair)
+                    earliest: str | None = None
+                    for tf in timeframes:
+                        tr = build_timerange(args.exchange, sym, tf, catalog, False, args.since, False,
+                                             trading_mode=args.trading_mode)
+                        if tr and tr != "SKIP":
+                            if earliest is None or tr < earliest:
+                                earliest = tr
+                    tr_groups[earliest or "20200101-"].append(pair)
 
-        if args.dry_run:
-            # Simulate: just list what would be merged
-            for pair in pairs:
-                sym = pair_to_symbol(pair)
-                for tf in timeframes:
-                    dst = crypto_file_path(args.exchange, sym, tf)
-                    print(f"  [dry-run] {sym}/{tf} → {dst.relative_to(REPO_ROOT)}")
-            return
+                print(f"Batches: {len(tr_groups)} distinct timerange(s)\n")
+                for tr, batch_pairs in tr_groups.items():
+                    print(f"  [{tr}] {len(batch_pairs)} pairs")
+                    if not args.dry_run:
+                        ok = run_freqtrade_download(
+                            args.exchange, batch_pairs, timeframes, tmppath,
+                            tr, trading_mode=args.trading_mode, log_file=log_file,
+                        )
+                        if not ok:
+                            print(f"\nfreqtrade failed for batch [{tr}]. Continuing with others…")
 
-        print("\nMerging downloaded files into price-data/…")
-        changes = process_downloads(
-            args.exchange, pairs, timeframes, tmppath, catalog, dry_run=False
-        )
+            if args.dry_run:
+                for pair in pairs:
+                    sym = futures_pair_to_symbol(pair) if is_futures else pair_to_symbol(pair)
+                    for tf in timeframes:
+                        dst = (
+                            crypto_futures_file_path(args.exchange, sym, tf)
+                            if is_futures
+                            else crypto_file_path(args.exchange, sym, tf)
+                        )
+                        print(f"  [dry-run] {sym}/{tf} → {dst.relative_to(REPO_ROOT)}")
+                return
 
+            print("\nMerging downloaded files into price-data/…")
+            changes = process_downloads(
+                args.exchange, pairs, timeframes, tmppath, catalog,
+                dry_run=False, trading_mode=args.trading_mode,
+            )
+
+    catalog_name = f"crypto_futures_{args.exchange}.yaml" if is_futures else f"crypto_{args.exchange}.yaml"
     if changes:
-        print(f"\nSaving updated catalog to price-data/crypto_{args.exchange}.yaml…")
-        save_crypto_catalog(args.exchange, catalog)
+        print(f"\nSaving updated catalog to price-data/{catalog_name}…")
+        if is_futures:
+            save_crypto_futures_catalog(args.exchange, catalog)
+        else:
+            save_crypto_catalog(args.exchange, catalog)
         print(f"Done. {len(changes)} file(s) updated.")
     else:
-        print("\nNo changes (files may not have downloaded — check freqtrade output above).")
+        print("\nNo changes.")
 
 
 if __name__ == "__main__":
