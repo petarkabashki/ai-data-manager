@@ -29,18 +29,26 @@ for how to reproduce them (`tools/query.py --list-exchanges`, YAML entry counts)
 ```bash
 # Always use the project venv — never system Python
 uv sync                              # install deps into .venv/
-uv run python tools/query.py --list-exchanges
+uv run python tools/status.py                # what exists, what's stale
 
-# See what's stale
-uv run python tools/check_gaps.py --all
+# See what's stale — every asset class, each against its own trading calendar
+uv run python tools/check_gaps.py --all-catalogs
 
 # Verify every OHLCV file matches the canonical schema
 uv run python tools/check_schema.py
+
+# Verify the catalog describes those files correctly
+uv run python tools/check_catalog.py
 ```
 
-See [`CLAUDE.md`](CLAUDE.md) for the Python-environment rule and
-[`agents.md`](agents.md) for the full data-convention reference this README
-summarizes.
+```bash
+uv run pytest                        # test suite — no network, no price-data/
+```
+
+See [`CLAUDE.md`](CLAUDE.md) for the Python-environment rule,
+[`AGENTS.md`](AGENTS.md) for the full data-convention reference this README
+summarizes, and [`ROADMAP.md`](ROADMAP.md) for the current work plan and known
+gaps.
 
 ## Architecture at a glance
 
@@ -55,16 +63,19 @@ flowchart LR
 
     subgraph Tools["tools/ (CLI)"]
         DLC[download_crypto.py]
+        DLY[download_yf.py]
         DLI[download_ibkr_stock_overnight.py]
+        DLX[download_ibkr_index.py]
         DLM[download_market_caps.py]
         CVT[convert_crypto.py]
         CHK[check_gaps.py]
         SCH[check_schema.py]
+        CCAT[check_catalog.py]
         QRY[query.py]
     end
 
     subgraph Utils["utils/ (importable)"]
-        NORM[normalize_ohlcv]
+        NORM[normalize_ohlcv<br/>+ merge_ohlcv_parquet]
         CAT[catalog.py<br/>load/save catalogs]
         GAP[gaps.py<br/>detect_gaps]
         DATA[data.py<br/>load_assets / asset_path]
@@ -75,8 +86,11 @@ flowchart LR
         YAML[("*.yaml catalogs<br/>+ assets.yaml index")]
     end
 
-    YF --> DLI
+    YF --> DLY
+    DLY --> NORM
     IBKR --> DLI
+    IBKR --> DLX
+    DLX --> NORM
     CEX -->|freqtrade| DLC
     CG --> DLM
 
@@ -93,12 +107,14 @@ flowchart LR
     CHK --> GAP
     GAP --> PARQUET
     SCH --> PARQUET
+    CCAT --> YAML
+    CCAT --> PARQUET
     QRY --> CAT
     QRY --> DATA
     DATA --> YAML
     DATA --> PARQUET
 
-    Agent["Claude Code<br/>agent skills (.agent/)"] -.drives.-> Tools
+    Agent["Any agent harness<br/>.agent/skills/*/SKILL.md"] -.drives.-> Tools
 ```
 
 Full breakdown, directory tree, and the provider-first path rule are in
@@ -112,28 +128,33 @@ Full breakdown, directory tree, and the provider-first path rule are in
 | [`docs/data-model.md`](docs/data-model.md) | Canonical OHLCV schema, catalog YAML shapes (flat vs. nested-by-provider), asset class coverage |
 | [`docs/cli-reference.md`](docs/cli-reference.md) | Every tool in `tools/`, full argument reference with examples |
 | [`docs/workflows.md`](docs/workflows.md) | End-to-end task walkthroughs (crypto refresh, IBKR download, market-cap snapshots, schema audits) |
-| [`docs/agentic-usage.md`](docs/agentic-usage.md) | How Claude Code / agent skills drive this repo, `.agent/` conventions, example prompts |
-| [`agents.md`](agents.md) | Canonical, terse data-convention reference (source of truth; docs/ expands on it) |
+| [`docs/agentic-usage.md`](docs/agentic-usage.md) | How any agent harness drives this repo, `.agent/skills/` conventions, example prompts |
+| [`AGENTS.md`](AGENTS.md) | Canonical, terse data-convention reference (source of truth; docs/ expands on it) |
+| [`ROADMAP.md`](ROADMAP.md) | Sequenced work plan: what's fixed, what's known-missing, and why |
 
 ## Repository layout
 
 ```
 ai-data-manager/
-├── .agent/              # Agent skills (workflows Claude Code can execute)
+├── .agent/              # Agent skills (skills/<name>/SKILL.md + frontmatter)
 ├── docs/                # This documentation set
 ├── tools/               # Standalone CLI scripts (uv run python tools/<x>.py)
+├── tests/               # pytest suite
 ├── utils/               # Shared importable Python modules
 ├── price-data/          # Symlink → ../price-data/ (data + YAML catalogs)
-├── CLAUDE.md            # Claude Code project instructions (env rule, layout)
-├── agents.md            # Full data conventions & tool reference
+├── CLAUDE.md            # Claude Code project instructions (env rule, pointer)
+├── AGENTS.md            # Full data conventions & tool reference
+├── ROADMAP.md           # Work plan and known gaps
+├── .env.example         # Every machine-specific setting
 └── pyproject.toml
 ```
 
 ## Adding to this repo
 
-- New CLI tool → drop it in `tools/`, add a row to the table in `agents.md`
+- New CLI tool → drop it in `tools/`, add a row to the table in `AGENTS.md`
   and (if it's a common task) an example in `docs/cli-reference.md`.
-- New agent skill → add a file under `.agent/`, register it in `agents.md`'s
-  Agent Skills table. See [`docs/agentic-usage.md`](docs/agentic-usage.md).
+- New agent skill → add `.agent/skills/<name>/SKILL.md` with frontmatter, register it
+  in `AGENTS.md`'s Agent Skills table. See
+  [`docs/agentic-usage.md`](docs/agentic-usage.md).
 - New provider or asset class → follow the provider-first path rule in
   [`docs/architecture.md`](docs/architecture.md) before writing any files.

@@ -5,7 +5,9 @@
 This repo has three layers:
 
 1. **`tools/`** — standalone CLI scripts, one process per invocation, no
-   shared state beyond the files they read/write.
+   shared state beyond the files they read/write. Two of them are auditors:
+   `check_schema.py` checks a file's columns, `check_catalog.py` checks what
+   the catalog claims about that file.
 2. **`utils/`** — importable modules with no CLI of their own. They own the
    canonical schema, the catalog read/write logic, and gap detection.
 3. **`price-data/`** — a symlink to `../price-data/`, the actual data root:
@@ -38,33 +40,47 @@ sequenceDiagram
     Q-->>Q: print table / return DataFrame
 ```
 
-Every download tool converges on the same normalization step — `raw
-provider output never touches disk directly`. `tools/check_schema.py` exists
-specifically to catch a tool that skipped this step.
+Every download tool converges on the same normalization step — raw provider
+output never touches disk directly — and on the same writer,
+`utils.catalog.merge_ohlcv_parquet()`, which normalizes both sides, dedups on
+`timestamp` (newest wins) and writes atomically via a temp file.
+`tools/check_schema.py` exists specifically to catch a tool that skipped
+normalization.
 
 ## Repository layout
 
 ```
 ai-data-manager/
 ├── .agent/
-│   └── crypto_download.md        # agent skill: gap-check → download → verify
+│   └── skills/crypto_download/    # agent skill: gap-check → download → verify
 ├── docs/                         # this documentation set
 ├── tools/
-│   ├── query.py                  # read: assets, timeframes, staleness
+│   ├── status.py                 # read: one cross-class health roll-up
+│   ├── query.py                  # read: series, timeframes, staleness (all classes)
 │   ├── check_gaps.py             # read: crypto gap/staleness audit
 │   ├── check_schema.py           # read: canonical-schema conformance audit
+│   ├── check_catalog.py          # read/fix: catalog completeness + disk drift
 │   ├── download_crypto.py        # write: freqtrade → parquet + catalog
 │   ├── convert_crypto.py         # write: bulk-normalize legacy files
+│   ├── download_yf.py            # write: Yahoo → parquet + catalog
 │   ├── download_market_caps.py   # write: CoinGecko snapshots/history
-│   ├── download_ibkr_stock_overnight.py  # write: IBKR bars → parquet + catalog
+│   ├── download_ibkr_stock_overnight.py  # write: IBKR stock bars → parquet + catalog
+│   ├── download_ibkr_index.py    # write: IBKR index bars → parquet + catalog
 │   ├── retry_ibkr_failed_sequentially.py # write: re-run IBKR failures one at a time
 │   └── migrate_price_data_layout.py      # one-off: 2026-07 provider-first migration
+├── tests/                        # pytest suite (no network, no price-data/)
 ├── utils/
-│   ├── catalog.py                # canonical schema, catalog CRUD, path builders
+│   ├── calendars.py              # trading sessions: which bars should exist
+│   ├── config.py                 # env-resolved paths, provider endpoints
+│   ├── catalog.py                # canonical schema, atomic parquet IO, catalog CRUD, paths
 │   ├── data.py                   # load_assets(), asset_path(), load_ohlcv()
-│   ├── gaps.py                   # detect_gaps(), audit_exchange() (crypto)
-│   ├── ibkr.py                   # ibapi wrapper, chunking, throttling
-│   └── market_caps.py            # CoinGecko client, universe resolution
+│   ├── gaps.py                   # detect_gaps(), audit_catalog_series()
+│   ├── ibkr.py                   # ibapi wrapper, range planner, chunking, throttling
+│   ├── market_caps.py            # CoinGecko client, universe resolution
+│   ├── planning.py               # provider-neutral download range planner
+│   ├── yf.py                     # Yahoo tickers, intervals, limits, fetching
+│   ├── report.py                 # shared table rendering
+│   └── semantics.py              # what the numbers mean, per catalog node
 ├── price-data/ -> ../price-data/
 │   ├── assets.yaml                        # master index (include: [...])
 │   ├── {sp500,nasdaq100,russell2000,delisted_stocks}.yaml
@@ -80,6 +96,8 @@ ai-data-manager/
 │   └── market-cap/coingecko/{exports,history,reference}/
 ├── CLAUDE.md
 ├── agents.md
+├── ROADMAP.md
+├── .env.example
 └── pyproject.toml
 ```
 
@@ -161,13 +179,22 @@ callers don't need to know which one a given asset class uses.
 
 ```mermaid
 flowchart BT
+    config[utils/config.py]
     catalog[utils/catalog.py]
     data[utils/data.py]
     gaps[utils/gaps.py]
     ibkr[utils/ibkr.py]
     market_caps[utils/market_caps.py]
+    report[utils/report.py]
 
+    semantics[utils/semantics.py]
+    calendars[utils/calendars.py]
+
+    catalog --> config
+    catalog --> semantics
+    data --> config
     gaps --> catalog
+    gaps --> calendars
     ibkr --> catalog
 
     query[tools/query.py] --> catalog
@@ -175,13 +202,29 @@ flowchart BT
     check_gaps[tools/check_gaps.py] --> gaps
     check_gaps --> catalog
     check_schema[tools/check_schema.py] --> catalog
+    check_catalog[tools/check_catalog.py] --> catalog
+    check_catalog --> semantics
+    check_catalog --> report
     download_crypto[tools/download_crypto.py] --> catalog
     convert_crypto[tools/convert_crypto.py] --> catalog
     download_ibkr[tools/download_ibkr_stock_overnight.py] --> catalog
     download_ibkr --> gaps
+    download_ibkr --> calendars
     download_ibkr --> ibkr
+    download_ibkr_index[tools/download_ibkr_index.py] --> catalog
+    download_ibkr_index --> ibkr
+    query --> report
+    check_gaps --> report
     retry_ibkr[tools/retry_ibkr_failed_sequentially.py] -.subprocess.-> download_ibkr
     download_market_caps[tools/download_market_caps.py] --> market_caps
+    planning[utils/planning.py]
+    yfmod[utils/yf.py]
+    ibkr --> planning
+    yfmod --> catalog
+    download_yf[tools/download_yf.py] --> yfmod
+    download_yf --> planning
+    download_yf --> catalog
+    download_yf --> semantics
 ```
 
 `utils/market_caps.py` deliberately has no dependency on `utils/catalog.py`

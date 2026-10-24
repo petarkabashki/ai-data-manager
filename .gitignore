@@ -5,12 +5,19 @@ build/
 dist/
 wheels/
 *.egg-info/
+.pytest_cache/
 
 # Virtual environments
 .venv
 
+# Data root (symlink to ../price-data) and scratch
 price-data/
+tmp/
 
+# Local configuration
+.env
+
+# Scratch notes
 stuff.txt
 
 # OS / editor junk
@@ -18,6 +25,3 @@ stuff.txt
 Thumbs.db
 .idea/
 .vscode/
-price-data/
-
-tmp/

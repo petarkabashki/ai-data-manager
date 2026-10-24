@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import threading
-import time
 from collections import defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from itertools import count
@@ -14,7 +14,24 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
-from utils.catalog import CANONICAL_COLS, normalize_ohlcv
+from utils.catalog import (
+    empty_ohlcv_frame,
+    merge_ohlcv_parquet,
+    normalize_ohlcv,
+)
+from utils.planning import (  # noqa: F401  (re-exported for existing callers)
+    DownloadRange,
+    daterange_chunks,
+    dt_from_ms,
+    duration_days_or_years,
+    format_ranges,
+    merge_ranges,
+    parse_date,
+    plan_download_ranges,
+    read_timestamp_bounds,
+    throttle_sleep,
+    utc_now,
+)
 
 NY_TZ = ZoneInfo("America/New_York")
 RTH_OPEN_HOUR = 9
@@ -34,6 +51,18 @@ OUR_TF_TO_IBKR_BAR_SIZE = {
     "8h": "8 hours",
     "1d": "1 day",
     "1w": "1 week",
+}
+
+# Our index symbol -> (IBKR IND contract symbol, exchange). currency is always USD.
+# Covers the US indices in indexes.yaml; non-US indices (STOXX50E, FTSE, GDAXI,
+# N225, HSI) trade on different venues/currencies and aren't mapped here.
+INDEX_CONTRACT_MAP: dict[str, tuple[str, str]] = {
+    "GSPC": ("SPX", "CBOE"),
+    "DJI": ("INDU", "CME"),
+    "IXIC": ("COMP", "NASDAQ"),
+    "NDX": ("NDX", "NASDAQ"),
+    "RUT": ("RUT", "RUSSELL"),
+    "VIX": ("VIX", "CBOE"),
 }
 
 
@@ -167,6 +196,11 @@ class IbkrHistoricalClient:
             if candidate and candidate not in candidates:
                 candidates.append(candidate)
 
+        # Why each candidate failed, so the caller can tell a delisting from a
+        # flaky connection. Both used to surface as "could not resolve", which
+        # sent a transient timeout to the same place as a dead ticker.
+        reasons: list[str] = []
+
         for candidate in candidates:
             contract = Contract()
             contract.symbol = candidate
@@ -180,7 +214,11 @@ class IbkrHistoricalClient:
             self._app.reqContractDetails(req_id, contract)
             try:
                 self._wait(req_id)
-            except (TimeoutError, RuntimeError):
+            except TimeoutError as exc:
+                reasons.append(f"{candidate}: timed out ({exc})")
+                continue
+            except RuntimeError as exc:
+                reasons.append(f"{candidate}: {exc}")
                 continue
 
             details = self._contract_details.get(req_id, [])
@@ -196,7 +234,34 @@ class IbkrHistoricalClient:
                 )
                 return preferred[0].contract
 
-        raise RuntimeError(f"Could not resolve IBKR contract for {symbol}")
+        detail = "; ".join(reasons) if reasons else "no contract details returned"
+        raise RuntimeError(f"Could not resolve IBKR contract for {symbol} ({detail})")
+
+    def resolve_index_contract(self, symbol: str) -> Any:
+        _, Contract, _ = _load_ibapi()
+        try:
+            ibkr_symbol, exchange = INDEX_CONTRACT_MAP[symbol]
+        except KeyError as exc:
+            raise ValueError(
+                f"No IBKR index contract mapping for {symbol!r}; add it to INDEX_CONTRACT_MAP"
+            ) from exc
+
+        contract = Contract()
+        contract.symbol = ibkr_symbol
+        contract.secType = "IND"
+        contract.exchange = exchange
+        contract.currency = "USD"
+
+        req_id = self._new_req_id()
+        self._events[req_id] = threading.Event()
+        self._contract_details.pop(req_id, None)
+        self._app.reqContractDetails(req_id, contract)
+        self._wait(req_id)
+
+        details = self._contract_details.get(req_id, [])
+        if not details:
+            raise RuntimeError(f"Could not resolve IBKR index contract for {symbol} ({ibkr_symbol}/{exchange})")
+        return details[0].contract
 
     def fetch_historical_bars(self, request: HistoricalRequest) -> list[Any]:
         req_id = self._new_req_id()
@@ -251,16 +316,7 @@ def bars_to_dataframe(bars: list[Any]) -> pd.DataFrame:
             }
         )
     if not rows:
-        return pd.DataFrame(columns=CANONICAL_COLS).astype(
-            {
-                "timestamp": "int64",
-                "open": "float64",
-                "high": "float64",
-                "low": "float64",
-                "close": "float64",
-                "volume": "float64",
-            }
-        )
+        return empty_ohlcv_frame()
     return normalize_ohlcv(pd.DataFrame(rows))
 
 
@@ -299,22 +355,8 @@ def filter_full_bars_outside_rth(df: pd.DataFrame, timeframe: str) -> pd.DataFra
 
 
 def merge_canonical_parquet(src_df: pd.DataFrame, dst: Path) -> tuple[int, int]:
-    new_df = normalize_ohlcv(src_df)
-    if dst.exists():
-        old_df = normalize_ohlcv(pd.read_parquet(dst))
-        old_rows = len(old_df)
-        merged = (
-            pd.concat([old_df, new_df])
-            .drop_duplicates(subset=["timestamp"])
-            .sort_values("timestamp")
-            .reset_index(drop=True)
-        )
-    else:
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        old_rows = 0
-        merged = new_df
-    merged.to_parquet(dst, index=False)
-    return old_rows, len(merged)
+    """Deprecated alias for `utils.catalog.merge_ohlcv_parquet`."""
+    return merge_ohlcv_parquet(src_df, dst)
 
 
 def read_last_timestamp(path: Path) -> int | None:
@@ -336,21 +378,135 @@ def _timeframe_delta(timeframe: str) -> timedelta:
     raise ValueError(f"Unsupported timeframe: {timeframe}")
 
 
-def daterange_chunks(
-    start: datetime,
-    end: datetime,
+# --- shared download planning -------------------------------------------------
+#
+# The provider-neutral half of this now lives in utils/planning.py so the YF
+# downloader can share it without importing an IBKR module. The names are
+# re-exported above for existing callers.
+
+#: Calendar days requested per historical-data call, by timeframe. IBKR's
+#: per-request limits are bar-size dependent; these are conservative.
+DEFAULT_CHUNK_DAYS: dict[str, int] = {
+    "1h": 365,
+    "4h": 730,
+    "8h": 730,
+    "1d": 365,
+    "1w": 3650,
+}
+
+
+def chunk_days_for_timeframe(timeframe: str, configured: int | None = None) -> int:
+    if configured is not None:
+        return configured
+    try:
+        return DEFAULT_CHUNK_DAYS[timeframe]
+    except KeyError as exc:
+        raise ValueError(f"No default chunk size for timeframe {timeframe!r}") from exc
+
+
+def ibkr_duration_str(chunk_start: datetime, chunk_end: datetime) -> str:
+    """IBKR `durationStr` for a window, in days or whole years."""
+    return duration_days_or_years(chunk_start, chunk_end)
+
+
+def is_hmds_no_data_error(exc: Exception) -> bool:
+    return "HMDS query returned no data" in str(exc)
+
+
+def is_retryable_chunk_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return (
+        isinstance(exc, TimeoutError)
+        or "timed out" in text
+        or "hmds server disconnect occurred" in text
+    )
+
+
+def download_ranges(
+    client: IbkrHistoricalClient,
+    contract: Any,
+    *,
+    label: str,
+    timeframe: str,
+    ranges: list[DownloadRange],
     chunk_days: int,
-) -> list[tuple[datetime, datetime]]:
-    chunks: list[tuple[datetime, datetime]] = []
-    cursor = end
-    while cursor > start:
-        chunk_start = max(start, cursor - timedelta(days=chunk_days))
-        chunks.append((chunk_start, cursor))
-        cursor = chunk_start
-    chunks.reverse()
-    return chunks
+    what_to_show: str = "TRADES",
+    use_rth: bool = False,
+    sleep_seconds: float = 0.35,
+    max_chunk_retries: int = 0,
+    post_filter: Callable[[pd.DataFrame], pd.DataFrame] | None = None,
+    log: Callable[[str], None] = print,
+) -> pd.DataFrame:
+    """Fetch every chunk of every range and return one canonical DataFrame.
 
+    Chunks whose error says IBKR simply has no data for the window are skipped;
+    transient timeouts and HMDS disconnects are retried up to
+    `max_chunk_retries` times with linear backoff. Anything else propagates, so
+    the caller can record the symbol as failed and move on.
+    """
+    frames: list[pd.DataFrame] = []
+    total_chunks = 0
+    skipped_no_data = 0
 
-def throttle_sleep(seconds: float) -> None:
-    if seconds > 0:
-        time.sleep(seconds)
+    for planned in ranges:
+        for chunk_start, chunk_end in daterange_chunks(planned.start, planned.end, chunk_days):
+            total_chunks += 1
+            attempts = max(1, max_chunk_retries + 1)
+            bars: list[Any] | None = None
+
+            for attempt in range(1, attempts + 1):
+                try:
+                    bars = client.fetch_historical_bars(
+                        HistoricalRequest(
+                            contract=contract,
+                            end=chunk_end,
+                            duration=ibkr_duration_str(chunk_start, chunk_end),
+                            bar_size=ibkr_bar_size(timeframe),
+                            what_to_show=what_to_show,
+                            use_rth=use_rth,
+                        )
+                    )
+                    break
+                except Exception as exc:
+                    window = f"{chunk_start.strftime('%Y-%m-%d')}->{chunk_end.strftime('%Y-%m-%d')}"
+                    if is_hmds_no_data_error(exc):
+                        skipped_no_data += 1
+                        log(f"  {label}/{timeframe}: no data for chunk {window}")
+                        bars = []
+                        break
+                    if is_retryable_chunk_error(exc) and attempt < attempts:
+                        log(
+                            f"  {label}/{timeframe}: retry {attempt}/{attempts - 1} "
+                            f"after transient error for {window}"
+                        )
+                        throttle_sleep(max(sleep_seconds, 0.35) * attempt)
+                        continue
+                    raise
+
+            if bars is None:
+                raise RuntimeError(f"{label}/{timeframe}: no chunk result returned")
+
+            df = bars_to_dataframe(bars)
+            if not df.empty:
+                start_ms = int(chunk_start.timestamp() * 1000)
+                end_ms = int(chunk_end.timestamp() * 1000)
+                df = df[(df["timestamp"] >= start_ms) & (df["timestamp"] <= end_ms)]
+                if post_filter is not None and not df.empty:
+                    df = post_filter(df)
+                if not df.empty:
+                    frames.append(df)
+            throttle_sleep(sleep_seconds)
+
+    detail = f" ({skipped_no_data} no-data chunks skipped)" if skipped_no_data else ""
+    if not frames:
+        log(f"  {label}/{timeframe}: no bars returned across {total_chunks} chunks{detail}")
+        return empty_ohlcv_frame()
+
+    merged = (
+        pd.concat(frames)
+        .drop_duplicates(subset=["timestamp"])
+        .sort_values("timestamp")
+        .reset_index(drop=True)
+    )
+    log(f"  {label}/{timeframe}: fetched {len(merged)} bars across {total_chunks} chunks{detail}")
+    return merged

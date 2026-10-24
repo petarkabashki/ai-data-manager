@@ -64,7 +64,7 @@ dicts keyed by symbol, with `categories`, `timeframes`, and
 applies depends entirely on whether more than one provider can register the
 same `(symbol, timeframe)`.
 
-### Flat shape — crypto, crypto-futures, indexes, commodities, macro
+### Flat shape — crypto, crypto-futures, commodities, macro
 
 Exactly one provider per `(symbol, timeframe)`, so no collision is possible:
 
@@ -79,11 +79,12 @@ BTC_USDT:
     1d: {start_date: "2017-08-17", end_date: "2026-07-04", file_path: price-data/cryptos/binance/BTC_USDT/BTC_USDT-1d.parquet}
 ```
 
-### Nested-by-provider shape — stocks only
+### Nested-by-provider shape — stocks and indexes
 
 YF and IBKR can both register data for the same symbol/timeframe (e.g. daily
-bars from both), so `timeframe_dates[tf]` is itself a dict keyed by
-provider:
+bars from both), so `timeframe_dates[tf]` is itself a dict keyed by provider.
+The key is `PROVIDER` for the default session and `PROVIDER:session` otherwise
+— `session` is part of the filename, so it has to be part of the key too:
 
 ```yaml
 AAPL:
@@ -93,8 +94,15 @@ AAPL:
       YF:   {start_date: "1980-12-12", end_date: "2026-07-04", file_path: price-data/stocks/yf/sp500/AAPL/AAPL-1d.parquet}
       IBKR: {start_date: "2024-01-02", end_date: "2026-07-04", file_path: price-data/stocks/ibkr/sp500/AAPL/AAPL-all-1d.parquet, session: all}
     1h:
-      IBKR: {start_date: "2024-01-02", end_date: "2026-07-04", file_path: price-data/stocks/ibkr/sp500/AAPL/AAPL-all-1h.parquet, session: all}
+      IBKR:           {start_date: "2024-01-02", end_date: "2026-07-04", file_path: price-data/stocks/ibkr/sp500/AAPL/AAPL-all-1h.parquet, session: all}
+      IBKR:overnight: {start_date: "2024-01-02", end_date: "2026-07-04", file_path: price-data/stocks/ibkr/sp500/AAPL/AAPL-overnight-1h.parquet, session: overnight}
 ```
+
+Indexes use the same shape. They were flat until an IBKR daily download was
+found to silently replace YF's node for the same timeframe; a flat node is
+migrated in place on first write, so older `indexes.yaml` upgrades lazily.
+
+Every node also carries the four semantic fields described below.
 
 Write these with `utils.catalog.update_stock_timeframe_entry()` — never
 manually flatten this back to one node per timeframe. It mutates the
@@ -102,10 +110,63 @@ catalog dict in place, appends the provider under `timeframe_dates[tf]`, and
 recomputes the entry's top-level `start_date`/`end_date` across every
 timeframe × provider pair.
 
-`utils.data.asset_path(symbol, timeframe, provider=None)` reads *either*
-shape transparently: if `timeframe_dates[tf]` has a `file_path` key
-directly, it's flat; otherwise it's nested and `provider` selects the node
-(or the first one found, if omitted).
+`utils.data.asset_path(symbol, timeframe, provider=None, session=None)` reads
+*either* shape transparently: if `timeframe_dates[tf]` has a `file_path` key
+directly, it's flat; otherwise it's nested and `provider`/`session` select the
+node (or the first one found, if both are omitted). Provider matching is
+case-insensitive, so callers don't have to know that directories are lowercase
+while catalog nodes are upper.
+
+## What the numbers mean: node semantics
+
+The canonical schema pins down *shape* — same columns, same dtypes, same
+timestamp units. It says nothing about *meaning*, and meaning differs by
+provider:
+
+- `close` is adjusted or raw depending on where it came from. YF's `Adj Close`
+  is dropped by `normalize_ohlcv()`, so YF closes are as-traded; IBKR's
+  `--what-to-show ADJUSTED_LAST` returns back-adjusted prices.
+- `volume` counts base asset for crypto spot, contracts for KuCoin futures and
+  commodities, shares for stocks, and nothing usable for indexes.
+- `macro/WTB3MS` isn't OHLCV at all.
+
+So every `timeframe_dates` node records four fields, from
+`utils/semantics.py`:
+
+| Field | Values | Default source |
+|---|---|---|
+| `schema` | `ohlcv`, `rate_series` | asset class |
+| `adjustment` | `raw`, `adjusted`, `not_applicable` | asset class + provider, flipped by IBKR `--what-to-show ADJUSTED_LAST` |
+| `volume_basis` | `base_asset`, `contracts`, `shares`, `none` | asset class + provider |
+| `bar_label` | `open`, `close` | provider (all current providers stamp the bar's open) |
+
+```yaml
+AAPL:
+  timeframe_dates:
+    1d:
+      YF:
+        start_date: "1980-12-12"
+        end_date: "2026-07-04"
+        file_path: price-data/stocks/yf/sp500/AAPL/AAPL-1d.parquet
+        provider: YF
+        schema: ohlcv
+        adjustment: raw          # Adj Close was dropped at ingestion
+        volume_basis: shares
+        bar_label: open
+```
+
+Writers stamp these automatically — `apply_semantics()` fills only the fields a
+caller didn't set, so an explicit `semantics=` argument always wins. Nodes
+written before this existed are backfilled by
+`uv run python tools/check_catalog.py --fix`, which seeds them from the same
+per-provider defaults. That checker also refuses to *rewrite* a semantic value
+that is present but outside its vocabulary: a wrong value is a decision
+someone made, and it gets reported rather than silently corrected.
+
+Two of the defaults are stated assumptions rather than verified facts, flagged
+in `utils/semantics.py`: Binance USDⓈ-M and Bybit linear perpetual klines are
+recorded as base-asset volume, KuCoin futures as contracts. If that's wrong for
+a pair it's wrong by a contract multiplier, so verify before sizing on it.
 
 ## `assets.yaml`: the master index
 

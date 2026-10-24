@@ -21,7 +21,6 @@ Usage examples:
 from __future__ import annotations
 
 import argparse
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -32,12 +31,12 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from utils.config import TMP_ROOT, relative_to_repo
 from utils.catalog import (
     CANONICAL_COLS,
     CRYPTO_EXCHANGES,
     FREQTRADE_BIN,
     TF_TO_MS,
-    DATA_ROOT,
     REPO_ROOT,
     catalog_key,
     crypto_file_path,
@@ -45,8 +44,10 @@ from utils.catalog import (
     ft_timeframe,
     futures_pair_to_ft_symbol,
     futures_pair_to_symbol,
+    empty_ohlcv_frame,
     load_crypto_catalog,
     load_crypto_futures_catalog,
+    merge_ohlcv_parquet,
     normalize_ohlcv,
     pair_to_symbol,
     read_parquet_range,
@@ -68,28 +69,6 @@ def _date_to_yyyymmdd(date_str: str) -> str:
 
 def _ms_to_date(ms: int) -> str:
     return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
-
-
-def merge_parquet(src: Path, dst: Path) -> tuple[int, int]:
-    """Merge src into dst. Normalizes both to canonical schema before merging.
-    Returns (old_rows, new_rows). Canonical schema: [timestamp(int64ms), open, high, low, close, volume]."""
-    new_df = normalize_ohlcv(pd.read_parquet(src))
-    if dst.exists():
-        old_df = normalize_ohlcv(pd.read_parquet(dst))
-        old_rows = len(old_df)
-        merged = (
-            pd.concat([old_df, new_df])
-            .drop_duplicates(subset=["timestamp"])
-            .sort_values("timestamp")
-            .reset_index(drop=True)
-        )
-    else:
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        old_rows = 0
-        merged = new_df
-
-    merged.to_parquet(dst, index=False)
-    return old_rows, len(merged)
 
 
 def build_timerange(
@@ -215,6 +194,18 @@ def run_freqtrade_download(
     return result.returncode == 0
 
 
+def _is_empty_parquet(path: Path) -> bool:
+    """True if the file carries no rows — or no columns at all, which is what a
+    rejected download leaves behind."""
+    try:
+        import pyarrow.parquet as pq
+
+        meta = pq.read_metadata(path)
+        return meta.num_columns == 0 or meta.num_rows == 0
+    except Exception:
+        return True
+
+
 def process_downloads(
     exchange: str,
     pairs: list[str],
@@ -252,8 +243,19 @@ def process_downloads(
                 print(f"  [dry-run] would merge {src.name} → {dst}")
                 continue
 
-            old_rows, new_rows = merge_parquet(src, dst)
+            # An exchange that rejects a timeframe it advertises (bitget serves
+            # no 2h, despite listing it) hands freqtrade back a zero-column
+            # parquet. Merging that used to create an empty destination file and
+            # a dateless catalog node — a series that looks real and holds
+            # nothing. Leave any existing data alone and say so instead.
+            if _is_empty_parquet(src):
+                print(f"  [skip] {symbol}/{tf}: {exchange} returned no data")
+                continue
+
+            old_rows, new_rows = merge_ohlcv_parquet(src, dst)
             added = new_rows - old_rows
+            if added == 0:
+                zero_delta.append(f"{symbol}/{tf}")
             changes.append((symbol, tf, old_rows, new_rows))
             print(f"  {symbol}/{tf}: {old_rows}→{new_rows} rows (+{added})")
 
@@ -269,10 +271,31 @@ def process_downloads(
     return changes
 
 
+def _last_stored_timestamp(path) -> int | None:
+    """Last bar already on disk, or None when there is no usable file."""
+    if not path.exists():
+        return None
+    try:
+        df = pd.read_parquet(path, columns=["timestamp"])
+    except Exception:
+        return None
+    if df.empty:
+        return None
+    return int(df["timestamp"].max())
+
+
 def _fetch_ohlcv_paginated(
     ccxt_ex, pair: str, tf_ccxt: str, since_ms: int, tf_ms: int, limit: int = 200
 ) -> pd.DataFrame:
-    """Paginate ccxt fetch_ohlcv from since_ms to now. Skips forward when API returns empty."""
+    """Paginate ccxt fetch_ohlcv from since_ms to now. Skips forward when API returns empty.
+
+    A short page does *not* mean the end of the data. KuCoin returns fewer than
+    `limit` candles mid-history for illiquid pairs, and treating that as the end
+    truncated every series at exactly one page past `--since`: with
+    `--since 2026-05-01` the 1h series stopped at 2026-05-09, 4h at 2026-06-03
+    and 8h at 2026-07-06, each precisely `200 * tf` past the start. Advance on
+    the last timestamp instead and stop only when the API stops making progress.
+    """
     import time as _time
 
     all_rows: list = []
@@ -288,16 +311,18 @@ def _fetch_ohlcv_paginated(
             continue
         all_rows.extend(rows)
         last_ts = rows[-1][0]
-        if len(rows) < limit or last_ts >= now_ms:
+        if last_ts >= now_ms - tf_ms:
             break
-        current = last_ts + tf_ms
+        # Guard against an exchange that keeps returning the same page: without
+        # this a non-advancing cursor would spin forever.
+        if last_ts + tf_ms <= current:
+            current += skip_ms
+        else:
+            current = last_ts + tf_ms
         _time.sleep(0.1)
 
     if not all_rows:
-        return pd.DataFrame(columns=CANONICAL_COLS).astype(
-            {"timestamp": "int64", "open": "float64", "high": "float64",
-             "low": "float64", "close": "float64", "volume": "float64"}
-        )
+        return empty_ohlcv_frame()
     df = pd.DataFrame(all_rows, columns=CANONICAL_COLS)
     df["timestamp"] = df["timestamp"].astype("int64")
     for c in ["open", "high", "low", "close", "volume"]:
@@ -312,6 +337,7 @@ def download_and_merge_ccxt_futures(
     catalog: dict,
     since: str = "2020-01-01",
     dry_run: bool = False,
+    full: bool = False,
 ) -> list[tuple[str, str, int, int]]:
     """Download futures OHLCV via ccxt directly (for exchanges freqtrade doesn't support in futures mode)."""
     import ccxt as _ccxt
@@ -322,6 +348,7 @@ def download_and_merge_ccxt_futures(
     since_ms = int(_ccxt.Exchange.parse8601(f"{since}T00:00:00Z"))
 
     changes: list[tuple[str, str, int, int]] = []
+    zero_delta: list[str] = []
 
     for pair in pairs:
         symbol = futures_pair_to_symbol(pair)
@@ -339,10 +366,23 @@ def download_and_merge_ccxt_futures(
             dst = crypto_futures_file_path(exchange, symbol, tf)
 
             if dry_run:
-                print(f"  [dry-run] {symbol}/{tf} → {dst.relative_to(REPO_ROOT)}")
+                print(f"  [dry-run] {symbol}/{tf} → {relative_to_repo(dst)}")
                 continue
 
-            df = _fetch_ohlcv_paginated(ccxt_ex, pair, tf_ccxt, since_ms, tf_ms)
+            # Resume from what is already stored, like the freqtrade path does.
+            # Using the global --since for every series meant a refresh always
+            # refetched from 2020 and, combined with the short-page break above,
+            # silently returned only data the file already had.
+            start_ms = since_ms
+            last_stored = _last_stored_timestamp(dst)
+            if last_stored is not None and not full:
+                start_ms = max(since_ms, last_stored - tf_ms)
+
+            try:
+                df = _fetch_ohlcv_paginated(ccxt_ex, pair, tf_ccxt, start_ms, tf_ms)
+            except _ccxt.BadSymbol:
+                print(f"  [skip] {symbol}: no longer listed on {ccxt_class_name}")
+                break
             if df.empty:
                 print(f"  [warn] {symbol}/{tf}: no data returned")
                 continue
@@ -351,7 +391,7 @@ def download_and_merge_ccxt_futures(
                 tmp_path = Path(tmp.name)
             try:
                 df.to_parquet(tmp_path, index=False)
-                old_rows, new_rows = merge_parquet(tmp_path, dst)
+                old_rows, new_rows = merge_ohlcv_parquet(tmp_path, dst)
             finally:
                 tmp_path.unlink(missing_ok=True)
 
@@ -367,6 +407,16 @@ def download_and_merge_ccxt_futures(
                     categories=["Crypto Futures"],
                     common_name=pair,
                 )
+
+    if zero_delta:
+        # A run that adds nothing looks identical to a successful one: the files
+        # are rewritten, the catalog is saved and the exit code is 0. Say so,
+        # because this is exactly how a truncating paginator hid for months.
+        print(
+            f"\n  [warn] {len(zero_delta)} series gained no rows "
+            f"(already current, delisted, or the request window missed the data):"
+        )
+        print(f"    {', '.join(zero_delta[:12])}{' …' if len(zero_delta) > 12 else ''}")
 
     return changes
 
@@ -415,17 +465,16 @@ def main() -> None:
             pairs = [entry.get("name", k).replace("_", "/", 1)
                      for k, entry in catalog.items()]
     else:
-        pairs = args.pairs
+        # Futures pairs carry a settlement suffix (BTC/USDT:USDT). `--all-pairs`
+        # gets it from `common_name`; an explicit `--pairs BTC/USDT` used to be
+        # passed through verbatim and every pair came back "no longer listed",
+        # which reads like a delisting rather than a wrong symbol. Append it.
+        pairs = [
+            f"{pair}:{pair.split('/')[-1]}" if is_futures and ":" not in pair else pair
+            for pair in args.pairs
+        ]
 
     timeframes = args.timeframes
-
-    # Auto-redirect freqtrade output to log file for bulk runs
-    import datetime as _dt
-    log_file: Path | None = None
-    if args.log_file:
-        log_file = Path(args.log_file)
-    elif len(pairs) > 10:
-        log_file = Path(f"/tmp/ft_download_{_dt.datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
 
     use_ccxt = is_futures and args.exchange in CCXT_FUTURES_CLASS
     since_str = args.since or "2020-01-01"
@@ -443,18 +492,20 @@ def main() -> None:
     if use_ccxt:
         changes = download_and_merge_ccxt_futures(
             args.exchange, pairs, timeframes, catalog,
-            since=since_str, dry_run=args.dry_run,
+            since=since_str, dry_run=args.dry_run, full=args.full,
         )
         if args.dry_run:
             return
     else:
-        # Auto-redirect freqtrade output to log file for bulk runs
-        import datetime as _dt
+        # Auto-redirect freqtrade output to a log file for bulk runs. Logs go
+        # under TMP_ROOT (repo tmp/) like the IBKR checkpoints, not /tmp.
         log_file: Path | None = None
         if args.log_file:
             log_file = Path(args.log_file)
         elif len(pairs) > 10:
-            log_file = Path(f"/tmp/ft_download_{_dt.datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
+            TMP_ROOT.mkdir(parents=True, exist_ok=True)
+            stamp = datetime.now(tz=timezone.utc).strftime("%Y%m%d_%H%M%S")
+            log_file = TMP_ROOT / f"ft_download_{args.exchange}_{stamp}.log"
 
         if log_file:
             print(f"FT log  : {log_file}  (tail -f to follow)")
@@ -515,7 +566,7 @@ def main() -> None:
                             if is_futures
                             else crypto_file_path(args.exchange, sym, tf)
                         )
-                        print(f"  [dry-run] {sym}/{tf} → {dst.relative_to(REPO_ROOT)}")
+                        print(f"  [dry-run] {sym}/{tf} → {relative_to_repo(dst)}")
                 return
 
             print("\nMerging downloaded files into price-data/…")

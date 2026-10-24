@@ -13,6 +13,7 @@ first when one is offered.
 | [`query.py`](#querypy) | read-only | Query assets, timeframes, date ranges, staleness |
 | [`check_gaps.py`](#check_gapspy) | read-only | Audit crypto data for internal gaps + trailing staleness |
 | [`check_schema.py`](#check_schemapy) | read-only | Verify every OHLCV parquet matches the canonical schema |
+| [`check_splits.py`](#check_splitspy) | read-only | Find un-back-adjusted split seams inside stored price files |
 | [`download_crypto.py`](#download_cryptopy) | write | Download via freqtrade, merge parquet, update catalog |
 | [`convert_crypto.py`](#convert_cryptopy) | write | Bulk-normalize crypto parquet/JSON to canonical schema |
 | [`download_market_caps.py`](#download_market_capspy) | write | Fetch CoinGecko market-cap history + snapshot/top-N exports |
@@ -22,69 +23,114 @@ first when one is offered.
 
 ---
 
-## `query.py`
+## `status.py`
 
 ```
-uv run python tools/query.py [--exchange EX] [--symbol SYM] [--timeframe TF]
-                              [--stale-days N] [--list-exchanges] [--list-symbols]
+uv run python tools/status.py [--catalog NAME ...] [--stale-days N] [--deep] [--json]
 ```
 
 | Flag | Meaning |
 |---|---|
-| `-e, --exchange` | Filter to one crypto exchange (`binance`, `bitget`, `bybit`, `kucoin`) |
-| `-s, --symbol` | Filter to one symbol, e.g. `BTC_USDT` |
-| `-t, --timeframe` | Filter to one timeframe, e.g. `1d`, `4h` |
-| `--stale-days N` | Only show entries stale by ≥ N days |
-| `--list-exchanges` | Print exchange → symbol-count table and exit |
-| `--list-symbols` | Print only matching symbol names, one per line |
+| `--catalog` | Limit to named catalogs |
+| `--stale-days` | End date at least N days old counts as stale (default 3) |
+| `--deep` | Also check files exist, match the canonical schema, and carry semantics |
+| `--json` | Machine-readable output |
+
+The roll-up over the three audits. Shallow by default — a few YAML loads, no
+parquet reads — so it's cheap enough to run constantly. `--deep` opens every
+file and exits non-zero if anything is wrong, which makes it usable as a cron
+or CI health check. For detail on a problem it surfaces, go to the specific
+audit: `check_catalog.py` for metadata, `check_schema.py` for file shape,
+`check_gaps.py` for holes.
 
 ```bash
-uv run python tools/query.py --exchange binance --timeframe 1d
-uv run python tools/query.py --exchange binance --symbol BTC_USDT
-uv run python tools/query.py --stale-days 30
-uv run python tools/query.py --list-exchanges
-uv run python tools/query.py --list-symbols --exchange binance --timeframe 1d
+uv run python tools/status.py
+uv run python tools/status.py --deep --json
 ```
 
-Currently crypto-only (reads `load_crypto_catalog`) — it doesn't yet cover
-stocks/indexes/commodities/macro.
+---
+
+## `query.py`
+
+```
+uv run python tools/query.py
+    [--catalog NAME ...] [--asset-class CLASS ...] [--symbol S | --symbols S ...]
+    [--timeframe TF | --timeframes TF ...] [--provider P] [--stale-days N]
+    [--rescan] [--list-catalogs] [--list-symbols] [--json] [--limit N]
+```
+
+| Flag | Meaning |
+|---|---|
+| `--catalog` / `--asset-class` | Narrow by catalog name or by `Crypto`, `Crypto Futures`, `Stock`, `Index`, `Commodity`, `Macro` |
+| `--symbol(s)` / `--timeframe(s)` | The usual filters |
+| `--provider` | `YF`, `IBKR`, `binance`… case-insensitive, so callers needn't know that directories are lowercase and catalog nodes upper |
+| `--stale-days` | Only series whose end date is at least N days old |
+| `--rescan` | Read dates from the parquet files rather than the catalog — authoritative, but opens every file |
+| `--list-catalogs` | Catalogs with symbol and series counts |
+| `--list-symbols` | Matching symbol names, deduped, one per line |
+| `--json` | Machine-readable; unlike the table it is not truncated by `--limit` |
+
+Covers every asset class. It previously read crypto only — despite the name,
+the docstring, and importing `load_assets()` without ever calling it — and
+re-read every parquet file on every run.
+
+```bash
+uv run python tools/query.py --asset-class Stock --symbol AAPL
+uv run python tools/query.py --provider IBKR --timeframe 1h --json
+uv run python tools/query.py --list-catalogs
+```
+
+Each row carries the node's `session`, `adjustment` and `volume_basis`, so an
+agent can tell adjusted from as-traded without opening anything.
 
 ---
 
 ## `check_gaps.py`
 
 ```
-uv run python tools/check_gaps.py (--exchange EX | --all) [--symbol SYM]
-                                   [--timeframe TF | --timeframes TF...]
-                                   [--internal] [--stale-days N]
+uv run python tools/check_gaps.py
+    [--exchange EX | --all | --catalog NAME ... | --all-catalogs]
+    [--symbol S | --symbols S ...] [--timeframe TF | --timeframes TF ...]
+    [--internal] [--stale-days N] [--trading-mode spot|futures]
+    [--calendar continuous|us_equity_rth|us_equity_extended|us_equity_overnight]
+    [--json]
 ```
 
 | Flag | Meaning |
 |---|---|
-| `-e, --exchange` | Exchange to audit |
-| `--all` | Audit all exchanges, `1d` only, unless `--timeframe(s)` given |
-| `-s, --symbol` | Single symbol |
-| `-t, --timeframe` | Single timeframe |
-| `--timeframes` | Multiple timeframes |
-| `--internal` | Print internal-gap details (default: just a count) |
-| `--stale-days N` | Minimum staleness to report (default: 1) |
+| `--exchange` / `--all` | Crypto path: one exchange, or all four. Supports `--trading-mode futures` |
+| `--catalog` / `--all-catalogs` | Any catalog by name (`sp500`, `indexes`, `commodities`, `crypto_binance`…) |
+| `--timeframe(s)` | Restrict to these timeframes. `--all` defaults to `1d` |
+| `--internal` | Print each internal gap, not just the count |
+| `--stale-days` | Minimum trailing staleness to report (default 1) |
+| `--calendar` | Override the calendar instead of deriving it from the asset class |
+| `--json` | Machine-readable output, including the calendar each series was judged against |
+
+**Gaps are judged against a trading calendar.** Crypto uses `continuous`;
+stocks and indexes default to `us_equity_rth`, commodities to
+`us_equity_extended`, and a node stored with `session: overnight` to
+`us_equity_overnight`. Without this, a complete six-year daily equity series
+reported 327 gaps and 683 missing candles — all of them weekends and holidays.
 
 ```bash
 uv run python tools/check_gaps.py --exchange binance --timeframe 1d
-uv run python tools/check_gaps.py --exchange binance --symbol BTC_USDT
-uv run python tools/check_gaps.py --exchange binance --timeframe 4h --stale-days 7
-uv run python tools/check_gaps.py --all
-uv run python tools/check_gaps.py --exchange binance --internal
+uv run python tools/check_gaps.py --catalog sp500 --timeframe 1d --internal
+uv run python tools/check_gaps.py --all-catalogs --json
+uv run python tools/check_gaps.py --catalog sp500 --calendar us_equity_extended
 ```
 
-Report sections: **ERRORS** (missing/unreadable files), **STALE DATA**
-(sorted by staleness), **INTERNAL GAPS** (count, or detail with
-`--internal`). Crypto-only — driven by `utils.gaps.audit_exchange()`.
-`1Mo` candles are skipped (variable interval, gap math doesn't apply).
+Intraday expectation is an overlap test against the session window rather than
+a reconstruction of the provider's bar grid, so intraday candle counts are
+approximate and a genuinely missing bar inside a closure window won't be
+reported. That direction is deliberate: a false gap becomes a download request
+that can never succeed, a missed one shows up as staleness.
 
 ---
 
 ## `check_schema.py`
+
+Add `--json` for machine-readable output: `{"checked": N, "mismatches": [{"path", "issue"}]}`.
+Exits non-zero if any file mismatches, in either output mode.
 
 ```
 uv run python tools/check_schema.py [--path DIR]
@@ -107,6 +153,82 @@ new tool or provider to catch anything that wrote raw output straight to
 disk without `normalize_ohlcv()`.
 
 ---
+
+## `check_catalog.py`
+
+```
+uv run python tools/check_catalog.py
+    [--catalog NAME ...] [--fix] [--skip-dates] [--skip-orphans] [--json]
+```
+
+| Flag | Meaning |
+|---|---|
+| `--catalog` | Limit to named catalogs (`indexes`, `sp500`, `crypto_binance`, `macro`, …). Suppresses the orphan scan |
+| `--fix` | Backfill missing semantics, migrate flat nodes, refresh drifted dates |
+| `--skip-dates` | Don't open parquet files to verify dates — much faster on 5,000 symbols |
+| `--skip-orphans` | Don't walk the data tree looking for unreferenced files |
+| `--json` | Machine-readable output |
+
+Issue kinds:
+
+| Kind | Meaning | `--fix`? |
+|---|---|---|
+| `semantics` | A node is missing `schema`/`adjustment`/`volume_basis`/`bar_label`, or has a value outside its vocabulary | Backfills *missing* fields only |
+| `legacy_shape` | A stocks/indexes timeframe still holds a flat node, so another provider's write would replace it | Migrates to nested-by-provider |
+| `date_drift` | Recorded `start_date`/`end_date` disagree with the file's first/last bar | Refreshes from the file |
+| `file_missing` | `file_path` points at nothing | No — investigate |
+| `no_file_path` | The node records no path at all | No |
+| `no_provider` | Provider can't be determined from node, key or entry | No |
+| `orphan_file` | A parquet under an OHLCV root that no catalog references | No |
+
+```bash
+uv run python tools/check_catalog.py --json
+uv run python tools/check_catalog.py --catalog indexes --fix
+uv run python tools/check_catalog.py --skip-dates          # quick structural pass
+```
+
+Exits non-zero if any issue remains unfixed, or if orphan files were found.
+`--fix` only ever adds information: it never deletes a node, never touches a
+parquet file, and never overwrites a semantic value that is present but
+invalid — a wrong value is someone's decision and gets reported, not silently
+corrected.
+
+---
+
+## `check_splits.py`
+
+```
+uv run python tools/check_splits.py [--path DIR] [--tolerance F] [--json]
+```
+
+| Flag | Meaning |
+|---|---|
+| `--path` | Directory to scan (repeatable). Defaults to `price-data/stocks` — only equities have corporate actions |
+| `--tolerance` | How exactly a move must match a simple fraction to be labelled a split factor (default `0.003`) |
+| `--json` | Emit findings as JSON instead of a table |
+
+```bash
+uv run python tools/check_splits.py
+uv run python tools/check_splits.py --path price-data/stocks/yf/sp500
+```
+
+An incremental download appends bars to an existing file. When the symbol
+splits, the provider restates its whole history at the new share count, but
+appending does not restate what is already on disk — so the file holds
+as-traded prices up to the last full download and split-adjusted prices after
+it, joined by a step that never traded. To a backtest that step is a crash.
+
+Read-only; exits non-zero if anything is found. Repair means re-downloading the
+symbol in full: appending cannot fix a seam whose history is stated at the
+wrong share count.
+
+Output leads with a per-date count, which is the actual signal. A real crash
+moves many symbols by *similar* factors in one direction (March 2020 clusters
+at 0.53–0.62x); a bad update run moves them by wildly different factors on a
+date with no market event. On this repo that is `2024-08-07`, where 17 files
+break by anywhere from 0.038x to 0.48x — `nasdaq100/ORLY` sits at exactly 15x
+the provider's price before it and 1.0x after, its 15:1 split having happened
+in June 2025, long after the history was written.
 
 ## `download_crypto.py`
 
@@ -131,7 +253,7 @@ uv run python tools/download_crypto.py --exchange binance --pairs BTC/USDT \
 Wraps freqtrade's public (unauthenticated) OHLCV download, merges into
 existing parquet with `normalize_ohlcv()` + dedup-on-timestamp, and updates
 the exchange's YAML catalog. See [`docs/workflows.md`](workflows.md#crypto-refresh)
-for the full refresh workflow and [`.agent/crypto_download.md`](../.agent/crypto_download.md)
+for the full refresh workflow and [`.agent/skills/crypto_download/SKILL.md`](../.agent/skills/crypto_download/SKILL.md)
 for the agent-skill version.
 
 ---
@@ -163,6 +285,48 @@ existing parquet, JSON deleted; (2) delete stray `download_report.json`
 files; (3) normalize any non-canonical parquet in place (skips truly empty
 files); (4) refresh YAML start/end dates from the actual files. Always
 dry-run first on a new exchange.
+
+---
+
+## `download_yf.py`
+
+```
+uv run python tools/download_yf.py
+    (--universe sp500|nasdaq100|russell2000|delisted_stocks | --asset-class Index|Commodity)
+    [--symbols S ...] [--timeframes TF ...] [--since DATE] [--full]
+    [--overlap-days N] [--adjusted] [--sleep-seconds S] [--limit N] [--dry-run]
+```
+
+| Flag | Meaning |
+|---|---|
+| `--universe` / `--asset-class` | What to refresh; exactly one is required |
+| `--symbols` | Subset, which must already exist in that catalog |
+| `--timeframes` | Default `1d`. Yahoo has `1m 5m 15m 30m 1h 1d 1w 1Mo` — no 4h or 8h |
+| `--since` / `--full` | `--full` rebuilds from `--since`; otherwise only prepend and tail windows are requested |
+| `--adjusted` | Store split/dividend-adjusted closes (`auto_adjust`). Default is as-traded |
+| `--dry-run` | Print the plan, fetch nothing, write nothing |
+
+```bash
+uv run python tools/download_yf.py --universe sp500 --timeframes 1d
+uv run python tools/download_yf.py --asset-class Index --timeframes 1d
+uv run python tools/download_yf.py --universe sp500 --symbols AAPL --full --since 2000-01-01
+```
+
+Three Yahoo-specific behaviours worth knowing:
+
+- **An unknown ticker returns an empty frame, not an error.** The tool treats
+  empty as "nothing returned" and writes nothing — no empty parquet, no catalog
+  node. Symbol spelling is translated by `utils.yf.yf_ticker()` (`GSPC` →
+  `^GSPC`, `BRK.B` → `BRK-B`); the stored path always keeps *our* spelling.
+- **Intraday history is capped** (~730 days of 60m, 7 days of 1m) and truncates
+  silently, so the start is clamped before the request.
+- **Adjustment is recorded, not assumed.** Either way the node gets
+  `adjustment: raw|adjusted`, so `close` is interpretable later.
+
+The catalog is written after every series, so interrupting a long run loses at
+most one symbol's registration. Exits non-zero if any series failed.
+
+Macro (`WTB3MS`) is out of scope — a rate series, not OHLCV.
 
 ---
 
@@ -222,7 +386,8 @@ Notes:
 uv run python tools/download_ibkr_stock_overnight.py --universe UNIV... [UNIV...]
     [--symbols SYM...] [--timeframes TF...] [--since DATE] [--full]
     [--host H] [--port P] [--client-id N] [--chunk-days N] [--overlap-days N]
-    [--what-to-show TRADES|ADJUSTED_LAST] [--session all|overnight]
+    [--what-to-show TRADES|ADJUSTED_LAST] [--use-rth auto|always|never]
+    [--session all|overnight]
     [--sleep-seconds S] [--request-timeout S] [--max-chunk-retries N]
     [--limit N] [--resume-log PATH] [--progress-file PATH] [--dry-run]
 ```
@@ -238,6 +403,7 @@ uv run python tools/download_ibkr_stock_overnight.py --universe UNIV... [UNIV...
 | `--chunk-days` | Historical-request chunk size; default adapts per timeframe (`1h`→365d, `4h`/`8h`→730d, `1d`→365d, `1w`→3650d) |
 | `--overlap-days` | Overlap window when appending (default 5) |
 | `--what-to-show` | `TRADES` (default) or `ADJUSTED_LAST` |
+| `--use-rth` | `auto` (default: RTH for 1d/1w, extended for intraday), `always`, or `never` |
 | `--session` | `all` (default) or `overnight` — keep only bars fully outside `09:30–16:00 America/New_York` |
 | `--sleep-seconds` | Delay between requests (default 0.35) |
 | `--request-timeout` | Per-request timeout before treating the chunk as failed (default 60s) |
@@ -275,34 +441,76 @@ dead-connection hang in practice. Prefer one connection at a moderate
 
 ---
 
-## `retry_ibkr_failed_sequentially.py`
+## `download_ibkr_index.py`
 
 ```
-uv run python tools/retry_ibkr_failed_sequentially.py
-    [--port P] [--since DATE] [--base-client-id N] [--sleep-seconds S]
-    [--request-timeout S] [--max-chunk-retries N] [--timeframes 4h|1h ...]
+uv run python tools/download_ibkr_index.py
+    [--symbols SYM ...] [--timeframes 1h|4h|8h|1d|1w ...]
+    [--since DATE] [--full] [--host H] [--port P] [--client-id N]
+    [--chunk-days N] [--overlap-days N] [--what-to-show TRADES|MIDPOINT]
+    [--sleep-seconds S] [--request-timeout S] [--max-chunk-retries N]
+    [--limit N] [--dry-run]
 ```
 
 | Flag | Meaning |
 |---|---|
-| `--port` | IBKR port (default 4001) |
-| `--since` | Start date for retries (default `2020-01-01`) |
-| `--base-client-id` | First client id used; incremented per timeframe (default 90) |
-| `--sleep-seconds` | Delay between requests (default 1.0) |
-| `--request-timeout` | Per-request timeout (default 25s) |
-| `--max-chunk-retries` | Retries per chunk (default 2) |
-| `--timeframes` | Which failed-timeframe sets to retry, in order (default `4h 1h`) |
+| `--symbols` | Index symbols to download (default: every symbol in `INDEX_CONTRACT_MAP`) |
+| `--timeframes` | IBKR bar sizes to request and store (default `1h`) |
+| `--since` / `--full` | Start date for new symbols; `--full` rebuilds from `--since` |
+| `--host` / `--port` / `--client-id` | TWS/Gateway connection (env: `IBKR_HOST`, `IBKR_PORT`, `IBKR_CLIENT_ID` + 1) |
+| `--what-to-show` | `TRADES` (default) or `MIDPOINT` as a fallback if TRADES returns nothing |
+| `--overlap-days` | Re-request window when appending (default 5) |
+| `--limit` | Cap symbols, for smoke tests |
 
 ```bash
-uv run python tools/retry_ibkr_failed_sequentially.py --port 4001 --timeframes 4h 1h
+# 1h bars for every mapped US index
+uv run python tools/download_ibkr_index.py --timeframes 1h --since 2024-01-01
+
+# Smoke test
+uv run python tools/download_ibkr_index.py --symbols GSPC NDX --timeframes 1h --limit 2
 ```
 
-Reads `tmp/ibkr_stock_download_progress_{4h,1h}.json`'s `failures` list for
-the `nasdaq100` universe, then re-invokes
-`download_ibkr_stock_overnight.py` as a subprocess once per timeframe,
-sequentially — never in parallel — writing to its own
-`tmp/ibkr_retry_<tf>_{progress.json,resume.jsonl}`. Stops on the first
-non-zero exit code.
+Only the US indices in `utils.ibkr.INDEX_CONTRACT_MAP` resolve (`GSPC`→SPX/CBOE,
+`DJI`→INDU/CME, `IXIC`→COMP/NASDAQ, `NDX`→NDX/NASDAQ, `RUT`→RUT/RUSSELL,
+`VIX`→VIX/CBOE). Non-US indices need an entry added with the right
+exchange/currency. Writes to
+`price-data/indexes/ibkr/<SYMBOL>/<SYMBOL>-<TF>.parquet` and registers an
+`IBKR` node under `timeframe_dates[tf]`, alongside YF's rather than over it.
+Indices have no real trade volume. Exits non-zero if any symbol failed.
+
+---
+
+## `retry_ibkr_failed_sequentially.py`
+
+```
+uv run python tools/retry_ibkr_failed_sequentially.py
+    [--universe sp500|nasdaq100] [--timeframes TF ...] [--session all|overnight]
+    [--port P] [--since DATE] [--base-client-id N] [--sleep-seconds S]
+    [--request-timeout S] [--max-chunk-retries N] [--dry-run]
+```
+
+| Flag | Meaning |
+|---|---|
+| `--universe` | Universe whose failures to retry (default `nasdaq100`) |
+| `--timeframes` | Retry these timeframes' failures, in order (default `4h 1h`) |
+| `--session` | Session of the original run — selects which progress files to read |
+| `--port` | IBKR port (env: `IBKR_PORT`) |
+| `--base-client-id` | First client id; incremented per timeframe (env: `IBKR_CLIENT_ID` + 20) |
+| `--since` | Start date for retries (default `2020-01-01`) |
+| `--sleep-seconds` | Delay between requests (default 1.0) |
+| `--request-timeout` | Per-request timeout (default 25s) |
+| `--dry-run` | Print the subprocess commands without running them |
+
+```bash
+uv run python tools/retry_ibkr_failed_sequentially.py \
+  --universe nasdaq100 --timeframes 4h 1h --port 4001
+```
+
+Reads the `failures` list from `tmp/ibkr_stock_progress_<session>_<tfs>.json`
+— the files `download_ibkr_stock_overnight.py` actually writes — then
+re-invokes it as a subprocess once per timeframe, sequentially, never in
+parallel, writing to its own `tmp/ibkr_retry_<tf>_{progress.json,resume.jsonl}`.
+Stops on the first non-zero exit code.
 
 ---
 
@@ -332,3 +540,110 @@ uv run python tools/migrate_price_data_layout.py --phase A
 ```
 
 Run phases strictly in order A→G; each assumes the previous phase's output.
+
+---
+
+## `import_futures.py`
+
+```
+uv run python tools/import_futures.py
+    --source DIR --provider NAME --timeframe TF --pattern REGEX
+    [--glob PAT] [--tz ZONE] [--decade YYYY] [--roots ROOT ...] [--apply]
+```
+
+| Flag | Meaning |
+|---|---|
+| `--source` | Directory of per-contract vendor files (searched recursively) |
+| `--provider` | Provider name — becomes the directory under `futures/` |
+| `--timeframe` | The timeframe these files hold, e.g. `1h` |
+| `--pattern` | Regex over the filename capturing `symbol`, or `root` + (`code`\|`month`) + (`year`\|`yy`) |
+| `--tz` | Timezone of naive vendor timestamps, e.g. `America/Chicago` |
+| `--decade` | Decade for ambiguous 1–2 digit years; refuses to guess without it |
+| `--roots` | Only import these roots |
+| `--apply` | Actually write — the default is a dry run |
+
+```bash
+# Check the filename mapping before writing anything
+uv run python tools/import_futures.py --source ~/archive/cme --provider csidata \
+    --timeframe 1h --pattern '(?P<root>[A-Z]{2,3})_(?P<year>\d{4})(?P<month>\d{2})'
+
+# Then import, localising the vendor's exchange-local timestamps
+uv run python tools/import_futures.py --source ~/archive/cme --provider csidata \
+    --timeframe 1h --tz America/Chicago --apply \
+    --pattern '(?P<root>[A-Z]{2,3})_(?P<year>\d{4})(?P<month>\d{2})'
+```
+
+IBKR only retains expired futures for about a year, so deep history has to be
+imported. Files land in `price-data/futures/<provider>/<SYMBOL>/<SYMBOL>-<TF>.parquet`
+and register a provider node under `timeframe_dates[tf]` in `futures.yaml`,
+beside IBKR's rather than over it.
+
+The canonical symbol keys on the **delivery** month, not the expiry date:
+December crude is `CLZ25` even though it stops trading in November. Contracts
+whose last trade date is unknown get one derived from the final bar in the file.
+
+## `download_deribit_options.py`
+
+```
+uv run python tools/download_deribit_options.py
+    [--underlying BTC|ETH] [--timeframes TF ...]
+    (--expiries DATE ... | --quarterlies | --monthlies | --active)
+    [--since YYYY-MM-DD] [--until YYYY-MM-DD]
+    [--strike-grid MIN:MAX:STEP | --strikes K ...] [--rights C P]
+    [--limit N] [--keep-untraded] [--sleep-seconds S] [--dry-run]
+```
+
+| Flag | Meaning |
+|---|---|
+| `--underlying` | Option underlying; `BTC` or `ETH` (add more in `utils/options.py`) |
+| `--timeframes` | Timeframes to store; `1d` by default, `1h` and finer are paged automatically |
+| `--expiries` | Explicit expiry dates, e.g. `2024-12-27` |
+| `--quarterlies` / `--monthlies` | Generate last-Friday expiries; needs `--since` |
+| `--active` | Use the instruments currently on the board instead of probing |
+| `--strike-grid` | Strikes to probe, as `MIN:MAX:STEP` |
+| `--strikes` | Explicit strikes instead of a grid |
+| `--rights` | `C`, `P`, or both (default) |
+| `--keep-untraded` | Keep zero-volume bars; by default they are dropped |
+| `--dry-run` | Discover and report without downloading or writing |
+
+```bash
+# One known expiry, daily bars
+uv run python tools/download_deribit_options.py \
+    --expiries 2024-12-27 --strike-grid 20000:140000:5000
+
+# Every quarterly back to 2019 — check the discovery cost first
+uv run python tools/download_deribit_options.py \
+    --quarterlies --since 2019-01-01 --strike-grid 5000:150000:5000 --dry-run
+
+# The live board, hourly
+uv run python tools/download_deribit_options.py --active --timeframes 1h
+```
+
+Deribit is the only venue that serves bars for **expired** options. OKX, Gate
+and Bybit list thousands of option markets but expose OHLCV for the live board
+only, so they are usable going forward and useless for history. Measured depth
+on Deribit reaches at least March 2019, daily and intraday.
+
+There is no bulk listing of expired instruments — `get_instruments(expired=true)`
+retains about a day — so discovery constructs candidate names and validates each
+with `get_instrument`, which answers for contracts that expired years ago.
+A probe costs roughly 39ms, so grid width is the thing to watch: expiries ×
+strikes × rights is the request count before a single bar is downloaded.
+
+Three properties of the data that the tool handles and a hand-rolled script
+would not:
+
+- **Post-expiry padding.** The chart endpoint pads an expired contract forward
+  to today with flat zero-volume bars — a 2019 contract returns 2731 daily bars
+  of which 191 are real. The request window is clamped to the contract's life
+  and untraded bars are dropped unless `--keep-untraded` is passed.
+- **The 5001-bar cap**, anchored to the *end* of the window. A single request
+  for a year of hourly bars silently returns only the last 5001 hours. Requests
+  are paged backwards from expiry.
+- **Premiums are not in USD.** A BTC option quoting `0.1575` means 0.1575 BTC.
+  `options.yaml` records `quote_currency` and `contract_size` on each entry;
+  the stored prices are left exactly as traded.
+
+Files land in `price-data/options/<provider>/<UNDERLYING>/<SYMBOL>/<SYMBOL>-<TF>.parquet`
+with the canonical symbol `BTC-20241227-60000-C` — an ISO date so a directory
+listing sorts chronologically, which Deribit's own `27DEC24` does not.

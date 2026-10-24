@@ -8,33 +8,22 @@ Always use the project venv. Never use system Python.
 
 ```bash
 uv run python <script>          # preferred for one-off scripts
+uv run pytest                   # test suite (no network, no price-data/ needed)
 source .venv/bin/activate       # for interactive sessions
 ```
 
-## Layout
+## Everything else
 
-- `.agent/` — agent skills, prompts, agentic configs
-- `tools/` — standalone CLI tools (runnable scripts)
-- `utils/` — shared importable Python utilities
-- `price-data/` — symlink to `../price-data/` (data + metadata)
+[`AGENTS.md`](AGENTS.md) is the source of truth: layout, the provider-first
+path rule, the canonical OHLCV schema, catalog shapes, the tool table, and how
+to add a tool or an agent skill. Read it before writing code that touches
+`price-data/`.
 
-See [agents.md](agents.md) for full data conventions, asset class coverage,
-and how to add tools/agent skills.
+[`ROADMAP.md`](ROADMAP.md) has the current work plan and the known gaps —
+check it before assuming something is missing by accident.
 
-## Data root
+Skills live in `.agent/skills/<name>/SKILL.md`, harness-neutral. To use them
+here: `ln -s ../.agent/skills .claude/skills`.
 
-```python
-DATA_ROOT = Path(__file__).parent / "price-data"
-ASSETS_YAML = DATA_ROOT / "assets.yaml"
-```
-
-## Key metadata files
-
-- `price-data/assets.yaml` — master registry (includes per-class YAML files)
-- `price-data/crypto_binance.yaml`, `sp500.yaml`, etc. — per-class catalogs
-
-## Running tools
-
-```bash
-uv run python tools/<tool>.py [args]
-```
+Never hardcode an absolute path: every machine-specific value resolves through
+`utils/config.py` from the environment (`.env.example` lists them).

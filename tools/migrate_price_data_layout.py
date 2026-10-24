@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run python
 """One-off migration: restructure price-data/ to a uniform provider-first layout.
 
-See /home/grenada/.claude/plans/virtual-launching-sphinx.md for the full design.
+One-off script; kept for reference. See ROADMAP.md for current work.
 Run phases in order: A B C D E F G. Each phase is idempotent (safe to re-run)
 and supports --dry-run. Safety rule: copy -> verify -> delete original, never
 the reverse.

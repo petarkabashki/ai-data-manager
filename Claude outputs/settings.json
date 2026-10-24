@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(price-data/**)",
+      "Read(tmp/**)",
+      "Bash(uv run *)",
+      "Bash(uv sync)",
+      "Bash(ls *)",
+      "Bash(find price-data/*)",
+      "Bash(du -sh price-data/*)",
+      "Bash(wc -l *)",
+      "WebSearch",
+      "WebFetch(domain:www.interactivebrokers.com)",
+      "WebFetch(domain:www.interactivebrokers.co.uk)",
+      "WebFetch(domain:docs.coingecko.com)",
+      "WebFetch(domain:www.freqtrade.io)"
+    ]
+  }
+}

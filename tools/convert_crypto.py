@@ -32,13 +32,16 @@ import pyarrow.parquet as pq
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from utils.config import relative_to_repo
 from utils.catalog import (
     CANONICAL_COLS,
     CRYPTO_EXCHANGES,
     DATA_ROOT,
     REPO_ROOT,
+    merge_ohlcv_parquet,
     normalize_ohlcv,
     read_parquet_range,
+    write_parquet_atomic,
     refresh_catalog_dates,
     save_crypto_catalog,
     load_crypto_catalog,
@@ -77,9 +80,7 @@ def convert_parquet(path: Path, dry_run: bool = False) -> str:
         if normed.empty:
             return "empty"
         if not dry_run:
-            tmp = path.with_suffix(".parquet.tmp")
-            normed.to_parquet(tmp, index=False, compression="snappy")
-            tmp.replace(path)
+            write_parquet_atomic(normed, path)
         return f"converted({list(schema_names)[:2]}...)"
     except Exception as e:
         return f"ERROR: {e}"
@@ -116,35 +117,15 @@ def json_to_parquet(json_path: Path, dry_run: bool = False) -> str:
 
     if dry_run:
         action = "would_create" if not dst.exists() else "would_merge"
-        return f"{action} → {dst.relative_to(REPO_ROOT)}"
-
-    old_rows = 0
-    if dst.exists():
-        try:
-            existing = normalize_ohlcv(pd.read_parquet(dst))
-            old_rows = len(existing)
-            merged = (
-                pd.concat([existing, new_df])
-                .drop_duplicates(subset=["timestamp"])
-                .sort_values("timestamp")
-                .reset_index(drop=True)
-            )
-        except Exception as e:
-            return f"ERROR merge: {e}"
-    else:
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        merged = new_df
+        return f"{action} → {relative_to_repo(dst)}"
 
     try:
-        tmp = dst.with_suffix(".parquet.tmp")
-        merged.to_parquet(tmp, index=False, compression="snappy")
-        tmp.replace(dst)
+        old_rows, new_rows = merge_ohlcv_parquet(new_df, dst)
     except Exception as e:
-        return f"ERROR write: {e}"
+        return f"ERROR merge: {e}"
 
     json_path.unlink()
-    added = len(merged) - old_rows
-    return f"json→parquet ({old_rows}→{len(merged)}, +{added} rows)"
+    return f"json→parquet ({old_rows}→{new_rows}, +{new_rows - old_rows} rows)"
 
 
 def find_parquet_files(exchange: str | None, symbol: str | None) -> list[Path]:

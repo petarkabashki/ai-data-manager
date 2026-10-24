@@ -11,7 +11,15 @@
       "WebSearch",
       "WebFetch(domain:www.interactivebrokers.com)",
       "WebFetch(domain:www.interactivebrokers.co.uk)",
-      "Bash(ls -la /home/grenada/work/ai-data-manager/price-data/ | head -30; echo \"---\"; head -40 /home/grenada/work/ai-data-manager/price-data/assets.yaml; echo \"---sizes---\"; du -sh /home/grenada/work/ai-data-manager/price-data/* 2>/dev/null)"
+      "Bash(ls -la /home/grenada/work/ai-data-manager/price-data/ | head -30; echo \"---\"; head -40 /home/grenada/work/ai-data-manager/price-data/assets.yaml; echo \"---sizes---\"; du -sh /home/grenada/work/ai-data-manager/price-data/* 2>/dev/null)",
+      "Bash(cat /home/grenada/work/ai-data-manager/price-data/indexes.yaml)",
+      "Bash(uv run *)",
+      "Bash(uv run python -c ' *)",
+      "Bash(find price-data/market-cap -maxdepth 4 -iname \"*top*\" | head -30; echo ---; ls price-data/market-cap/coingecko/exports 2>/dev/null | head -30)",
+      "Read(//home/grenada/work/price-data/market-cap/coingecko/exports/**)",
+      "Bash(ls price-data/crypto-futures/binance/ | wc -l; ls price-data/crypto-futures/binance/ | head -60)",
+      "Read(//home/grenada/work/price-data/crypto-futures/binance/**)",
+      "Bash(cat /home/grenada/work/ai-data-manager/price-data/crypto_futures_binance.yaml 2>/dev/null | head -60; echo ---LINES---; wc -l /home/grenada/work/ai-data-manager/price-data/crypto_futures_binance.yaml)"
     ]
   }
 }

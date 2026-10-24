@@ -18,6 +18,7 @@ routing through normalize_ohlcv().
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -25,16 +26,8 @@ import pyarrow.parquet as pq
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from utils.catalog import CANONICAL_COLS, DATA_ROOT, REPO_ROOT
-
-CANONICAL_TYPES = {
-    "timestamp": "int64",
-    "open": "double",
-    "high": "double",
-    "low": "double",
-    "close": "double",
-    "volume": "double",
-}
+from utils.catalog import CANONICAL_ARROW_TYPES, CANONICAL_COLS, DATA_ROOT, REPO_ROOT
+from utils.report import allow_broken_pipe
 
 OHLCV_ROOTS = [
     DATA_ROOT / "cryptos",
@@ -43,6 +36,14 @@ OHLCV_ROOTS = [
     DATA_ROOT / "indexes",
     DATA_ROOT / "commodities",
 ]
+
+
+def _display_path(path: Path) -> str:
+    """Repo-relative when possible, absolute otherwise."""
+    try:
+        return str(path.resolve().relative_to(REPO_ROOT))
+    except ValueError:
+        return str(path)
 
 
 def check_file(path: Path) -> str | None:
@@ -60,7 +61,7 @@ def check_file(path: Path) -> str | None:
 
     for name in CANONICAL_COLS:
         actual = str(schema.field(name).type)
-        expected = CANONICAL_TYPES[name]
+        expected = CANONICAL_ARROW_TYPES[name]
         if actual != expected:
             return f"{name}: dtype {actual!r} != {expected!r}"
 
@@ -68,17 +69,23 @@ def check_file(path: Path) -> str | None:
 
 
 def main() -> None:
+    allow_broken_pipe()
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--path", help="Limit to one subdirectory (e.g. price-data/commodities) instead of all OHLCV classes")
+    p.add_argument("--json", action="store_true", help="Emit machine-readable JSON instead of a table")
     args = p.parse_args()
 
-    roots = [Path(args.path)] if args.path else OHLCV_ROOTS
+    # Resolve --path so a relative argument still prints (relative_to(REPO_ROOT)
+    # on a relative path raised ValueError — only on the mismatch branch, i.e.
+    # exactly when the output was needed).
+    roots = [Path(args.path).resolve()] if args.path else OHLCV_ROOTS
     all_files: list[Path] = []
     for root in roots:
         if root.exists():
             all_files.extend(root.rglob("*.parquet"))
 
-    print(f"Checking {len(all_files)} parquet file(s) against canonical OHLCV schema…\n")
+    if not args.json:
+        print(f"Checking {len(all_files)} parquet file(s) against canonical OHLCV schema…\n")
 
     mismatches: list[tuple[Path, str]] = []
     for f in sorted(all_files):
@@ -86,14 +93,27 @@ def main() -> None:
         if issue:
             mismatches.append((f, issue))
 
-    if not mismatches:
+    if args.json:
+        json.dump(
+            {
+                "checked": len(all_files),
+                "mismatches": [
+                    {"path": _display_path(f), "issue": issue} for f, issue in mismatches
+                ],
+            },
+            sys.stdout,
+            indent=2,
+        )
+        sys.stdout.write("\n")
+    elif not mismatches:
         print("All files match the canonical schema.")
-        return
+    else:
+        print(f"{len(mismatches)} file(s) do not match:\n")
+        for f, issue in mismatches:
+            print(f"  {_display_path(f)}: {issue}")
 
-    print(f"{len(mismatches)} file(s) do not match:\n")
-    for f, issue in mismatches:
-        print(f"  {f.relative_to(REPO_ROOT)}: {issue}")
-    sys.exit(1)
+    if mismatches:
+        sys.exit(1)
 
 
 if __name__ == "__main__":

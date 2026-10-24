@@ -1,20 +1,28 @@
 #!/usr/bin/env -S uv run python
-"""Query available price data — assets, timeframes, date ranges, and staleness.
+"""Query what data exists — any asset class, any provider.
+
+Answers "what do we have for X, how far back does it go, and how stale is it"
+from the catalogs. This used to cover crypto only, despite the name: stocks,
+indexes, commodities and macro were unqueryable.
 
 Usage examples:
-  uv run python tools/query.py
-  uv run python tools/query.py --exchange binance
-  uv run python tools/query.py --exchange binance --timeframe 1d
-  uv run python tools/query.py --exchange binance --symbol BTC_USDT
-  uv run python tools/query.py --stale-days 30          # only show stale entries
-  uv run python tools/query.py --asset-class Crypto
-  uv run python tools/query.py --list-exchanges
-  uv run python tools/query.py --list-symbols --exchange binance --timeframe 1d
+  uv run python tools/query.py --catalog crypto_binance --timeframe 1d
+  uv run python tools/query.py --asset-class Stock --symbol AAPL
+  uv run python tools/query.py --provider IBKR --timeframe 1h
+  uv run python tools/query.py --stale-days 30            # only stale series
+  uv run python tools/query.py --list-catalogs
+  uv run python tools/query.py --list-symbols --asset-class Index
+  uv run python tools/query.py --asset-class Crypto --json
+
+By default dates come from the catalog, which is fast. `--rescan` reads each
+parquet file instead — authoritative, but it opens every file, so it is opt-in
+rather than the default it used to be (unusable across 5,000 symbols).
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -22,150 +30,173 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from utils.catalog import (
-    CRYPTO_EXCHANGES,
-    DATA_ROOT,
-    REPO_ROOT,
-    load_crypto_catalog,
+    catalog_registry,
+    iter_timeframe_nodes,
     read_parquet_range,
+    resolve_from_repo,
 )
-from utils.data import load_assets
+from utils.planning import days_stale
+from utils.report import allow_broken_pipe, print_table
+
+ASSET_CLASSES = ["Crypto", "Crypto Futures", "Stock", "Index", "Commodity", "Macro"]
 
 
-def _today_str() -> str:
-    return datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
+def select_catalogs(args, parser) -> list:
+    specs = catalog_registry()
+    if args.catalog:
+        names = set(args.catalog)
+        unknown = names - {s.name for s in specs}
+        if unknown:
+            parser.error(f"unknown catalog(s): {', '.join(sorted(unknown))}")
+        specs = [s for s in specs if s.name in names]
+    if args.asset_class:
+        specs = [s for s in specs if s.asset_class in args.asset_class]
+    return specs
 
 
-def _days_stale(end_date_str: str | None) -> int | None:
-    if not end_date_str:
-        return None
-    try:
-        end = datetime.strptime(end_date_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-        return (datetime.now(tz=timezone.utc) - end).days
-    except ValueError:
-        return None
+def collect(args, parser) -> list[dict]:
+    """One row per (catalog, symbol, timeframe, provider node)."""
+    symbols = set(args.symbols or ([args.symbol] if args.symbol else []))
+    timeframes = set(args.timeframes or ([args.timeframe] if args.timeframe else []))
+    rows: list[dict] = []
 
-
-def _fmt_row(cols: list, widths: list[int]) -> str:
-    return "  ".join(str(c).ljust(w) for c, w in zip(cols, widths))
-
-
-def _print_table(headers: list[str], rows: list[list], sep: bool = True) -> None:
-    widths = [len(h) for h in headers]
-    for row in rows:
-        for i, cell in enumerate(row):
-            widths[i] = max(widths[i], len(str(cell)))
-    print(_fmt_row(headers, widths))
-    if sep:
-        print("  ".join("-" * w for w in widths))
-    for row in rows:
-        print(_fmt_row(row, widths))
-
-
-def cmd_list_exchanges(args: argparse.Namespace) -> None:
-    rows = []
-    for ex in CRYPTO_EXCHANGES:
-        cat = load_crypto_catalog(ex)
-        rows.append([ex, len(cat)])
-    _print_table(["Exchange", "Symbols"], rows)
-
-
-def cmd_list_symbols(args: argparse.Namespace) -> None:
-    exchanges = [args.exchange] if args.exchange else CRYPTO_EXCHANGES
-    rows = []
-    for ex in exchanges:
-        cat = load_crypto_catalog(ex)
-        for key, entry in cat.items():
-            sym = entry.get("name", key)
-            tfs = entry.get("timeframes", [])
-            if args.timeframe and args.timeframe not in tfs:
+    for spec in select_catalogs(args, parser):
+        for key, entry in spec.load().items():
+            if not isinstance(entry, dict):
                 continue
-            print(sym)
-    return
-
-
-def cmd_query(args: argparse.Namespace) -> None:
-    min_stale = args.stale_days
-
-    # --- crypto ---
-    exchanges = [args.exchange] if args.exchange else CRYPTO_EXCHANGES
-    rows = []
-
-    for ex in exchanges:
-        cat = load_crypto_catalog(ex)
-        for key, entry in cat.items():
-            sym = entry.get("name", key)
-            if args.symbol and sym != args.symbol:
+            name = entry.get("name", key)
+            if symbols and name not in symbols:
                 continue
-            tfs = entry.get("timeframes", [])
-            td = entry.get("timeframe_dates", {})
 
-            # filter to requested timeframe
-            if args.timeframe:
-                if args.timeframe not in td:
-                    continue
-                tf_items = {args.timeframe: td[args.timeframe]}
-            else:
-                tf_items = td
-
-            for tf, info in tf_items.items():
-                start = info.get("start_date", "")
-                end = info.get("end_date", "")
-                fp_str = info.get("file_path", "")
-
-                # Use actual file dates if catalog is stale/missing
-                if fp_str and fp_str.endswith(".parquet"):
-                    fp = REPO_ROOT / fp_str
-                    result = read_parquet_range(fp)
-                    if result:
-                        start, end, _ = result
-
-                stale = _days_stale(end)
-                if min_stale is not None and (stale is None or stale < min_stale):
+            for timeframe, node_key, node in iter_timeframe_nodes(entry):
+                if timeframes and timeframe not in timeframes:
                     continue
 
-                rows.append([
-                    ex,
-                    sym,
-                    tf,
-                    start or "—",
-                    end or "—",
-                    f"{stale}d" if stale is not None else "—",
-                ])
+                provider = (
+                    node.get("provider")
+                    or (node_key.split(":")[0] if node_key else None)
+                    or entry.get("provider")
+                )
+                if args.provider and (provider or "").lower() != args.provider.lower():
+                    continue
+
+                start, end = node.get("start_date"), node.get("end_date")
+                rows_count = None
+                if args.rescan and node.get("file_path"):
+                    actual = read_parquet_range(resolve_from_repo(node["file_path"]))
+                    if actual:
+                        start, end, rows_count = actual
+
+                stale = days_stale(end)
+                if args.stale_days is not None and (stale is None or stale < args.stale_days):
+                    continue
+
+                rows.append(
+                    {
+                        "catalog": spec.name,
+                        "asset_class": spec.asset_class,
+                        "symbol": name,
+                        "timeframe": timeframe,
+                        "provider": provider,
+                        "session": node.get("session"),
+                        "start_date": start,
+                        "end_date": end,
+                        "rows": rows_count,
+                        "stale_days": stale,
+                        "adjustment": node.get("adjustment"),
+                        "volume_basis": node.get("volume_basis"),
+                        "file_path": node.get("file_path"),
+                    }
+                )
+
+    rows.sort(key=lambda r: (r["catalog"], r["symbol"], r["timeframe"], r["provider"] or ""))
+    return rows
+
+
+def cmd_list_catalogs(args, parser) -> None:
+    table = []
+    for spec in select_catalogs(args, parser):
+        catalog = spec.load()
+        series = sum(len(iter_timeframe_nodes(e)) for e in catalog.values() if isinstance(e, dict))
+        table.append([spec.name, spec.asset_class, len(catalog), series])
+
+    if args.json:
+        json.dump(
+            [
+                {"catalog": c, "asset_class": a, "symbols": s, "series": n}
+                for c, a, s, n in table
+            ],
+            sys.stdout, indent=2,
+        )
+        sys.stdout.write("\n")
+        return
+
+    print_table(["Catalog", "Asset class", "Symbols", "Series"], table)
+    print(f"\n{sum(r[2] for r in table)} symbols, {sum(r[3] for r in table)} series")
+
+
+def main() -> None:
+    allow_broken_pipe()
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--catalog", nargs="+", help="Catalogs by name (sp500, indexes, crypto_binance…)")
+    p.add_argument("--asset-class", nargs="+", choices=ASSET_CLASSES, help="Filter by asset class")
+    p.add_argument("--symbol", "-s", help="Single symbol")
+    p.add_argument("--symbols", nargs="+", help="Multiple symbols")
+    p.add_argument("--timeframe", "-t", help="Single timeframe (e.g. 1d)")
+    p.add_argument("--timeframes", nargs="+", help="Multiple timeframes")
+    p.add_argument("--provider", help="Filter by provider (YF, IBKR, binance…), case-insensitive")
+    p.add_argument("--stale-days", type=int, metavar="N", help="Only series stale by >= N days")
+    p.add_argument("--rescan", action="store_true",
+                   help="Read dates from the parquet files instead of the catalog (slow, authoritative)")
+    p.add_argument("--list-catalogs", action="store_true", help="List catalogs with symbol/series counts")
+    p.add_argument("--list-symbols", action="store_true", help="Print matching symbol names, one per line")
+    p.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    p.add_argument("--limit", type=int, default=200, help="Max rows to print (default 200; --json is unlimited)")
+    args = p.parse_args()
+
+    if args.list_catalogs:
+        cmd_list_catalogs(args, p)
+        return
+
+    rows = collect(args, p)
+
+    if args.list_symbols:
+        seen: list[str] = []
+        for row in rows:
+            if row["symbol"] not in seen:
+                seen.append(row["symbol"])
+        if args.json:
+            json.dump(seen, sys.stdout, indent=2)
+            sys.stdout.write("\n")
+        else:
+            print("\n".join(seen))
+        return
+
+    if args.json:
+        json.dump({"count": len(rows), "series": rows}, sys.stdout, indent=2)
+        sys.stdout.write("\n")
+        return
 
     if not rows:
         print("No results.")
         return
 
-    if args.list_symbols:
-        seen = set()
-        for r in rows:
-            k = r[1]
-            if k not in seen:
-                print(k)
-                seen.add(k)
-        return
-
-    rows.sort(key=lambda r: (r[0], r[2], -(int(r[5][:-1]) if r[5] != "—" else 0)))
-    _print_table(["Exchange", "Symbol", "TF", "Start", "End", "Stale"], rows)
-    print(f"\n{len(rows)} entries")
-
-
-def main() -> None:
-    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--exchange", "-e", choices=CRYPTO_EXCHANGES, help="Filter by exchange")
-    p.add_argument("--symbol", "-s", help="Filter by symbol (e.g. BTC_USDT)")
-    p.add_argument("--timeframe", "-t", help="Filter by timeframe (e.g. 1d, 4h)")
-    p.add_argument("--stale-days", type=int, metavar="N", help="Only show entries stale by >= N days")
-    p.add_argument("--list-exchanges", action="store_true", help="List exchanges and symbol counts")
-    p.add_argument("--list-symbols", action="store_true", help="Print only symbol names (one per line)")
-    args = p.parse_args()
-
-    if args.list_exchanges:
-        cmd_list_exchanges(args)
-    elif args.list_symbols and not args.exchange and not args.timeframe:
-        cmd_list_symbols(args)
-    else:
-        cmd_query(args)
+    shown = rows[: args.limit]
+    print_table(
+        ["Catalog", "Symbol", "TF", "Provider", "Start", "End", "Stale"],
+        [
+            [
+                r["catalog"], r["symbol"], r["timeframe"],
+                (r["provider"] or "—") + (f":{r['session']}" if r.get("session") else ""),
+                r["start_date"] or "—", r["end_date"] or "—",
+                f"{r['stale_days']}d" if r["stale_days"] is not None else "—",
+            ]
+            for r in shown
+        ],
+    )
+    print(f"\n{len(rows)} series" + (f" (showing {len(shown)})" if len(shown) < len(rows) else ""))
+    if not args.rescan:
+        print("Dates are from the catalog; pass --rescan to read the files themselves.")
 
 
 if __name__ == "__main__":
