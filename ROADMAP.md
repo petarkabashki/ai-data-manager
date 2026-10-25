@@ -16,7 +16,7 @@ schema. Every epic is constrained by them.
 | [E3](#e3--a-test-suite-for-the-normalization-core) | Test suite for the normalization core | done |
 | [E4](#e4--configuration-and-portability) | Configuration & portability | done |
 | [E5](#e5--calendar-aware-gap-detection) | Calendar-aware gap detection | done |
-| [E6](#e6--yahoo-finance-ingestion) | Yahoo Finance ingestion | done (network leg unverified) |
+| [E6](#e6--yahoo-finance-ingestion) | Yahoo Finance ingestion | done |
 | [E7](#e7--machine-readable-tool-surface) | Machine-readable tool surface | done |
 | [E8](#e8--one-source-of-truth-for-docs-and-skills) | One source of truth for docs & skills | done |
 | [E9](#e9--freshness-every-catalog-on-a-schedule) | Freshness: every catalog on a schedule | in progress |
@@ -346,6 +346,12 @@ bybit and bitget spot had fallen behind because nothing ever scheduled them.
 - Intraday crypto (binance 1m–30m for 436 pairs, bybit for 16 pairs, kucoin's
   single 15m series). **Owner decision**: what to schedule, and how often.
 - IBKR catalogs. **Blocked**: there is no gateway on the data host.
+- Alerts (`pdm/alerts.py`), so a schedule that breaks gets noticed. A failed
+  or timed-out job raises an alert. A failing schedule alerts once, and again
+  when it recovers. A check every 6h flags series that were fresh and have
+  fallen 4+ days behind. Alerts go to `tmp/pdm_alerts.jsonl`, `server/alert`,
+  `pdm_client alerts`, and optionally `PDM_NOTIFY_CMD`. **Done 2026-10-25**;
+  the notify channel is the owner's choice.
 
 **Done when.** `status.py` reports no daily catalog more than one trading day
 old, except IBKR, without anyone running a download by hand.
@@ -395,8 +401,14 @@ deploy can restart `pdm` without waiting for the queue to drain.
   decision: date-labelled bars (1d/1w/1Mo) are stamped 00:00 UTC of their
   date. `download_yf` now writes that, and the merge (`daily=True`) collapses
   any two stamps of one date. `tools/fix_daily_stamps.py` rewrote 2,488
-  files, dropping 12,187 duplicate rows, with the originals in
-  `price-data.stamp-backup-2026-10-25` beside the data root on the host.
+  files, dropping 12,187 duplicate rows (the owner deleted the backup).
+- The stamp rule now holds for every provider. `merge_ohlcv_parquet`
+  restamps any `-1d`/`-1w`/`-1Mo` file on write, `check_schema.py` flags a bar
+  off 00:00 UTC or a repeated date, and `fix_daily_stamps.py` takes any
+  provider. **Fixed 2026-10-25**: 56 bitget monthly files (stamped 16:00 UTC,
+  midnight UTC+8) and 2 Deribit dailies (08:00 UTC). A full sweep of 28,095
+  files is clean. The originals (716K) are in
+  `price-data.stamp-backup-2026-10-25` on the host.
 - 22 bitget pairs have no `1w` series, and a probe (VET/USDT) returned 0 rows.
   **Owner decision**: drop `1w` for bitget, or find another source.
 - Yahoo adjustment differs per file: sp500 has 429 raw and 69 adjusted,
@@ -417,7 +429,8 @@ adjustment convention.
   run.
 - ai-quant: 18 files still use the old paths. **Owner decision**: fix it or
   archive it.
-- py-qwant: `qwant/data/sync.py` no longer does anything and can go.
+- py-qwant: `qwant/data/sync.py` no longer did anything. **Deleted** in
+  py-qwant.
 
 **Done when.** No active repo reads a path the old layout used.
 
