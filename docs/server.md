@@ -178,6 +178,24 @@ Both are managed while the server runs, and every change is written back to
 | `live_add` / `live_remove` | Add/remove symbols; `live_remove` without symbols drops the subscription |
 | `coverage symbol` | Stored series + schedules covering it + live feeds |
 
+### Reading the files directly: a read-only mount
+
+Projects that read parquet through a `price-data -> ../price-data` symlink
+keep working without code changes if a client machine mounts the host's data
+read-only at `~/work/price-data`. The template is `deploy/pdm-data.service`
+(sshfs, a systemd user unit). It is skipped, not failed, unless
+`~/work/price-data` exists and is empty, so it can never hide a local copy:
+
+    mv ~/work/price-data ~/work/price-data.retired-<date> && mkdir ~/work/price-data
+    systemctl --user enable --now pdm-data
+
+Reads run at sshfs speed over Tailscale: about 0.2 s for a daily series,
+about 11 s for the 120 MB BTC 1m file on a cold cache, and fast once cached.
+Writes fail with "Read-only file system". Data changes go through PDM
+refreshes on the host. Anything that wrote into the tree from a client must
+move: py-qwant's `scripts/sync_funding_rates.py`, which writes
+`crypto-futures/<venue>/<SYM>/<SYM>-funding.parquet`, is the one live case.
+
 ## Protocol
 
 Every message is a multipart message: a JSON control frame, plus optionally an
