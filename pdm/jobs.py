@@ -23,7 +23,9 @@ rewrites the file (atomically) with the queued and running jobs, so even a
 SIGKILL leaves an up-to-date copy. On start they are queued again in their
 original order, a job that was running going first in its lane. Rerunning one
 that was killed is safe because every tool resumes from what is on disk and
-merges atomically. Finished jobs are not kept; their logs are.
+merges atomically. The newest `keep_finished` finished jobs are saved too,
+results included, so a client polling an id across a restart still gets
+its outcome.
 """
 
 from __future__ import annotations
@@ -48,6 +50,7 @@ TOOL_LANES: dict[str, str] = {
     "download_ibkr_index": "equity",
     "retry_ibkr_failed_sequentially": "equity",
     "check_catalog": "equity",          # --fix writes catalogs
+    "fix_daily_stamps": "equity",       # rewrites the Yahoo files download_yf writes
     "download_crypto": "crypto",
     "download_funding": "crypto",       # writes the crypto_futures catalogs too
     "convert_crypto": "crypto",
@@ -117,6 +120,7 @@ class JobManager:
         python: str = sys.executable,
         history: int = 500,
         state_path: Path | None = None,
+        keep_finished: int = 50,
     ):
         self.tools_dir = Path(tools_dir)
         self.log_dir = Path(log_dir)
@@ -130,6 +134,7 @@ class JobManager:
         self._workers: dict[str, threading.Thread] = {}
         self._stopping = False
         self.state_path = Path(state_path) if state_path else None
+        self.keep_finished = keep_finished
         self._load()
 
     # --- public API -----------------------------------------------------------
@@ -315,11 +320,14 @@ class JobManager:
     # --- persistence ----------------------------------------------------------
 
     def _save(self) -> None:
-        """Write the unfinished jobs to `state_path`. Call with `_cond` held."""
+        """Write the unfinished jobs, and the newest finished ones, to
+        `state_path`. Call with `_cond` held."""
         if not self.state_path:
             return
-        keep = [self._jobs[i].public() for i in self._order
-                if i in self._jobs and self._jobs[i].state not in TERMINAL]
+        jobs = [self._jobs[i] for i in self._order if i in self._jobs]
+        finished = [j for j in jobs if j.state in TERMINAL]
+        recent = {j.id for j in finished[-self.keep_finished:]} if self.keep_finished else set()
+        keep = [j.public() for j in jobs if j.state not in TERMINAL or j.id in recent]
         try:
             self.state_path.parent.mkdir(parents=True, exist_ok=True)
             tmp = self.state_path.with_name(self.state_path.name + ".tmp")
@@ -355,7 +363,7 @@ class JobManager:
                 job.started_at = job.finished_at = job.returncode = job.result = None
                 job.log_path = None
                 job.error = None
-            if job.state == "queued":
+            if job.state == "queued" or job.state in TERMINAL:
                 restored.append((was_running, job))
         # Interrupted runs were at the head of their lane: put them back there.
         restored.sort(key=lambda r: (not r[0], r[1].submitted_at))
@@ -363,5 +371,6 @@ class JobManager:
             for _, job in restored:
                 self._jobs[job.id] = job
                 self._order.append(job.id)
-                self._queues.setdefault(job.lane, deque()).append(job.id)
+                if job.state == "queued":
+                    self._queues.setdefault(job.lane, deque()).append(job.id)
             self._save()

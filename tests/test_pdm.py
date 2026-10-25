@@ -135,7 +135,7 @@ def test_yf_and_ibkr_share_a_lane():
 
 def _fake_tools(tmp_path: Path) -> Path:
     tools = tmp_path / "tools"
-    tools.mkdir()
+    tools.mkdir(parents=True)
     (tools / "status.py").write_text("import sys; print('ok', sys.argv[1:])\n")
     (tools / "check_gaps.py").write_text("import sys; sys.exit(3)\n")
     (tools / "download_yf.py").write_text("import time; time.sleep(30)\n")
@@ -186,7 +186,8 @@ def test_unfinished_jobs_survive_a_restart_in_order(tmp_path):
     assert jm.get(running.id).state == "interrupted"     # not "failed": the tool never finished
 
     again = JobManager(tools, tmp_path / "logs", state_path=state)
-    assert [j["id"] for j in again.list()] == [waiting.id, running.id]   # finished jobs are not kept
+    assert {j["id"] for j in again.list()} == {done.id, waiting.id, running.id}
+    assert again.get(done.id).state == "succeeded"       # a finished job's outcome survives too
     first, second = again.get(running.id), again.get(waiting.id)
     assert first.state == second.state == "queued"
     assert (first.requeued, second.requeued) == (1, 0)
@@ -199,11 +200,23 @@ def test_unfinished_jobs_survive_a_restart_in_order(tmp_path):
     again.cancel(waiting.id)
     again.cancel(running.id)
     _wait_state(again, running.id, {"cancelled"})
-    assert json.loads(state.read_text())["jobs"] == []
+    assert {j["state"] for j in json.loads(state.read_text())["jobs"]} == {"succeeded", "cancelled"}
     again.stop()
 
 
-def test_restore_after_a_crash_drops_what_cannot_run(tmp_path, capsys):
+def test_only_the_newest_finished_jobs_are_saved(tmp_path):
+    state = tmp_path / "pdm_jobs.json"
+    jm = JobManager(_fake_tools(tmp_path), tmp_path / "logs", state_path=state, keep_finished=2)
+    ids = [jm.submit("status", [str(i)]).id for i in range(3)]
+    for job_id in ids:
+        _wait_state(jm, job_id, {"succeeded"})
+    jm.stop()
+    assert [j["id"] for j in json.loads(state.read_text())["jobs"]] == ids[1:]
+    again = JobManager(_fake_tools(tmp_path / "b"), tmp_path / "logs", state_path=state)
+    assert again.get(ids[2]).returncode == 0 and again.get(ids[0]) is None
+
+
+def test_restore_after_a_crash_settles_or_drops_what_cannot_run(tmp_path, capsys):
     state = tmp_path / "pdm_jobs.json"
     base = {"lane": "equity", "submitted_at": 1.0, "args": []}
     state.write_text(json.dumps({"version": 1, "jobs": [
@@ -213,13 +226,13 @@ def test_restore_after_a_crash_drops_what_cannot_run(tmp_path, capsys):
         {**base, "id": "later", "tool": "status", "state": "queued", "future_field": 1},
     ]}))
     jm = JobManager(_fake_tools(tmp_path), tmp_path / "logs", state_path=state)
-    assert [j["id"] for j in jm.list()] == ["later", "killed"]
+    assert [j["id"] for j in jm.list()] == ["later", "cancelling", "killed"]
     assert jm.get("killed").requeued == 1 and jm.get("later").lane == "audit"
+    assert jm.get("killed").state == "queued" and jm.get("cancelling").state == "cancelled"
     assert "dropping saved job gone" in capsys.readouterr().err
-    assert {j["id"] for j in json.loads(state.read_text())["jobs"]} == {"killed", "later"}
+    assert {j["id"] for j in json.loads(state.read_text())["jobs"]} == {"killed", "cancelling", "later"}
 
     state.write_text("{not json")
-    (tmp_path / "b").mkdir()
     assert JobManager(_fake_tools(tmp_path / "b"), tmp_path / "logs", state_path=state).list() == []
 
 

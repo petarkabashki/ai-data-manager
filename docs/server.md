@@ -310,7 +310,7 @@ Jobs run in lanes, serial within each lane:
 
 | Lane | Tools | Why together |
 |---|---|---|
-| `equity` | download_yf, download_ibkr_*, retry_ibkr_failed_sequentially, check_catalog | They load, edit and save the same stock/index catalogs |
+| `equity` | download_yf, download_ibkr_*, retry_ibkr_failed_sequentially, check_catalog, fix_daily_stamps | They load, edit and save the same stock/index catalogs |
 | `crypto` | download_crypto, download_funding, convert_crypto | crypto catalogs |
 | `options` / `marketcap` / `futures` | one tool each | disjoint catalogs |
 | `audit` | status, query, check_gaps, check_schema, check_splits | read-only, so never queued behind a download |
@@ -324,7 +324,8 @@ an update. Prefer `pdm_client.py submit` on the data host too.
 server queues them again, keeping their ids. A job that was running goes back
 to the front of its lane with `requeued` incremented and starts over. The
 tools resume from what is already on disk, so starting over only re-fetches
-the tail. A clean stop marks that job `interrupted`, not `failed`. Finished
-jobs aren't kept across a restart, but their logs in `$TMP_ROOT/pdm-jobs/`
-are. A deploy can therefore restart `pdm` at any time. The only cost is the
+the tail. A clean stop marks that job `interrupted`, not `failed`. The 50
+newest finished jobs are saved too, results included, so a client polling an
+id across a restart still gets its outcome. Older ones survive only as logs
+in `$TMP_ROOT/pdm-jobs/`. A deploy can therefore restart `pdm` at any time. The only cost is the
 running job's progress since its last write.
