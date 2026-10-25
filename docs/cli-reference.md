@@ -19,6 +19,8 @@ first when one is offered.
 | [`download_market_caps.py`](#download_market_capspy) | write | Fetch CoinGecko market-cap history + snapshot/top-N exports |
 | [`download_ibkr_stock_overnight.py`](#download_ibkr_stock_overnightpy) | write | Download IBKR US-stock bars for sp500/nasdaq100 |
 | [`retry_ibkr_failed_sequentially.py`](#retry_ibkr_failed_sequentiallypy) | write | Re-run failed IBKR symbols one connection at a time |
+| [`pdm_server.py`](#pdm_serverpy) | server | Serve price-data over ZeroMQ; run jobs; broadcast bars |
+| [`pdm_client.py`](#pdm_clientpy) | client | Query/fetch/submit/watch against a PDM server |
 | [`migrate_price_data_layout.py`](#migrate_price_data_layoutpy) | write (one-off) | 2026-07 provider-first layout migration, phases A–G |
 
 ---
@@ -647,3 +649,79 @@ would not:
 Files land in `price-data/options/<provider>/<UNDERLYING>/<SYMBOL>/<SYMBOL>-<TF>.parquet`
 with the canonical symbol `BTC-20241227-60000-C` — an ISO date so a directory
 listing sorts chronologically, which Deribit's own `27DEC24` does not.
+
+## `pdm_server.py`
+
+```
+uv run python tools/pdm_server.py [--bind HOST] [--req-port N] [--pub-port N]
+    [--config pdm.yaml] [--scan-seconds S] [--broadcast-max-rows N] [--check] [-v]
+```
+
+| Flag | Meaning |
+|---|---|
+| `--bind` | Interface to bind; default `PDM_BIND_HOST` (`0.0.0.0`). Use the Tailscale IP to stay on the tailnet |
+| `--req-port` / `--pub-port` | Request/reply and broadcast ports; default 5555 / 5556 |
+| `--http-port` | Read-only HTTP gateway (reads, audits, refresh previews; no token); default `PDM_HTTP_PORT` (5580), 0 disables it |
+| `--config` | Schedules and live subscriptions; default `PDM_CONFIG` (`pdm.yaml`). See `pdm.example.yaml`. The server rewrites it when clients change schedules or live feeds (comments are not kept) |
+| `--scan-seconds` | How often to diff the tree for writes made outside the server (default 60) |
+| `--broadcast-max-rows` | Cap on rows per bar broadcast; bigger updates carry `truncated: true` |
+| `--check` | Validate the config, print the schedules' next runs, and exit |
+
+Runs as the `pdm` systemd user unit on the data host — see
+[`server.md`](server.md) for the protocol, topics and deployment.
+
+## `pdm_client.py`
+
+```
+uv run python tools/pdm_client.py [--host H] [--req-port N] [--pub-port N]
+    [--token T] [--json] COMMAND ...
+```
+
+| Command | Does |
+|---|---|
+| `ping` | Server facts: index/watch readiness, lanes, auth |
+| `catalogs` | Every catalog with symbol and series counts |
+| `series [--catalog --asset-class --symbol --timeframe --provider --session --stale-days]` | Coverage rows, like `query.py` |
+| `bars (filters \| --path P) [--start --end --limit --csv F --parquet F]` | One series as the canonical frame; filters must match exactly one series |
+| `status [--catalog --stale-days]` | `status.py --json`, run on the server |
+| `submit [--wait] TOOL -- ARGS...` | Queue a whitelisted tool run (needs `PDM_TOKEN` if the server sets one) |
+| `jobs [--state --limit]` / `job ID [--log N]` / `cancel ID` | Job queue |
+| `audit TOOL [option=value ...]` | Read-only check on the host, no token: `status`, `query`, `check_gaps`, `check_schema`, `check_catalog` (never `--fix`), `check_splits`. Options are the tool's flags with `_` for `-`; lists comma-separated |
+| `coverage SYMBOL` | Stored series, the schedules that refresh it, and its live feeds |
+| `refresh (--universe U \| --asset-class C \| --exchange E [--trading-mode M]) -t TF... [-s SYM...] [--since D] [--full] [--run [--wait]]` | Approved one-shot refresh; a dry-run preview unless `--run`. One at a time, 30-min cap |
+| `schedules [--symbol S] [--catalog C]` | Schedules with next/last run and what they cover |
+| `schedule-add NAME (--at HH:MM [--days mon-fri] \| --every 6h) (--refresh JSON \| --tool T -- ARGS) [--paused]` | Create or replace a schedule |
+| `schedule-pause` / `schedule-resume` / `schedule-run` / `schedule-rm NAME` | Manage one schedule |
+| `live [--symbol S] [--exchange E]` | Live subscriptions with per-symbol transport, update count, age |
+| `live-add EXCHANGE SYM... [--market spot\|swap] [--kind bars\|quotes] [--timeframe TF] [--throttle-ms N] [--transport auto\|poll]` | Start live feeds |
+| `live-rm EXCHANGE [SYM...] [--market --kind --timeframe]` | Stop live feeds; no symbols = the whole subscription |
+| `watch [PREFIX ...]` | Print broadcasts, e.g. `bar/cryptos/binance/`, `live/`, `quote/`, `prices`, `job/` |
+| `topics` / `reload` | Topic scheme; rebuild the series index |
+
+```bash
+uv run python tools/pdm_client.py --host 100.117.28.91 series --symbol AAPL
+uv run python tools/pdm_client.py bars --symbol AAPL --catalog sp500 --timeframe 1d --start 2026-01-01
+uv run python tools/pdm_client.py submit --wait download_yf -- --universe sp500 --timeframes 1d
+uv run python tools/pdm_client.py watch bar/stocks/yf/sp500/AAPL/ live/binance/
+uv run python tools/pdm_client.py coverage AAPL
+uv run python tools/pdm_client.py refresh --universe sp500 -t 1d -s AAPL MSFT
+uv run python tools/pdm_client.py live-add binance SOL/USDT --market swap --kind quotes
+```
+
+Exit code 2 with `error: ...` on stderr for a refused or failed request.
+
+## `pdm_mcp.py`
+
+```
+uv run python tools/pdm_mcp.py [--list]
+```
+
+MCP server over stdio, launched by the agent harness (`.mcp.json` registers it
+for this repo; elsewhere: `claude mcp add pdm -- uv run --project <repo>
+python <repo>/tools/pdm_mcp.py`). Connects to `PDM_SERVER` like the CLI.
+`--list` prints the tools and whether each is read-only.
+
+| Read-only | Writes (keep on "ask") |
+|---|---|
+| `pdm_ping`, `pdm_catalogs`, `pdm_series`, `pdm_bars` (≤ 500 rows), `pdm_status`, `pdm_audit`, `pdm_coverage`, `pdm_schedules`, `pdm_live`, `pdm_jobs`, `pdm_job`, `pdm_refresh_preview` | `pdm_refresh_run`, `pdm_cancel`, `pdm_schedule_put`, `pdm_schedule_set` (pause/resume/run), `pdm_schedule_remove`, `pdm_live_add`, `pdm_live_remove` |
+

@@ -25,3 +25,6 @@ stuff.txt
 Thumbs.db
 .idea/
 .vscode/
+
+# PDM server config — machine-specific; pdm.example.yaml is the template
+pdm.yaml

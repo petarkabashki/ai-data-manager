@@ -1,0 +1,51 @@
+# PDM server config. Copy to pdm.yaml (gitignored) on the data host.
+# Validate with:  uv run python tools/pdm_server.py --check
+#
+# The server REWRITES pdm.yaml when clients change schedules or live feeds
+# (pdm_client.py schedule-* / live-*, or the MCP tools). Comments are not
+# kept; this file keeps the documentation.
+
+# Also publish py-qwant's `prices` feed (msgpack {symbol,timestamp,last,bid,ask})
+# for every quote subscription, so py-qwant can SUB to tcp://<host>:5556.
+qwant_compat: false
+
+# Recurring jobs. Times are UTC. A schedule whose previous run is still queued
+# or running is skipped, never stacked. Either a typed `refresh:` plan (same
+# fields as the refresh method; 30-min cap) or any whitelisted `tool` + `args`.
+schedules: []
+#  - name: yf-sp500-daily
+#    refresh: {provider: yf, target: {universe: sp500}, timeframes: [1d]}
+#    at: "22:30"                       # after the US close incl. early-close days
+#    days: [mon, tue, wed, thu, fri]
+#
+#  - name: yf-indexes-daily
+#    refresh: {provider: yf, target: {asset_class: Index}, timeframes: [1d]}
+#    at: "22:45"
+#    days: [mon, tue, wed, thu, fri]
+#
+#  - name: binance-intraday
+#    tool: download_crypto
+#    args: [--exchange, binance, --all-pairs, --timeframes, 1h, 4h, 1d]
+#    every: 1h
+#
+#  - name: nightly-health
+#    tool: status
+#    args: [--deep, --json]
+#    at: "04:00"
+#    enabled: false                    # paused, kept
+
+# Live exchange feeds — broadcast only, never written to disk. Websockets via
+# ccxt.pro where the exchange has them, REST polling otherwise.
+live: []
+#  - exchange: binance                 # binance | bitget | bybit | kucoin
+#    market: spot                      # spot | swap (perpetuals)
+#    kind: bars                        # live/<exchange>/<SYMBOL>/<tf>
+#    timeframe: 1m
+#    symbols: [BTC/USDT, ETH/USDT, SOL/USDT]
+#
+#  - exchange: binance
+#    market: swap
+#    kind: quotes                      # quote/<exchange>/<market>/<SYMBOL>
+#    symbols: [BTC/USDT, ETH/USDT]
+#    throttle_ms: 0                    # >0: at most one quote per symbol per window
+#    transport: auto                   # auto | poll (with poll_seconds: 10)

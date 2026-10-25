@@ -20,6 +20,13 @@ Usage examples:
   # Adjusted closes instead of as-traded (recorded on the catalog node)
   uv run python tools/download_yf.py --universe sp500 --timeframes 1d --adjusted
 
+  # Machine-readable: one JSON object on stdout, progress text on stderr
+  uv run python tools/download_yf.py --universe sp500 --symbols AAPL --dry-run --json
+
+`--dry-run` is safe in a read-only sandbox: it plans from the files on disk,
+never constructs a yfinance session (no network, no ~/.cache), and never
+saves a catalog. `tests/test_download_yf.py` holds it to that.
+
 Macro (`WTB3MS`) is deliberately not covered: it's a rate series, not OHLCV,
 with its own schema. See ROADMAP.md.
 """
@@ -27,6 +34,7 @@ with its own schema. See ROADMAP.md.
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -164,14 +172,23 @@ def main() -> None:
     p.add_argument("--sleep-seconds", type=float, default=0.2, help="Delay between requests")
     p.add_argument("--limit", type=int, help="Cap the number of symbols (smoke tests)")
     p.add_argument("--dry-run", action="store_true", help="Plan only; fetch nothing, write nothing")
+    p.add_argument("--json", action="store_true",
+                   help="Emit one JSON object on stdout (plan, results, failures); progress goes to stderr")
     args = p.parse_args()
+
+    # With --json, stdout carries exactly one JSON document; every human line
+    # moves to stderr so the text stays visible without corrupting the JSON.
+    def say(*parts):
+        print(*parts, file=sys.stderr if args.json else sys.stdout)
 
     asset_class, label, load, save, path_for, write_entry = resolve_target(
         args.universe, args.asset_class
     )
     catalog = load()
     if not catalog:
-        print(f"{label}: catalog is empty or missing")
+        say(f"{label}: catalog is empty or missing")
+        if args.json:
+            print(json.dumps({"error": f"{label}: catalog is empty or missing"}))
         sys.exit(1)
 
     symbols = args.symbols or list(catalog)
@@ -189,15 +206,17 @@ def main() -> None:
         bar_label="open",
     )
 
-    fetcher = YahooFetcher()
+    fetcher = None if args.dry_run else YahooFetcher()
     download_end = utc_now()
     updated = 0
     failures: list[tuple[str, str, str]] = []
     rows: list[list] = []
+    plan: list[dict] = []
+    calendar_name = calendar_for(asset_class).name
 
-    print(f"\n{label}: {len(symbols)} symbol(s) x {len(args.timeframes)} timeframe(s) from Yahoo")
-    print(f"Closes  : {'adjusted' if args.adjusted else 'as-traded (raw)'}")
-    print(f"Calendar: {calendar_for(asset_class).name}\n")
+    say(f"\n{label}: {len(symbols)} symbol(s) x {len(args.timeframes)} timeframe(s) from Yahoo")
+    say(f"Closes  : {'adjusted' if args.adjusted else 'as-traded (raw)'}")
+    say(f"Calendar: {calendar_name}\n")
 
     for symbol in symbols:
         for timeframe in args.timeframes:
@@ -214,11 +233,22 @@ def main() -> None:
             except ValueError as exc:
                 p.error(str(exc))
 
+            plan.append({
+                "symbol": symbol,
+                "timeframe": timeframe,
+                "file": relative_to_repo(dst),
+                "current": not ranges,
+                "ranges": [
+                    {"start": r.start.strftime("%Y-%m-%d"), "end": r.end.strftime("%Y-%m-%d"),
+                     "reason": r.reason}
+                    for r in ranges
+                ],
+            })
             if not ranges:
-                print(f"  {symbol}/{timeframe}: already current")
+                say(f"  {symbol}/{timeframe}: already current")
                 continue
 
-            print(f"  {symbol}/{timeframe}: {format_ranges(ranges)}")
+            say(f"  {symbol}/{timeframe}: {format_ranges(ranges)}")
             if args.dry_run:
                 continue
 
@@ -231,7 +261,7 @@ def main() -> None:
                 p.error(str(exc))
             except Exception as exc:
                 failures.append((symbol, timeframe, str(exc)))
-                print(f"  {symbol}/{timeframe}: FAILED ({exc})")
+                say(f"  {symbol}/{timeframe}: FAILED ({exc})")
                 continue
 
             if frame.empty:
@@ -248,19 +278,42 @@ def main() -> None:
             save(catalog)  # checkpoint per series: a long run stays resumable
             updated += 1
             rows.append([symbol, timeframe, old_rows, new_rows, new_rows - old_rows, end_date])
-            print(f"    wrote {relative_to_repo(dst)} ({old_rows}->{new_rows} rows)")
+            say(f"    wrote {relative_to_repo(dst)} ({old_rows}->{new_rows} rows)")
 
-    if rows:
+    if rows and not args.json:
         print()
         print_table(["Symbol", "TF", "Before", "After", "Added", "Through"], rows[:40])
         if len(rows) > 40:
             print(f"… and {len(rows) - 40} more")
 
-    print(f"\nSummary\n  updated: {updated}\n  failures: {len(failures)}")
+    say(f"\nSummary\n  updated: {updated}\n  failures: {len(failures)}")
     for symbol, timeframe, message in failures[:20]:
-        print(f"  - {symbol}/{timeframe}: {message}")
+        say(f"  - {symbol}/{timeframe}: {message}")
     if len(failures) > 20:
-        print(f"  … and {len(failures) - 20} more")
+        say(f"  … and {len(failures) - 20} more")
+
+    if args.json:
+        print(json.dumps({
+            "target": {"universe": args.universe, "asset_class": asset_class, "label": label},
+            "provider": PROVIDER,
+            "dry_run": args.dry_run,
+            "adjusted": args.adjusted,
+            "calendar": calendar_name,
+            "timeframes": args.timeframes,
+            "symbols": len(symbols),
+            "plan": plan,
+            "planned": sum(1 for item in plan if not item["current"]),
+            "current": sum(1 for item in plan if item["current"]),
+            "results": [
+                {"symbol": r[0], "timeframe": r[1], "before": r[2], "after": r[3],
+                 "added": r[4], "through": r[5]}
+                for r in rows
+            ],
+            "updated": updated,
+            "failures": [
+                {"symbol": sym, "timeframe": tf, "error": msg} for sym, tf, msg in failures
+            ],
+        }, default=str))
 
     if failures:
         sys.exit(1)

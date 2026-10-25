@@ -230,6 +230,9 @@ uv run python tools/convert_crypto.py [--exchange X] [--dry-run]
 | `tools/download_yf.py` | Download Yahoo bars for stock universes, indexes and commodities |
 | `tools/import_futures.py` | Import a bulk per-contract futures archive from any vendor into `futures/<provider>/` |
 | `tools/download_deribit_options.py` | Download Deribit crypto option history (the only venue serving expired options) into `options/<provider>/` |
+| `tools/pdm_server.py` | The price data manager server: serves catalogs, series and bars over ZeroMQ, queues download jobs, broadcasts new and live bars — see [`docs/server.md`](docs/server.md) |
+| `tools/pdm_client.py` | CLI client for the PDM server — query, fetch bars, coverage, approved refreshes, manage schedules and live feeds, submit/watch jobs, subscribe to broadcasts; every command takes `--json` |
+| `tools/pdm_mcp.py` | MCP server (stdio) exposing the PDM server to agents as native tools — read-only tools separate from writes; registered in `.mcp.json` |
 
 ### status.py
 
@@ -444,6 +447,44 @@ Notes:
   if a symbol returns no data.
 - Connect TWS or IB Gateway first, same as `download_ibkr_stock_overnight.py`.
 
+## Network service (PDM)
+
+The data lives on one host (see [`docs/server.md`](docs/server.md)) and is
+served to every other machine by `tools/pdm_server.py`. Clients — people,
+agents, strategies — never mount `price-data/`; they ask the server.
+
+- **Agents on another machine**: `uv run python tools/pdm_client.py --json
+  <command>` is the network twin of the read-only tools — `series` ≈
+  `query.py`, `status` = `status.py --json`, `bars` returns the canonical
+  frame. Writes go through `submit`, which queues one of the existing tools.
+- **Agents with MCP**: `tools/pdm_mcp.py` (registered in `.mcp.json`) gives
+  the same as native tools. Reads (`pdm_series`, `pdm_bars`, `pdm_coverage`,
+  `pdm_refresh_preview` …) are separate tools from writes (`pdm_refresh_run`,
+  `pdm_schedule_*`, `pdm_live_*`), so the harness's permission prompt is the
+  approval step. Always preview a refresh before asking to run it.
+- **Refreshes**: the `refresh` method takes a typed plan (target, timeframes,
+  symbols, since, full) and a required `dry_run`; a real run is re-checked by
+  a dry run, one at a time, killed after 30 minutes. Shape: docstring of
+  `pdm/refresh.py`.
+- **Schedules and live feeds** are managed at runtime (`schedule_*`,
+  `live_add` / `live_remove`) and written back to `pdm.yaml`. `coverage
+  <symbol>` answers "what is stored, what refreshes it, what streams it".
+- **Audits without the token**: the `audit` method (CLI `audit`, MCP
+  `pdm_audit`) runs `status`, `query` and the `check_*` tools on the host and
+  returns their JSON. The options are typed, and nothing in them can write.
+- **HTTP**: a read-only gateway on port 5580 (`/v1/<method>`) serves the same
+  reads, audits and refresh previews to clients that can't use ZMQ. It never
+  writes.
+- `bars` replies are capped at 100,000 rows and refused in words beyond that.
+  Always pass `start`/`end` or `limit`.
+- **Python**: `from pdm.client import PriceDataClient`.
+- The server only ever runs tools from the whitelist in `pdm/jobs.py`, as an
+  argv list, never a shell string. Tools that write the same catalog share a
+  lane and run one at a time (YF and IBKR both write `sp500.yaml`).
+- Live bars and quotes (`live/...`, `quote/...`, py-qwant's `prices`) are
+  broadcast only, never written to disk. Stored history is still the product
+  of the download tools.
+
 ## Agent Skills
 
 Skills live in `.agent/skills/<name>/SKILL.md` with YAML frontmatter (`name`,
@@ -479,6 +520,12 @@ ln -s ../.agent/skills .codex/skills
 | `utils/options.py` | `OptionContract`, `contract_for()`, `option_symbol()`, `parse_option_symbol()`, `parse_deribit_name()`, `option_file_path()`, `update_option_entry()`, `UNDERLYINGS` — provider-neutral option identity |
 | `utils/deribit.py` | `DeribitClient`, `DeribitError`, `InstrumentInfo`, `TIMEFRAME_TO_RESOLUTION` — public REST client; pages the 5001-bar cap and trims post-expiry padding |
 | `utils/yf.py` | `yf_ticker()`, `yf_interval()`, `clamp_start()`, `frame_from_yahoo()`, `fetch_ohlcv()`, `YahooFetcher` |
+
+The `pdm/` package (server side of the network service) is not under `utils/`
+because nothing in the tools imports it: `protocol.py` (wire format, topics),
+`server.py`, `client.py` (`PriceDataClient`), `jobs.py` (lanes + whitelist),
+`scheduler.py`, `watch.py` (new-bar detection), `index.py`, `live.py` (ccxt
+polling).
 
 `tools/migrate_price_data_layout.py` is the one-off script that performed the
 2026-07 provider-first migration (phases A-G, each idempotent + `--dry-run`).

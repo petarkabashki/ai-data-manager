@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "pdm": {
+      "command": "uv",
+      "args": ["run", "--project", ".", "python", "tools/pdm_mcp.py"],
+      "env": {"PDM_SERVER": "${PDM_SERVER:-100.117.28.91}"}
+    }
+  }
+}

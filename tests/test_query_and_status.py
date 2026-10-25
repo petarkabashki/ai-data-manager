@@ -25,7 +25,8 @@ def populated_root(tmp_path, monkeypatch):
     root.mkdir()
     monkeypatch.setenv("PRICE_DATA_ROOT", str(root))
     names = ("utils.config", "utils.catalog", "utils.data", "utils.calendars",
-             "utils.semantics", "query", "status")
+             "utils.semantics", "utils.futures", "utils.options", "utils.planning",
+             "query", "status")
     for name in names:
         sys.modules.pop(name, None)
 

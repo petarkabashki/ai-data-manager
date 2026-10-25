@@ -7,6 +7,7 @@ on a clean checkout with no symlink present.
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -14,6 +15,9 @@ import pandas as pd
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+# A developer's or server's local .env must not leak into the suite.
+os.environ.setdefault("PDM_NO_DOTENV", "1")
+os.environ["PDM_TOKEN_FILE"] = os.devnull  # never pick up the real client token
 sys.path.insert(0, str(REPO_ROOT))
 
 

@@ -210,7 +210,7 @@ def load_futures_catalog() -> dict:
         return {}
     import yaml
 
-    return yaml.safe_load(path.read_text()) or {}
+    return yaml.load(path.read_text(), Loader=getattr(yaml, "CSafeLoader", yaml.SafeLoader)) or {}
 
 
 def save_futures_catalog(data: dict) -> None:

@@ -34,6 +34,20 @@ from utils.config import (  # noqa: F401  (DATA_ROOT/REPO_ROOT/FREQTRADE_BIN re-
 
 CRYPTO_EXCHANGES = ["binance", "bitget", "bybit", "kucoin"]
 
+#: libyaml's C loader when available: same safe semantics as `yaml.safe_load`,
+#: roughly 10x faster — loading every catalog drops from ~11s to ~1s, which
+#: matters to the PDM server that reloads them after each job.
+_YAML_LOADER = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
+
+
+def load_yaml(path: Path) -> dict:
+    """Load one catalog YAML file; a missing or empty file is `{}`."""
+    path = Path(path)
+    if not path.exists():
+        return {}
+    with open(path) as f:
+        return yaml.load(f, Loader=_YAML_LOADER) or {}
+
 # Our timeframe names → milliseconds (None = variable, skip gap math)
 TF_TO_MS: dict[str, int | None] = {
     "1m": 60_000,
@@ -289,7 +303,7 @@ def load_crypto_catalog(exchange: str) -> dict:
     if not path.exists():
         return {}
     with open(path) as f:
-        return yaml.safe_load(f) or {}
+        return yaml.load(f, Loader=_YAML_LOADER) or {}
 
 
 def save_crypto_catalog(exchange: str, data: dict) -> None:
@@ -301,7 +315,7 @@ def load_crypto_futures_catalog(exchange: str) -> dict:
     if not path.exists():
         return {}
     with open(path) as f:
-        return yaml.safe_load(f) or {}
+        return yaml.load(f, Loader=_YAML_LOADER) or {}
 
 
 def save_crypto_futures_catalog(exchange: str, data: dict) -> None:
@@ -497,7 +511,7 @@ def load_stock_catalog(universe: str) -> dict:
     if not path.exists():
         return {}
     with open(path) as f:
-        return yaml.safe_load(f) or {}
+        return yaml.load(f, Loader=_YAML_LOADER) or {}
 
 
 def save_stock_catalog(universe: str, data: dict) -> None:
@@ -579,7 +593,7 @@ def load_index_catalog() -> dict:
     if not path.exists():
         return {}
     with open(path) as f:
-        return yaml.safe_load(f) or {}
+        return yaml.load(f, Loader=_YAML_LOADER) or {}
 
 
 def save_index_catalog(data: dict) -> None:
@@ -657,7 +671,7 @@ def load_simple_catalog(name: str) -> dict:
     if not path.exists():
         return {}
     with open(path) as f:
-        return yaml.safe_load(f) or {}
+        return yaml.load(f, Loader=_YAML_LOADER) or {}
 
 
 def save_simple_catalog(name: str, data: dict) -> None:

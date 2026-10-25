@@ -254,3 +254,72 @@ def test_timeframe_yahoo_lacks_is_rejected(yf_env, monkeypatch):
     with pytest.raises(SystemExit):
         _run(tool, ["--universe", "sp500", "--timeframes", "4h", "--full",
                     "--since", "2025-01-01"], monkeypatch, FakeYahoo())
+
+
+# --- --json and the read-only dry-run contract ----------------------------------
+
+def test_json_dry_run_reports_the_plan_on_stdout_only(yf_env, monkeypatch, capsys):
+    import json
+
+    root, catalog, tool = yf_env
+    _seed_stock_catalog(root, ("AAPL", "MSFT"))
+    _run(tool, ["--universe", "sp500", "--timeframes", "1d", "--full",
+                "--since", "2025-01-01", "--dry-run", "--json"], monkeypatch, FakeYahoo())
+
+    out, err = capsys.readouterr()
+    doc = json.loads(out)  # stdout is exactly one JSON document
+    assert doc["dry_run"] is True and doc["target"]["universe"] == "sp500"
+    assert doc["planned"] == 2 and doc["current"] == 0 and doc["updated"] == 0
+    (aapl,) = [p for p in doc["plan"] if p["symbol"] == "AAPL"]
+    assert aapl["ranges"][0]["start"] == "2025-01-01"
+    assert aapl["file"] == "price-data/stocks/yf/sp500/AAPL/AAPL-1d.parquet"
+    assert "AAPL/1d:" in err  # the human text still exists, on stderr
+
+
+def test_json_real_run_reports_results(yf_env, monkeypatch, capsys):
+    import json
+
+    root, catalog, tool = yf_env
+    _seed_stock_catalog(root)
+    _run(tool, ["--universe", "sp500", "--timeframes", "1d", "--full",
+                "--since", "2026-01-01", "--json"], monkeypatch, FakeYahoo())
+    doc = json.loads(capsys.readouterr().out)
+    assert doc["updated"] == 1 and doc["failures"] == []
+    (result,) = doc["results"]
+    assert result["symbol"] == "AAPL" and result["before"] == 0 and result["added"] > 0
+
+
+def test_text_output_is_unchanged_without_json(yf_env, monkeypatch, capsys):
+    """forthkit parses these lines; --json must not have moved them."""
+    root, catalog, tool = yf_env
+    _seed_stock_catalog(root)
+    _run(tool, ["--universe", "sp500", "--timeframes", "1d", "--full",
+                "--since", "2025-01-01", "--dry-run"], monkeypatch, FakeYahoo())
+    out = capsys.readouterr().out
+    assert "  AAPL/1d: 2025-01-01->" in out
+    assert "updated: 0" in out and "failures: 0" in out
+
+
+def test_dry_run_is_safe_in_a_read_only_sandbox(yf_env, monkeypatch, capsys):
+    """No yfinance session (so no network, no ~/.cache), no catalog save, no
+    file written — even with the whole data root read-only."""
+    import os
+    import stat
+
+    root, catalog, tool = yf_env
+    _seed_stock_catalog(root)
+
+    def forbidden(*a, **k):
+        raise AssertionError("dry-run must not construct a fetcher or save a catalog")
+
+    monkeypatch.setattr(tool, "YahooFetcher", forbidden)
+    monkeypatch.setattr(tool, "save_stock_catalog", forbidden)
+    before = {p: p.stat().st_mtime_ns for p in root.rglob("*")}
+    os.chmod(root, stat.S_IRUSR | stat.S_IXUSR)
+    try:
+        monkeypatch.setattr(sys, "argv", ["download_yf.py", "--universe", "sp500",
+                                          "--timeframes", "1d", "--dry-run", "--json"])
+        tool.main()
+    finally:
+        os.chmod(root, stat.S_IRWXU)
+    assert {p: p.stat().st_mtime_ns for p in root.rglob("*")} == before

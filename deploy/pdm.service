@@ -1,0 +1,23 @@
+# systemd user unit for the PDM server.
+#   install:  cp deploy/pdm.service ~/.config/systemd/user/ && systemctl --user daemon-reload
+#             systemctl --user enable --now pdm && loginctl enable-linger $USER
+# Config comes from the repo's .env (PDM_BIND_HOST etc.) and pdm.yaml.
+[Unit]
+Description=Price data manager (PDM) server
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/work/ai-data-manager
+ExecStart=%h/work/ai-data-manager/.venv/bin/python tools/pdm_server.py
+Restart=on-failure
+RestartSec=10
+# Job subprocesses inherit this; freqtrade lives in ~/.local/bin.
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PYTHONUNBUFFERED=1
+KillMode=mixed
+TimeoutStopSec=30
+
+[Install]
+WantedBy=default.target

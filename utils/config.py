@@ -16,6 +16,29 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
+def _load_dotenv(path: Path) -> None:
+    """Apply `KEY=VALUE` lines from a repo `.env`, never overriding the real
+    environment — so `.env` sets a machine's defaults and an exported variable
+    still wins. Deliberately minimal (no interpolation, no `export`), which is
+    all `.env.example` uses; no python-dotenv dependency for six lines.
+    """
+    if not path.is_file():
+        return
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key, value = key.strip(), value.strip().strip("'\"")
+        if key and value:
+            os.environ.setdefault(key, value)
+
+
+# PDM_NO_DOTENV lets the test suite opt out of a developer's local .env.
+if not os.environ.get("PDM_NO_DOTENV"):
+    _load_dotenv(REPO_ROOT / ".env")
+
+
 def _path_from_env(name: str, default: Path) -> Path:
     raw = os.environ.get(name)
     return Path(raw).expanduser() if raw else default
@@ -56,6 +79,49 @@ IBKR_PORT = _int_from_env("IBKR_PORT", 7497)
 #: Base client id. Each tool offsets from this so two tools can run against one
 #: gateway without colliding (IBKR rejects duplicate client ids).
 IBKR_CLIENT_ID = _int_from_env("IBKR_CLIENT_ID", 73)
+
+
+# --- price data manager (PDM) server ----------------------------------------
+
+#: Interface the server binds. 0.0.0.0 = every interface; set it to the
+#: machine's Tailscale/LAN address to keep the service off other networks.
+PDM_BIND_HOST = os.environ.get("PDM_BIND_HOST", "0.0.0.0")
+
+#: Host clients connect to.
+PDM_SERVER = os.environ.get("PDM_SERVER", "127.0.0.1")
+
+#: ROUTER (request/reply) and PUB (broadcast) ports.
+PDM_REQ_PORT = _int_from_env("PDM_REQ_PORT", 5555)
+PDM_PUB_PORT = _int_from_env("PDM_PUB_PORT", 5556)
+
+#: Read-only HTTP gateway port (same bind host); 0 disables it.
+PDM_HTTP_PORT = _int_from_env("PDM_HTTP_PORT", 5580)
+
+#: File holding the token, outside the checkout — so a sandbox that can read
+#: the repo (an LLM agent running the audit scripts) can't read the secret.
+PDM_TOKEN_FILE = _path_from_env(
+    "PDM_TOKEN_FILE",
+    Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "ai-data-manager" / "token",
+)
+
+
+def _read_token() -> str:
+    if os.environ.get("PDM_TOKEN"):
+        return os.environ["PDM_TOKEN"]
+    try:
+        return PDM_TOKEN_FILE.read_text().strip()
+    except OSError:
+        return ""
+
+
+#: Shared secret for requests that change state (refresh, submit, cancel,
+#: schedule_*, live_*). `PDM_TOKEN` in the environment wins, else the first
+#: line of `PDM_TOKEN_FILE`. Empty means unauthenticated — acceptable only on a
+#: private network such as a tailnet.
+PDM_TOKEN = _read_token()
+
+#: Server config: schedules and live streams. See `pdm.example.yaml`.
+PDM_CONFIG = _path_from_env("PDM_CONFIG", REPO_ROOT / "pdm.yaml")
 
 
 #: Prefix every stored `file_path` carries, so a catalog written on one machine
