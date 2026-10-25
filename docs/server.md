@@ -42,7 +42,7 @@ one person is on the tailnet.
 ```bash
 # on the data host
 systemctl --user status pdm
-systemctl --user restart pdm            # after a git pull or a pdm.yaml edit
+systemctl --user restart pdm            # after a git pull or a pdm.yaml edit; queued jobs survive
 uv run python tools/pdm_server.py --check
 ```
 
@@ -278,7 +278,7 @@ would hand back the wrong numbers.
 | `live/<exchange>/<SYMBOL>/<tf>` | Live bars: every newly closed bar once (`closed: true`), the forming bar on change (`closed: false`) |
 | `quote/<exchange>/<market>/<SYMBOL>` | Live best bid/ask, JSON only: `symbol timestamp last bid ask bid_size ask_size` |
 | `prices` | With `qwant_compat: true`: py-qwant's feed, byte-compatible — 2 frames, msgpack `{symbol, timestamp, last, bid, ask}` |
-| `job/<state>/<tool>` | Job queued / running / succeeded / failed / cancelled / timed_out |
+| `job/<state>/<tool>` | Job queued / running / succeeded / failed / cancelled / timed_out / interrupted |
 | `server/started`, `server/index`, `server/heartbeat` | Lifecycle, index rebuilt, every 5s with each live feed's age |
 
 Live feeds use websockets through ccxt.pro (`watch_ohlcv`; `watch_bids_asks`
@@ -311,10 +311,20 @@ Jobs run in lanes, serial within each lane:
 | Lane | Tools | Why together |
 |---|---|---|
 | `equity` | download_yf, download_ibkr_*, retry_ibkr_failed_sequentially, check_catalog | They load, edit and save the same stock/index catalogs |
-| `crypto` | download_crypto, convert_crypto | crypto catalogs |
+| `crypto` | download_crypto, download_funding, convert_crypto | crypto catalogs |
 | `options` / `marketcap` / `futures` | one tool each | disjoint catalogs |
 | `audit` | status, query, check_gaps, check_schema, check_splits | read-only, so never queued behind a download |
 
 The lanes only serialize jobs that go **through the server**. A tool started
 by hand on the host while a server job writes the same catalog can still lose
 an update. Prefer `pdm_client.py submit` on the data host too.
+
+**Restarts don't lose the queue.** Every job state change rewrites
+`$TMP_ROOT/pdm_jobs.json` with the queued and running jobs. On start the
+server queues them again, keeping their ids. A job that was running goes back
+to the front of its lane with `requeued` incremented and starts over. The
+tools resume from what is already on disk, so starting over only re-fetches
+the tail. A clean stop marks that job `interrupted`, not `failed`. Finished
+jobs aren't kept across a restart, but their logs in `$TMP_ROOT/pdm-jobs/`
+are. A deploy can therefore restart `pdm` at any time. The only cost is the
+running job's progress since its last write.

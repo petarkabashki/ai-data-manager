@@ -4,6 +4,7 @@ round trip over localhost TCP. No network beyond 127.0.0.1, no price-data/."""
 from __future__ import annotations
 
 import asyncio
+import json
 import socket
 import sys
 import textwrap
@@ -171,6 +172,55 @@ def test_cancel_queued_and_running_jobs(tmp_path):
     jm.cancel(first.id)
     assert _wait_state(jm, first.id, {"cancelled"}).state == "cancelled"
     jm.stop()
+
+
+def test_unfinished_jobs_survive_a_restart_in_order(tmp_path):
+    tools, state = _fake_tools(tmp_path), tmp_path / "pdm_jobs.json"
+    jm = JobManager(tools, tmp_path / "logs", state_path=state)
+    done = jm.submit("status", [])
+    _wait_state(jm, done.id, {"succeeded"})
+    running = jm.submit("download_yf", ["--universe", "sp500"])
+    waiting = jm.submit("download_yf", ["--universe", "nasdaq100"])
+    _wait_state(jm, running.id, {"running"})
+    jm.stop()
+    assert jm.get(running.id).state == "interrupted"     # not "failed": the tool never finished
+
+    again = JobManager(tools, tmp_path / "logs", state_path=state)
+    assert [j["id"] for j in again.list()] == [waiting.id, running.id]   # finished jobs are not kept
+    first, second = again.get(running.id), again.get(waiting.id)
+    assert first.state == second.state == "queued"
+    assert (first.requeued, second.requeued) == (1, 0)
+    assert first.started_at is None and first.args == ["--universe", "sp500"]
+    time.sleep(0.3)
+    assert first.state == "queued"                       # nothing runs before resume()
+    again.resume()
+    _wait_state(again, running.id, {"running"})          # the interrupted run goes first
+    assert again.get(waiting.id).state == "queued"
+    again.cancel(waiting.id)
+    again.cancel(running.id)
+    _wait_state(again, running.id, {"cancelled"})
+    assert json.loads(state.read_text())["jobs"] == []
+    again.stop()
+
+
+def test_restore_after_a_crash_drops_what_cannot_run(tmp_path, capsys):
+    state = tmp_path / "pdm_jobs.json"
+    base = {"lane": "equity", "submitted_at": 1.0, "args": []}
+    state.write_text(json.dumps({"version": 1, "jobs": [
+        {**base, "id": "killed", "tool": "download_yf", "state": "running", "started_at": 2.0},
+        {**base, "id": "cancelling", "tool": "download_yf", "state": "running", "error": "cancel requested"},
+        {**base, "id": "gone", "tool": "removed_tool", "state": "queued"},
+        {**base, "id": "later", "tool": "status", "state": "queued", "future_field": 1},
+    ]}))
+    jm = JobManager(_fake_tools(tmp_path), tmp_path / "logs", state_path=state)
+    assert [j["id"] for j in jm.list()] == ["later", "killed"]
+    assert jm.get("killed").requeued == 1 and jm.get("later").lane == "audit"
+    assert "dropping saved job gone" in capsys.readouterr().err
+    assert {j["id"] for j in json.loads(state.read_text())["jobs"]} == {"killed", "later"}
+
+    state.write_text("{not json")
+    (tmp_path / "b").mkdir()
+    assert JobManager(_fake_tools(tmp_path / "b"), tmp_path / "logs", state_path=state).list() == []
 
 
 # --- scheduler ------------------------------------------------------------------

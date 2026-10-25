@@ -17,6 +17,13 @@ Jobs run in **lanes**, one worker thread per lane, serial within it:
 
 Lanes also respect provider pacing: IBKR punishes parallel connections, and
 one lane per provider is exactly one connection.
+
+With a `state_path`, unfinished jobs survive a restart. Every state change
+rewrites the file (atomically) with the queued and running jobs, so even a
+SIGKILL leaves an up-to-date copy. On start they are queued again in their
+original order, a job that was running going first in its lane. Rerunning one
+that was killed is safe because every tool resumes from what is on disk and
+merges atomically. Finished jobs are not kept; their logs are.
 """
 
 from __future__ import annotations
@@ -59,6 +66,9 @@ READ_ONLY_TOOLS = {"status", "query", "check_gaps", "check_schema", "check_split
 
 TERMINAL = {"succeeded", "failed", "cancelled", "timed_out"}
 
+#: A run cut short by the server stopping; queued again on the next start.
+INTERRUPTED = "interrupted"
+
 
 @dataclass
 class Job:
@@ -82,6 +92,8 @@ class Job:
     result: dict | None = None
     #: Caller-supplied context echoed back (e.g. the refresh plan request).
     meta: dict | None = None
+    #: How many times a server restart put this job back in its queue.
+    requeued: int = 0
 
     def public(self) -> dict:
         return asdict(self)
@@ -104,6 +116,7 @@ class JobManager:
         on_event: Callable[[Job], None] | None = None,
         python: str = sys.executable,
         history: int = 500,
+        state_path: Path | None = None,
     ):
         self.tools_dir = Path(tools_dir)
         self.log_dir = Path(log_dir)
@@ -116,6 +129,8 @@ class JobManager:
         self._cond = threading.Condition()
         self._workers: dict[str, threading.Thread] = {}
         self._stopping = False
+        self.state_path = Path(state_path) if state_path else None
+        self._load()
 
     # --- public API -----------------------------------------------------------
 
@@ -140,6 +155,7 @@ class JobManager:
             self._jobs[job.id] = job
             self._order.append(job.id)
             self._queues.setdefault(job.lane, deque()).append(job.id)
+            self._save()
             self._ensure_worker(job.lane)
             self._cond.notify_all()
         self.on_event(job)
@@ -176,6 +192,7 @@ class JobManager:
                 job.error = "cancel requested"
             else:
                 return job
+            self._save()
         if job.state == "cancelled":
             self.on_event(job)
         return job
@@ -196,6 +213,14 @@ class JobManager:
             running = [j.id for j in self._jobs.values() if j.lane == lane and j.state == "running"]
             out[lane] = {"queued": len(self._queues.get(lane, ())), "running": running}
         return out
+
+    def resume(self) -> None:
+        """Start the lanes that jobs restored from `state_path` are waiting in."""
+        with self._cond:
+            for lane, queue in self._queues.items():
+                if queue:
+                    self._ensure_worker(lane)
+            self._cond.notify_all()
 
     def stop(self, timeout: float = 10.0) -> None:
         with self._cond:
@@ -224,8 +249,11 @@ class JobManager:
                     return
                 job = self._jobs[self._queues[lane].popleft()]
                 job.state, job.started_at = "running", time.time()
+                self._save()
             self.on_event(job)
             self._run(job)
+            with self._cond:
+                self._save()
             self.on_event(job)
 
     def _run(self, job: Job) -> None:
@@ -249,8 +277,8 @@ class JobManager:
                 )
                 with self._cond:
                     self._procs[job.id] = proc
-                    # cancel() between "running" and Popen found no process to stop
-                    if job.error == "cancel requested":
+                    # cancel() or stop() between "running" and Popen found no process to stop
+                    if job.error == "cancel requested" or self._stopping:
                         proc.terminate()
                 try:
                     job.returncode = proc.wait(timeout=job.timeout_s)
@@ -279,5 +307,61 @@ class JobManager:
             job.error = f"exceeded the {job.timeout_s:g}s cap; terminated"
         elif job.error == "cancel requested":
             job.state = "cancelled"
+        elif self._stopping:
+            job.state = INTERRUPTED   # stop() terminated it: not the tool's verdict
         else:
             job.state = "succeeded" if job.returncode == 0 else "failed"
+
+    # --- persistence ----------------------------------------------------------
+
+    def _save(self) -> None:
+        """Write the unfinished jobs to `state_path`. Call with `_cond` held."""
+        if not self.state_path:
+            return
+        keep = [self._jobs[i].public() for i in self._order
+                if i in self._jobs and self._jobs[i].state not in TERMINAL]
+        try:
+            self.state_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self.state_path.with_name(self.state_path.name + ".tmp")
+            tmp.write_text(json.dumps({"version": 1, "jobs": keep}, default=str))
+            os.replace(tmp, self.state_path)
+        except OSError as exc:  # a full disk must not stop the queue
+            print(f"pdm.jobs: cannot save {self.state_path}: {exc}", file=sys.stderr, flush=True)
+
+    def _load(self) -> None:
+        if not self.state_path or not self.state_path.exists():
+            return
+        try:
+            saved = json.loads(self.state_path.read_text()).get("jobs") or []
+        except (OSError, ValueError, AttributeError) as exc:
+            print(f"pdm.jobs: ignoring unreadable {self.state_path}: {exc}", file=sys.stderr, flush=True)
+            return
+        names = set(Job.__dataclass_fields__)
+        restored: list[tuple[bool, Job]] = []
+        for raw in saved:
+            try:
+                job = Job(**{k: v for k, v in raw.items() if k in names})
+                validate(job.tool, job.args)   # a tool since removed is dropped
+            except (TypeError, ValueError) as exc:
+                print(f"pdm.jobs: dropping saved job {raw.get('id')}: {exc}", file=sys.stderr, flush=True)
+                continue
+            job.lane = TOOL_LANES[job.tool]
+            if job.state in ("running", INTERRUPTED) and job.error == "cancel requested":
+                job.state, job.finished_at = "cancelled", time.time()
+            was_running = job.state in ("running", INTERRUPTED)
+            if was_running:
+                job.requeued += 1
+                job.state = "queued"
+                job.started_at = job.finished_at = job.returncode = job.result = None
+                job.log_path = None
+                job.error = None
+            if job.state == "queued":
+                restored.append((was_running, job))
+        # Interrupted runs were at the head of their lane: put them back there.
+        restored.sort(key=lambda r: (not r[0], r[1].submitted_at))
+        with self._cond:
+            for _, job in restored:
+                self._jobs[job.id] = job
+                self._order.append(job.id)
+                self._queues.setdefault(job.lane, deque()).append(job.id)
+            self._save()

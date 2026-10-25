@@ -125,7 +125,7 @@ TOPICS_DOC = {
     "live/<exchange>/<SYMBOL>/<tf>": "live exchange bars (closed: true|false)",
     "quote/<exchange>/<market>/<SYMBOL>": "live best bid/ask: symbol timestamp last bid ask bid_size ask_size",
     "prices": "py-qwant compatible quotes (qwant_compat): 2 frames, msgpack {symbol,timestamp,last,bid,ask}",
-    "job/<state>/<tool>": "job lifecycle: queued, running, succeeded, failed, cancelled, timed_out",
+    "job/<state>/<tool>": "job lifecycle: queued, running, succeeded, failed, cancelled, timed_out, interrupted (requeued on restart)",
     "server/<event>": "server lifecycle: started, index, heartbeat (every 5s, with live feed ages)",
     "hint": "subscribe with a trailing '/' to select exactly one node, e.g. bar/stocks/yf/sp500/AAPL/",
 }
@@ -202,7 +202,8 @@ class PdmServer:
         self.watcher = DataWatcher(
             self.data_root, tmp_root / "pdm_watch.json", max_rows=broadcast_max_rows
         )
-        self.jobs = JobManager(self.tools_dir, tmp_root / "pdm-jobs", on_event=self._on_job_event)
+        self.jobs = JobManager(self.tools_dir, tmp_root / "pdm-jobs", on_event=self._on_job_event,
+                               state_path=tmp_root / "pdm_jobs.json")
         schedules = [Schedule.from_config(s) for s in self.store.get("schedules") or []]
         self.scheduler = Scheduler(
             self.jobs, schedules, on_change=lambda raws: self.store.set("schedules", raws)
@@ -259,6 +260,7 @@ class PdmServer:
                  self.bind_host, self.req_port, self.bind_host, self.pub_port)
 
         threading.Thread(target=self._startup, name="startup", daemon=True).start()
+        self.jobs.resume()          # before the scheduler, so it sees what was restored
         self.scheduler.start()
         self.live.start()
         threading.Thread(target=self._heartbeat, name="heartbeat", daemon=True).start()
