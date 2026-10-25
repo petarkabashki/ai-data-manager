@@ -10,7 +10,7 @@ Request params:
 
     provider    "yf" (default) | "crypto"
     target      yf:     {"universe": sp500|nasdaq100|russell2000|delisted_stocks}
-                        | {"asset_class": "Index"|"Commodity"}
+                        | {"asset_class": "Index"|"Commodity"|"Macro"}   (Macro: 1d only)
                 crypto: {"exchange": binance|bitget|bybit|kucoin,
                          "trading_mode": "spot"|"futures"}
     timeframes  ["1d", ...]                required
@@ -46,6 +46,7 @@ from utils.yf import OUR_TF_TO_YF_INTERVAL
 DEFAULT_TIMEOUT_S = 1800
 DRY_RUN_TIMEOUT_S = 120
 REFRESH_SOURCE = "refresh"
+YF_ASSET_CLASSES = ("Index", "Commodity", "Macro")
 
 _SYMBOL = re.compile(r"^[A-Za-z0-9.^=_/:-]{1,40}$")
 _DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -100,12 +101,12 @@ def build_argv(params: dict) -> tuple[str, list[str], dict]:
         tool = "download_yf"
         if set(target) == {"universe"} and target["universe"] in STOCK_UNIVERSES:
             argv.append(f"--universe={target['universe']}")
-        elif set(target) == {"asset_class"} and target["asset_class"] in ("Index", "Commodity"):
+        elif set(target) == {"asset_class"} and target["asset_class"] in YF_ASSET_CLASSES:
             argv.append(f"--asset-class={target['asset_class']}")
         else:
             raise PlanError(
                 f"yf target must be {{universe: {'|'.join(STOCK_UNIVERSES)}}} "
-                "or {asset_class: Index|Commodity}"
+                f"or {{asset_class: {'|'.join(YF_ASSET_CLASSES)}}}"
             )
         bad = [tf for tf in timeframes if tf not in OUR_TF_TO_YF_INTERVAL]
         if bad:

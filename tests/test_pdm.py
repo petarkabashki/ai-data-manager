@@ -855,3 +855,13 @@ def test_bars_derive_timestamp_for_dated_layouts(running_server):
         assert df["Value"].tolist() == [4.0]
         with pytest.raises(PdmError, match="no time column"):
             c.bars(path="macro/undated.parquet")
+
+
+def test_refresh_plan_accepts_macro():
+    tool, argv, _ = build_argv({"dry_run": True, "target": {"asset_class": "Macro"}, "timeframes": ["1d"]})
+    assert tool == "download_yf" and "--asset-class=Macro" in argv
+    with pytest.raises(PlanError, match="Index|Commodity|Macro"):
+        build_argv({"dry_run": True, "target": {"asset_class": "Bond"}, "timeframes": ["1d"]})
+    assert schedule_targets(Schedule(name="m", tool="download_yf",
+                                     args=["--asset-class", "Macro", "--timeframes", "1d"],
+                                     every=timedelta(days=1)))["catalog"] == "macro"

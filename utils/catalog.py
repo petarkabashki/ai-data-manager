@@ -686,6 +686,48 @@ def macro_file_path(provider: str, symbol: str, timeframe: str) -> Path:
     return DATA_ROOT / "macro" / provider.lower() / symbol / f"{symbol}-{timeframe}.parquet"
 
 
+# --- rate series (macro) -------------------------------------------------------
+# `schema: rate_series` files are not OHLCV: one `Value` column on a naive
+# `DatetimeIndex` named `Date`. They never go through normalize_ohlcv(); these
+# helpers read and merge them while keeping that layout byte-for-byte in kind.
+
+def read_rate_series(path: Path) -> pd.Series:
+    """The `Value` series of a rate file (empty if the file is absent)."""
+    path = Path(path)
+    if not path.exists():
+        return pd.Series(dtype="float64", index=pd.DatetimeIndex([], name="Date"), name="Value")
+    df = pd.read_parquet(path)
+    if "Value" not in df.columns or not isinstance(df.index, pd.DatetimeIndex):
+        raise ValueError(f"{path.name} is not a rate series (Value on a Date index)")
+    return df["Value"].sort_index()
+
+
+def merge_rate_series(new: pd.Series, dst: Path) -> tuple[int, int]:
+    """Merge dated values into a rate file, returning (rows_before, rows_after).
+
+    The union of both sides, new values winning on a shared date, written
+    atomically in the stored layout. Dates the new data lacks are kept: Yahoo
+    has dropped a few historical days that the file still holds.
+    """
+    old = read_rate_series(dst)
+    new = new.astype("float64")
+    new.index = pd.DatetimeIndex(new.index, name="Date")
+    merged = pd.concat([old, new])
+    merged = merged[~merged.index.duplicated(keep="last")].sort_index()
+    frame = merged.rename("Value").to_frame()
+    frame.index.name = "Date"
+    dst = Path(dst)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dst.with_name(dst.name + ".tmp")
+    try:
+        frame.to_parquet(tmp, index=True)
+        tmp.replace(dst)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+    return len(old), len(merged)
+
+
 def update_simple_timeframe_entry(
     catalog: dict,
     symbol: str,

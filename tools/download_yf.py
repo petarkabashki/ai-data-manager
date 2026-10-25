@@ -1,5 +1,5 @@
 #!/usr/bin/env -S uv run python
-"""Download Yahoo Finance bars for stocks, indexes and commodities.
+"""Download Yahoo Finance bars for stocks, indexes, commodities and macro rates.
 
 YF supplies the largest share of this repo — every universe's daily stock bars,
 all of the indexes, the commodities — and until this existed there was no way
@@ -17,6 +17,9 @@ Usage examples:
   uv run python tools/download_yf.py --asset-class Index --timeframes 1d
   uv run python tools/download_yf.py --asset-class Commodity --timeframes 1d
 
+  # Macro rate series (WTB3MS <- Yahoo ^IRX), daily only
+  uv run python tools/download_yf.py --asset-class Macro --timeframes 1d
+
   # Adjusted closes instead of as-traded (recorded on the catalog node)
   uv run python tools/download_yf.py --universe sp500 --timeframes 1d --adjusted
 
@@ -27,8 +30,10 @@ Usage examples:
 never constructs a yfinance session (no network, no ~/.cache), and never
 saves a catalog. `tests/test_download_yf.py` holds it to that.
 
-Macro (`WTB3MS`) is deliberately not covered: it's a rate series, not OHLCV,
-with its own schema. See ROADMAP.md.
+Macro (`WTB3MS`) is a rate series, not OHLCV: its file keeps its own layout
+(`Value` on a `Date` index, `schema: rate_series`). The Yahoo close becomes
+`Value` and is merged with `merge_rate_series()`, never `merge_ohlcv_parquet()`.
+Which Yahoo series feeds each macro symbol is `utils/yf.MACRO_TICKERS`.
 """
 
 from __future__ import annotations
@@ -50,7 +55,10 @@ from utils.catalog import (
     load_index_catalog,
     load_simple_catalog,
     load_stock_catalog,
+    macro_file_path,
     merge_ohlcv_parquet,
+    merge_rate_series,
+    read_rate_series,
     read_parquet_range,
     save_index_catalog,
     save_simple_catalog,
@@ -103,6 +111,32 @@ def _commodity_target():
     )
 
 
+def _macro_target():
+    return (
+        lambda: load_simple_catalog("macro"),
+        lambda catalog: save_simple_catalog("macro", catalog),
+        lambda symbol, tf: macro_file_path(PROVIDER, symbol, tf),
+        lambda catalog, symbol, tf, path, start, end, semantics: update_simple_timeframe_entry(
+            catalog, symbol, tf, PROVIDER, path, start, end,
+            asset_class="Macro", semantics=semantics,
+        ),
+    )
+
+
+def merge_macro(frame, dst: Path) -> tuple[int, int, str, str]:
+    """Store a fetched Yahoo frame's closes as a rate series.
+    Returns (rows_before, rows_after, start_date, end_date)."""
+    import pandas as pd
+
+    values = pd.Series(
+        frame["close"].to_numpy(dtype="float64"),
+        index=pd.to_datetime(frame["timestamp"], unit="ms").dt.normalize(),
+    )
+    old_rows, new_rows = merge_rate_series(values, dst)
+    stored = read_rate_series(dst)
+    return old_rows, new_rows, stored.index[0].strftime("%Y-%m-%d"), stored.index[-1].strftime("%Y-%m-%d")
+
+
 def resolve_target(universe: str | None, asset_class: str | None):
     """(asset_class, label, loader, saver, path_for, write_entry) for the run."""
     if universe:
@@ -111,6 +145,8 @@ def resolve_target(universe: str | None, asset_class: str | None):
         return ("Index", "indexes", *_index_target())
     if asset_class == "Commodity":
         return ("Commodity", "commodities", *_commodity_target())
+    if asset_class == "Macro":
+        return ("Macro", "macro", *_macro_target())
     raise ValueError(f"Nothing to download for universe={universe!r} asset_class={asset_class!r}")
 
 
@@ -156,7 +192,7 @@ def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     source = p.add_mutually_exclusive_group(required=True)
     source.add_argument("--universe", choices=STOCK_UNIVERSES, help="Stock universe to refresh")
-    source.add_argument("--asset-class", choices=["Index", "Commodity"],
+    source.add_argument("--asset-class", choices=["Index", "Commodity", "Macro"],
                         help="Non-stock class to refresh")
 
     p.add_argument("--symbols", nargs="+", help="Explicit symbol subset (must exist in the catalog)")
@@ -199,12 +235,20 @@ def main() -> None:
     if unknown:
         p.error(f"not in the {label} catalog: {', '.join(unknown[:10])}")
 
-    semantics = Semantics(
-        schema="ohlcv",
-        adjustment="adjusted" if args.adjusted else semantics_for(asset_class, PROVIDER).adjustment,
-        volume_basis=semantics_for(asset_class, PROVIDER).volume_basis,
-        bar_label="open",
-    )
+    if asset_class == "Macro":
+        # A rate series: no adjustment to choose, and only daily values exist.
+        if args.adjusted:
+            p.error("--adjusted does not apply to macro rate series")
+        if set(args.timeframes) != {"1d"}:
+            p.error("macro rate series are daily only: use --timeframes 1d")
+        semantics = semantics_for(asset_class, PROVIDER)
+    else:
+        semantics = Semantics(
+            schema="ohlcv",
+            adjustment="adjusted" if args.adjusted else semantics_for(asset_class, PROVIDER).adjustment,
+            volume_basis=semantics_for(asset_class, PROVIDER).volume_basis,
+            bar_label="open",
+        )
 
     fetcher = None if args.dry_run else YahooFetcher()
     download_end = utc_now()
@@ -215,7 +259,10 @@ def main() -> None:
     calendar_name = calendar_for(asset_class).name
 
     say(f"\n{label}: {len(symbols)} symbol(s) x {len(args.timeframes)} timeframe(s) from Yahoo")
-    say(f"Closes  : {'adjusted' if args.adjusted else 'as-traded (raw)'}")
+    if asset_class == "Macro":
+        say("Values  : Yahoo close, stored as Value (rate series)")
+    else:
+        say(f"Closes  : {'adjusted' if args.adjusted else 'as-traded (raw)'}")
     say(f"Calendar: {calendar_name}\n")
 
     for symbol in symbols:
@@ -267,12 +314,15 @@ def main() -> None:
             if frame.empty:
                 continue
 
-            old_rows, new_rows = merge_ohlcv_parquet(frame, dst)
-            result = read_parquet_range(dst)
-            if result is None:
-                failures.append((symbol, timeframe, "merged file unreadable"))
-                continue
-            start_date, end_date, _ = result
+            if asset_class == "Macro":
+                old_rows, new_rows, start_date, end_date = merge_macro(frame, dst)
+            else:
+                old_rows, new_rows = merge_ohlcv_parquet(frame, dst)
+                result = read_parquet_range(dst)
+                if result is None:
+                    failures.append((symbol, timeframe, "merged file unreadable"))
+                    continue
+                start_date, end_date, _ = result
 
             write_entry(catalog, symbol, timeframe, dst, start_date, end_date, semantics)
             save(catalog)  # checkpoint per series: a long run stays resumable

@@ -358,7 +358,9 @@ Notes:
   `adjustment` field either way. The default is as-traded, matching what is
   already on disk.
 - The catalog is saved after each series, so a long run stays resumable.
-- Macro (`WTB3MS`) is **not** covered: a rate series, not OHLCV.
+- Macro (`WTB3MS`): `--asset-class Macro --timeframes 1d`. It is a rate series, not OHLCV.
+  The file is stored from Yahoo `^IRX` (`utils/yf.MACRO_TICKERS`), the close becomes `Value`,
+  and `merge_rate_series()` keeps the `Value`-on-`Date` layout. Daily only; `--adjusted` is refused.
 
 ### download_market_caps.py
 

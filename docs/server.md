@@ -157,6 +157,11 @@ metadata. Errors: 400 (refused, with the reason), 403 (not routed over HTTP),
   a time, killed after 30 minutes (`timed_out`). The job's `result` is the
   real run's JSON document.
 
+Targets: a stock `universe`, an `asset_class` (`Index`, `Commodity`, or
+`Macro`, which is daily only), or a crypto `exchange`. The macro T-bill rate
+`WTB3MS` refreshes from Yahoo `^IRX`:
+`{"dry_run": false, "target": {"asset_class": "Macro"}, "timeframes": ["1d"]}`.
+
 Full request/reply shape: the docstring of `pdm/refresh.py`.
 
 ### Schedules, live feeds, coverage

@@ -63,7 +63,16 @@ def read_timestamp_bounds(path: Path) -> tuple[int, int] | None:
     """(first_ms, last_ms) of an existing parquet file, or None if absent/empty."""
     if not Path(path).exists():
         return None
-    normed = normalize_ohlcv(pd.read_parquet(path))
+    raw = pd.read_parquet(path)
+    if "Value" in raw.columns and isinstance(raw.index, pd.DatetimeIndex):
+        # A rate series (macro): Value on a Date index, not OHLCV.
+        if raw.empty:
+            return None
+        idx = raw.index.sort_values()
+        epoch = pd.Timestamp(0)
+        return (int((idx[0] - epoch) // pd.Timedelta(milliseconds=1)),
+                int((idx[-1] - epoch) // pd.Timedelta(milliseconds=1)))
+    normed = normalize_ohlcv(raw)
     if normed.empty:
         return None
     ts = normed["timestamp"].astype("int64")

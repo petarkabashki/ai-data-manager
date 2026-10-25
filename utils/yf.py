@@ -74,6 +74,13 @@ INDEX_TICKERS: dict[str, str] = {
     "HSI": "^HSI",
 }
 
+#: Our macro symbol -> the Yahoo series it is stored from. WTB3MS's file is
+#: Yahoo's 13-week T-bill yield (^IRX) close, in percent: it matches ^IRX on
+#: every shared day since 1960, while FRED's DTB3 matches about half of them.
+MACRO_TICKERS: dict[str, str] = {
+    "WTB3MS": "^IRX",
+}
+
 #: Symbols whose Yahoo spelling can't be derived by rule.
 TICKER_OVERRIDES: dict[str, str] = {}
 
@@ -104,6 +111,10 @@ def yf_ticker(symbol: str, asset_class: str) -> str:
         return INDEX_TICKERS.get(symbol, f"^{symbol}" if not symbol.startswith("^") else symbol)
     if asset_class == "Stock":
         return symbol.replace(".", "-")
+    if asset_class == "Macro":
+        if symbol not in MACRO_TICKERS:
+            raise ValueError(f"no Yahoo source known for macro symbol {symbol!r}; add it to MACRO_TICKERS")
+        return MACRO_TICKERS[symbol]
     return symbol
 
 

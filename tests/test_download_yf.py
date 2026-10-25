@@ -323,3 +323,68 @@ def test_dry_run_is_safe_in_a_read_only_sandbox(yf_env, monkeypatch, capsys):
     finally:
         os.chmod(root, stat.S_IRWXU)
     assert {p: p.stat().st_mtime_ns for p in root.rglob("*")} == before
+
+
+# --- macro rate series ----------------------------------------------------------
+
+def _seed_macro(root, catalog, dates, values):
+    (root / "macro.yaml").write_text(yaml.dump({"WTB3MS": {
+        "name": "WTB3MS", "common_name": "3-Month T-Bill", "provider": "FRED/YF",
+        "categories": ["Macro", "Interest Rates"], "timeframes": ["1d"], "timeframe_dates": {}}}))
+    path = catalog.macro_file_path("YF", "WTB3MS", "1d")
+    path.parent.mkdir(parents=True)
+    pd.DataFrame({"Value": values}, index=pd.DatetimeIndex(pd.to_datetime(dates), name="Date")).to_parquet(path)
+    return path
+
+
+def test_macro_refresh_keeps_the_rate_layout(yf_env, monkeypatch):
+    """WTB3MS is stored from Yahoo ^IRX: the close becomes Value, the file stays
+    Value-on-Date, old dates Yahoo no longer serves are kept, and the node
+    stays rate_series."""
+    root, catalog, tool = yf_env
+    recent = (datetime.now(tz=timezone.utc) - timedelta(days=10)).date()
+    path = _seed_macro(root, catalog, ["1999-01-04", str(recent)], [4.5, 9.9])
+
+    fetcher = FakeYahoo()
+    _run(tool, ["--asset-class", "Macro", "--timeframes", "1d"], monkeypatch, fetcher)
+
+    assert {c["ticker"] for c in fetcher.calls} == {"^IRX"}
+    df = pd.read_parquet(path)
+    assert list(df.columns) == ["Value"] and df.index.name == "Date"
+    assert isinstance(df.index, pd.DatetimeIndex) and (df.index == df.index.normalize()).all()
+    assert df.loc["1999-01-04", "Value"] == 4.5            # kept, though not re-served
+    assert df.loc[str(recent), "Value"] == 1.5             # Yahoo's close wins on overlap
+    assert df.index[-1].date() > recent
+    entry = yaml.safe_load((root / "macro.yaml").read_text())["WTB3MS"]
+    node = entry["timeframe_dates"]["1d"]
+    assert node["schema"] == "rate_series" and node["start_date"] == "1999-01-04"
+    assert node["end_date"] == df.index[-1].strftime("%Y-%m-%d") == entry["end_date"]
+    assert entry["provider"] == "FRED/YF" and entry["common_name"] == "3-Month T-Bill"
+
+
+def test_macro_dry_run_plans_from_the_rate_file(yf_env, monkeypatch, capsys):
+    root, catalog, tool = yf_env
+    _seed_macro(root, catalog, ["2026-01-05", "2026-01-06"], [3.6, 3.5])
+    _run(tool, ["--asset-class", "Macro", "--timeframes", "1d", "--dry-run", "--json"],
+         monkeypatch, None)
+    import json
+    plan = json.loads(capsys.readouterr().out)["plan"][0]
+    assert plan["symbol"] == "WTB3MS" and plan["ranges"][0]["reason"] == "tail_overlap"
+    assert plan["ranges"][0]["start"] < "2026-01-06"
+
+
+@pytest.mark.parametrize("extra", [["--timeframes", "1h"], ["--timeframes", "1d", "--adjusted"]])
+def test_macro_refuses_what_a_rate_series_cannot_be(yf_env, monkeypatch, extra):
+    root, catalog, tool = yf_env
+    _seed_macro(root, catalog, ["2026-01-05"], [3.6])
+    with pytest.raises(SystemExit) as exc:
+        _run(tool, ["--asset-class", "Macro", *extra], monkeypatch, FakeYahoo())
+    assert exc.value.code == 2
+
+
+def test_unknown_macro_symbol_has_no_yahoo_source(yf_env):
+    from utils.yf import yf_ticker
+
+    assert yf_ticker("WTB3MS", "Macro") == "^IRX"
+    with pytest.raises(ValueError, match="MACRO_TICKERS"):
+        yf_ticker("DGS10", "Macro")

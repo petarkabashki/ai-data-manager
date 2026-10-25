@@ -294,7 +294,7 @@ dry-run first on a new exchange.
 
 ```
 uv run python tools/download_yf.py
-    (--universe sp500|nasdaq100|russell2000|delisted_stocks | --asset-class Index|Commodity)
+    (--universe sp500|nasdaq100|russell2000|delisted_stocks | --asset-class Index|Commodity|Macro)
     [--symbols S ...] [--timeframes TF ...] [--since DATE] [--full]
     [--overlap-days N] [--adjusted] [--sleep-seconds S] [--limit N] [--dry-run]
 ```
@@ -328,7 +328,9 @@ Three Yahoo-specific behaviours worth knowing:
 The catalog is written after every series, so interrupting a long run loses at
 most one symbol's registration. Exits non-zero if any series failed.
 
-Macro (`WTB3MS`) is out of scope — a rate series, not OHLCV.
+Macro (`WTB3MS`) is refreshed with `--asset-class Macro --timeframes 1d`. It is a rate series,
+not OHLCV: the file is stored from Yahoo `^IRX` (`utils/yf.MACRO_TICKERS`), the close becomes `Value`,
+and `merge_rate_series()` keeps the `Value`-on-`Date` layout. Daily only, and `--adjusted` is refused.
 
 ---
 

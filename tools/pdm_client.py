@@ -122,7 +122,7 @@ def main() -> None:
     sp = sub.add_parser("refresh", help="one-shot refresh; a dry run unless --run")
     tgt = sp.add_mutually_exclusive_group(required=True)
     tgt.add_argument("--universe")
-    tgt.add_argument("--asset-class", choices=["Index", "Commodity"])
+    tgt.add_argument("--asset-class", choices=["Index", "Commodity", "Macro"])
     tgt.add_argument("--exchange", help="crypto: binance|bitget|bybit|kucoin")
     sp.add_argument("--trading-mode", default="spot", choices=["spot", "futures"])
     sp.add_argument("--timeframes", "-t", nargs="+", required=True)
