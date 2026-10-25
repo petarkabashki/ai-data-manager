@@ -8,6 +8,7 @@ one of bitget's 792 symbols acquired one that way.
 
 from __future__ import annotations
 
+import importlib
 import sys
 from pathlib import Path
 
@@ -47,3 +48,49 @@ def test_an_unreadable_file_counts_as_empty(tmp_path):
     corrupt = tmp_path / "corrupt.parquet"
     corrupt.write_bytes(b"not a parquet file")
     assert _is_empty_parquet(corrupt)
+
+
+def _fresh_download_crypto(monkeypatch, root):
+    """download_crypto against a tmp data root (the suite's re-import convention)."""
+    monkeypatch.setenv("PRICE_DATA_ROOT", str(root))
+    for name in [m for m in sys.modules if m.startswith("utils.") or m == "download_crypto"]:
+        monkeypatch.delitem(sys.modules, name)
+    return importlib.import_module("download_crypto")
+
+
+def test_process_downloads_skips_a_rejected_download(tmp_path, monkeypatch, ohlcv):
+    """The bitget 2h case end to end: no destination file, no catalog node, and
+    an existing series' data left untouched."""
+    root = tmp_path / "price-data"
+    root.mkdir()
+    dc = _fresh_download_crypto(monkeypatch, root)
+    datadir = tmp_path / "ft"
+    datadir.mkdir()
+    pq.write_table(pa.table({}), datadir / "RAY_USDT-2h.parquet")       # rejected timeframe
+    ohlcv(n=5).to_parquet(datadir / "RAY_USDT-1d.parquet", index=False)  # a real one
+
+    catalog: dict = {}
+    changes = dc.process_downloads("bitget", ["RAY/USDT"], ["2h", "1d"], datadir, catalog)
+
+    assert not dc.crypto_file_path("bitget", "RAY_USDT", "2h").exists()
+    assert dc.crypto_file_path("bitget", "RAY_USDT", "1d").exists()
+    assert [(s, tf) for s, tf, _, _ in changes] == [("RAY_USDT", "1d")]
+    nodes = {tf for e in catalog.values() for tf in (e.get("timeframe_dates") or {})}
+    assert nodes == {"1d"}
+
+
+def test_process_downloads_reports_a_merge_that_adds_nothing(tmp_path, monkeypatch, ohlcv, capsys):
+    """Re-merging the same rows used to raise NameError (zero_delta was only
+    defined in the futures path)."""
+    root = tmp_path / "price-data"
+    root.mkdir()
+    dc = _fresh_download_crypto(monkeypatch, root)
+    datadir = tmp_path / "ft"
+    datadir.mkdir()
+    ohlcv(n=5).to_parquet(datadir / "RAY_USDT-1d.parquet", index=False)
+
+    catalog: dict = {}
+    dc.process_downloads("bitget", ["RAY/USDT"], ["1d"], datadir, catalog)
+    changes = dc.process_downloads("bitget", ["RAY/USDT"], ["1d"], datadir, catalog)
+    assert changes == [("RAY_USDT", "1d", 5, 5)]
+    assert "1 series gained no rows" in capsys.readouterr().out

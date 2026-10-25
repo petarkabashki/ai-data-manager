@@ -194,6 +194,18 @@ def run_freqtrade_download(
     return result.returncode == 0
 
 
+def _warn_zero_delta(zero_delta: list[str]) -> None:
+    """A run that adds nothing looks identical to a successful one: the files
+    are rewritten, the catalog is saved and the exit code is 0. Say so,
+    because this is exactly how a truncating paginator hid for months."""
+    if zero_delta:
+        print(
+            f"\n  [warn] {len(zero_delta)} series gained no rows "
+            f"(already current, delisted, or the request window missed the data):"
+        )
+        print(f"    {', '.join(zero_delta[:12])}{' …' if len(zero_delta) > 12 else ''}")
+
+
 def _is_empty_parquet(path: Path) -> bool:
     """True if the file carries no rows — or no columns at all, which is what a
     rejected download leaves behind."""
@@ -217,6 +229,7 @@ def process_downloads(
 ) -> list[tuple[str, str, int, int]]:
     """Move downloaded files into price-data/, merge with existing, return change log."""
     changes: list[tuple[str, str, int, int]] = []
+    zero_delta: list[str] = []
 
     is_futures = trading_mode == "futures"
     # freqtrade writes futures files into a futures/ subdir
@@ -268,6 +281,7 @@ def process_downloads(
                     common_name=pair if is_futures else None,
                 )
 
+    _warn_zero_delta(zero_delta)
     return changes
 
 
@@ -396,6 +410,8 @@ def download_and_merge_ccxt_futures(
                 tmp_path.unlink(missing_ok=True)
 
             added = new_rows - old_rows
+            if added == 0:
+                zero_delta.append(f"{symbol}/{tf}")
             changes.append((symbol, tf, old_rows, new_rows))
             print(f"  {symbol}/{tf}: {old_rows}→{new_rows} rows (+{added})")
 
@@ -408,16 +424,7 @@ def download_and_merge_ccxt_futures(
                     common_name=pair,
                 )
 
-    if zero_delta:
-        # A run that adds nothing looks identical to a successful one: the files
-        # are rewritten, the catalog is saved and the exit code is 0. Say so,
-        # because this is exactly how a truncating paginator hid for months.
-        print(
-            f"\n  [warn] {len(zero_delta)} series gained no rows "
-            f"(already current, delisted, or the request window missed the data):"
-        )
-        print(f"    {', '.join(zero_delta[:12])}{' …' if len(zero_delta) > 12 else ''}")
-
+    _warn_zero_delta(zero_delta)
     return changes
 
 
