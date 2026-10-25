@@ -172,30 +172,33 @@ def pdm_audit(tool: str, options: dict | None = None) -> dict:
 
 
 @tool(READ)
-def pdm_refresh_preview(timeframes: list[str], universe: str | None = None,
+def pdm_refresh_preview(timeframes: list[str] | None = None, universe: str | None = None,
                         asset_class: str | None = None, exchange: str | None = None,
                         trading_mode: str = "spot", symbols: list[str] | None = None,
-                        since: str | None = None, full: bool = False) -> dict:
+                        since: str | None = None, full: bool = False,
+                        funding: str | None = None) -> dict:
     """Dry-run a refresh: what would be fetched, per symbol and timeframe. Writes nothing.
     Target exactly one of: universe (sp500|nasdaq100|russell2000|delisted_stocks),
-    asset_class (Index|Commodity|Macro; Macro is daily only), or exchange (crypto: binance|bitget|bybit|kucoin)."""
+    asset_class (Index|Commodity|Macro; Macro is daily only), exchange (crypto: binance|bitget|bybit|kucoin),
+    or funding (perpetual funding rates: binance|bybit; no timeframes). timeframes is required otherwise."""
     return client().refresh(dry_run=True, **_plan(timeframes, universe, asset_class, exchange,
-                                                  trading_mode, symbols, since, full))
+                                                  trading_mode, symbols, since, full, funding))
 
 
 # --- writes (keep these on "ask") -------------------------------------------------
 
 
 @tool(WRITE)
-def pdm_refresh_run(timeframes: list[str], universe: str | None = None,
+def pdm_refresh_run(timeframes: list[str] | None = None, universe: str | None = None,
                     asset_class: str | None = None, exchange: str | None = None,
                     trading_mode: str = "spot", symbols: list[str] | None = None,
-                    since: str | None = None, full: bool = False) -> dict:
+                    since: str | None = None, full: bool = False,
+                    funding: str | None = None) -> dict:
     """Queue a real refresh (needs the user's approval). Same arguments as pdm_refresh_preview;
     the server re-checks it with a dry run, runs one refresh at a time, kills it after 30
     minutes. Returns the job; poll pdm_job."""
     return client().refresh(dry_run=False, **_plan(timeframes, universe, asset_class, exchange,
-                                                   trading_mode, symbols, since, full))
+                                                   trading_mode, symbols, since, full, funding))
 
 
 @tool(REMOVE)
@@ -242,15 +245,21 @@ def pdm_live_remove(exchange: str, symbols: list[str] | None = None, market: str
     return client().live_remove(exchange, symbols, market=market, kind=kind, timeframe=timeframe)
 
 
-def _plan(timeframes, universe, asset_class, exchange, trading_mode, symbols, since, full) -> dict:
-    if sum(x is not None for x in (universe, asset_class, exchange)) != 1:
-        raise ValueError("give exactly one of universe, asset_class or exchange")
-    if exchange:
+def _plan(timeframes, universe, asset_class, exchange, trading_mode, symbols, since, full,
+          funding=None) -> dict:
+    if sum(x is not None for x in (universe, asset_class, exchange, funding)) != 1:
+        raise ValueError("give exactly one of universe, asset_class, exchange or funding")
+    if funding:
+        plan = {"provider": "funding", "target": {"exchange": funding}}
+    elif not timeframes:
+        raise ValueError("timeframes is required (except for funding)")
+    elif exchange:
         plan = {"provider": "crypto", "target": {"exchange": exchange, "trading_mode": trading_mode}}
     else:
         plan = {"provider": "yf",
                 "target": {"universe": universe} if universe else {"asset_class": asset_class}}
-    plan["timeframes"] = timeframes
+    if timeframes:
+        plan["timeframes"] = timeframes
     plan.update(_given(symbols=symbols or None, since=since))
     if full:
         plan["full"] = True

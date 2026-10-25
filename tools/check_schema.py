@@ -6,6 +6,8 @@ Scans crypto, crypto-futures, stocks (yf+ibkr), indexes, and commodities — eve
 asset class documented as OHLCV-shaped in agents.md. Macro (`WTB3MS`, a plain
 rate series) and market-cap (CoinGecko snapshots) are intentionally excluded —
 they have different, documented schemas and were never meant to match this one.
+Funding-rate files (`<SYMBOL>-funding.parquet` under crypto-futures) are checked
+against their own schema, `utils.catalog.FUNDING_COLS`, instead.
 
 Read-only: never modifies files. Run it after adding a new tool/provider to
 catch anything that wrote raw provider output straight to disk without
@@ -26,7 +28,15 @@ import pyarrow.parquet as pq
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from utils.catalog import CANONICAL_ARROW_TYPES, CANONICAL_COLS, DATA_ROOT, REPO_ROOT
+from utils.catalog import (
+    CANONICAL_ARROW_TYPES,
+    CANONICAL_COLS,
+    DATA_ROOT,
+    FUNDING_ARROW_TYPES,
+    FUNDING_COLS,
+    FUNDING_TIMEFRAME,
+    REPO_ROOT,
+)
 from utils.report import allow_broken_pipe
 
 OHLCV_ROOTS = [
@@ -56,12 +66,16 @@ def check_file(path: Path) -> str | None:
     if len(schema.names) == 0:
         return None  # empty parquet — tolerated (marks a failed download)
 
-    if list(schema.names) != CANONICAL_COLS:
-        return f"columns {list(schema.names)} != {CANONICAL_COLS}"
+    if path.name.endswith(f"-{FUNDING_TIMEFRAME}.parquet"):
+        cols, types = FUNDING_COLS, FUNDING_ARROW_TYPES
+    else:
+        cols, types = CANONICAL_COLS, CANONICAL_ARROW_TYPES
+    if list(schema.names) != cols:
+        return f"columns {list(schema.names)} != {cols}"
 
-    for name in CANONICAL_COLS:
+    for name in cols:
         actual = str(schema.field(name).type)
-        expected = CANONICAL_ARROW_TYPES[name]
+        expected = types[name]
         if actual != expected:
             return f"{name}: dtype {actual!r} != {expected!r}"
 

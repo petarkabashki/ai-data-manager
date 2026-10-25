@@ -857,6 +857,25 @@ def test_bars_derive_timestamp_for_dated_layouts(running_server):
             c.bars(path="macro/undated.parquet")
 
 
+def test_refresh_plan_accepts_funding():
+    tool, argv, plan = build_argv({"dry_run": True, "provider": "funding",
+                                   "target": {"exchange": "bybit"}, "symbols": ["BTC_USDT"]})
+    assert tool == "download_funding"
+    assert argv == ["--exchange=bybit", "--symbols", "BTC_USDT", "--json"]
+    assert plan["timeframes"] == ["funding"]
+    assert build_argv({"dry_run": True, "provider": "funding", "target": {"exchange": "binance"},
+                       "timeframes": ["funding"], "full": True})[1][-1] == "--full"
+    with pytest.raises(PlanError, match="no timeframes"):
+        build_argv({"dry_run": True, "provider": "funding", "target": {"exchange": "binance"},
+                    "timeframes": ["8h"]})
+    with pytest.raises(PlanError, match="binance|bybit"):
+        build_argv({"dry_run": True, "provider": "funding", "target": {"exchange": "kucoin"}})
+    s = Schedule.from_config({"name": "f", "every": "8h", "refresh": {
+        "provider": "funding", "target": {"exchange": "binance"}}})
+    assert schedule_targets(s) == {"catalog": "crypto_futures_binance", "symbols": None,
+                                   "timeframes": ["funding"]}
+
+
 def test_refresh_plan_accepts_macro():
     tool, argv, _ = build_argv({"dry_run": True, "target": {"asset_class": "Macro"}, "timeframes": ["1d"]})
     assert tool == "download_yf" and "--asset-class=Macro" in argv

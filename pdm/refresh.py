@@ -8,12 +8,13 @@ after `timeout_s` (default and ceiling: 30 minutes).
 
 Request params:
 
-    provider    "yf" (default) | "crypto"
-    target      yf:     {"universe": sp500|nasdaq100|russell2000|delisted_stocks}
-                        | {"asset_class": "Index"|"Commodity"|"Macro"}   (Macro: 1d only)
-                crypto: {"exchange": binance|bitget|bybit|kucoin,
-                         "trading_mode": "spot"|"futures"}
-    timeframes  ["1d", ...]                required
+    provider    "yf" (default) | "crypto" | "funding"
+    target      yf:      {"universe": sp500|nasdaq100|russell2000|delisted_stocks}
+                         | {"asset_class": "Index"|"Commodity"|"Macro"}   (Macro: 1d only)
+                crypto:  {"exchange": binance|bitget|bybit|kucoin,
+                          "trading_mode": "spot"|"futures"}
+                funding: {"exchange": binance|bybit}   perpetual funding settlements
+    timeframes  ["1d", ...]                required; funding: omit (or ["funding"])
     symbols     ["AAPL", ...] | ["BTC/USDT", ...]   optional; crypto default --all-pairs
     since       "YYYY-MM-DD"               optional
     full        bool                       default false
@@ -24,8 +25,9 @@ Reply, dry_run=true:  {"dry_run": true, "refused": bool, "error": str|null,
                        "exit": int, "argv": [...], "plan": {...}|null, "text": str}
     `plan` is `download_yf --json` output (keys: target, provider, dry_run,
     adjusted, calendar, timeframes, symbols, plan[], planned, current,
-    results[], updated, failures[]). Crypto has no JSON mode yet: plan is null
-    and `text` carries the tool's preview.
+    results[], updated, failures[]), or for funding `download_funding --json`
+    (keys: exchange, dry_run, plan[], results[], failures[], updated). Crypto
+    has no JSON mode yet: plan is null and `text` carries the tool's preview.
 Reply, dry_run=false: the queued job (see `job`), with `meta.preview` holding
     the dry-run reply it passed. Poll `job <id>`; when terminal, `result` is
     the real run's `download_yf --json` document. States: succeeded, failed,
@@ -47,6 +49,7 @@ DEFAULT_TIMEOUT_S = 1800
 DRY_RUN_TIMEOUT_S = 120
 REFRESH_SOURCE = "refresh"
 YF_ASSET_CLASSES = ("Index", "Commodity", "Macro")
+FUNDING_EXCHANGES = ("binance", "bybit")
 
 _SYMBOL = re.compile(r"^[A-Za-z0-9.^=_/:-]{1,40}$")
 _DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -84,7 +87,12 @@ def build_argv(params: dict) -> tuple[str, list[str], dict]:
     if not isinstance(target, dict):
         raise PlanError("target must be an object")
     timeframes = _list_of_str(params.get("timeframes"), "timeframes", limit=20)
-    if not timeframes:
+    if provider == "funding":
+        # Settlements come at the contract's own interval, not a bar timeframe.
+        if timeframes not in ([], ["funding"]):
+            raise PlanError('funding has no timeframes; omit them (or pass ["funding"])')
+        timeframes = ["funding"]
+    elif not timeframes:
         raise PlanError("timeframes is required")
     symbols = _list_of_str(params.get("symbols"), "symbols", _SYMBOL)
     since = params.get("since")
@@ -128,8 +136,16 @@ def build_argv(params: dict) -> tuple[str, list[str], dict]:
             raise PlanError(f"unknown timeframe(s) {bad}")
         argv += [f"--exchange={exchange}", f"--trading-mode={mode}", "--timeframes", *timeframes]
         argv += ["--pairs", *symbols] if symbols else ["--all-pairs"]
+    elif provider == "funding":
+        tool = "download_funding"
+        if set(target) != {"exchange"} or target["exchange"] not in FUNDING_EXCHANGES:
+            raise PlanError(f"funding target must be {{exchange: {'|'.join(FUNDING_EXCHANGES)}}}")
+        argv.append(f"--exchange={target['exchange']}")
+        if symbols:
+            argv += ["--symbols", *symbols]
+        argv.append("--json")
     else:
-        raise PlanError("provider must be yf or crypto")
+        raise PlanError("provider must be yf, crypto or funding")
 
     if since:
         argv.append(f"--since={since}")

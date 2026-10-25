@@ -33,8 +33,9 @@ from dataclasses import asdict, dataclass
 
 #: Kind of series. Only `ohlcv` is subject to the canonical schema, which is
 #: why `tools/check_schema.py` skips macro — that exclusion used to be
-#: convention, and this field is what makes it data.
-SCHEMAS = frozenset({"ohlcv", "rate_series"})
+#: convention, and this field is what makes it data. `funding_rate` is a
+#: perpetual's funding settlements (`utils.catalog.FUNDING_COLS`).
+SCHEMAS = frozenset({"ohlcv", "rate_series", "funding_rate"})
 
 #: `raw` — prices as traded, no dividend back-adjustment.
 #: `adjusted` — back-adjusted for splits and dividends.
@@ -145,6 +146,12 @@ _DEFAULTS: dict[str, dict[str | None, Semantics]] = {
         None: Semantics("rate_series", "not_applicable", "none", "open"),
     },
 }
+
+#: Funding settlements are stamped explicitly by `tools/download_funding.py`
+#: rather than looked up by asset class: they live in the crypto-futures
+#: catalogs next to OHLCV nodes, so the class default would call them `ohlcv`.
+#: `close` because a settlement's timestamp ends the interval it pays for.
+FUNDING_SEMANTICS = Semantics("funding_rate", "not_applicable", "none", "close")
 
 #: IBKR `--what-to-show` values that return back-adjusted prices.
 _ADJUSTED_WHAT_TO_SHOW = frozenset({"ADJUSTED_LAST"})

@@ -18,6 +18,7 @@ Usage examples:
   uv run python tools/pdm_client.py audit check_gaps catalog=sp500 timeframe=1d   # read-only, no token
   uv run python tools/pdm_client.py refresh --universe sp500 -t 1d -s AAPL MSFT          # dry run
   uv run python tools/pdm_client.py refresh --universe sp500 -t 1d -s AAPL --run --wait
+  uv run python tools/pdm_client.py refresh --funding binance -s BTC_USDT                # funding rates
   uv run python tools/pdm_client.py schedules [--symbol AAPL] [--catalog sp500]
   uv run python tools/pdm_client.py schedule-add yf-sp500 --at 22:30 --days mon-fri \
       --refresh '{"provider":"yf","target":{"universe":"sp500"},"timeframes":["1d"]}'
@@ -124,8 +125,10 @@ def main() -> None:
     tgt.add_argument("--universe")
     tgt.add_argument("--asset-class", choices=["Index", "Commodity", "Macro"])
     tgt.add_argument("--exchange", help="crypto: binance|bitget|bybit|kucoin")
+    tgt.add_argument("--funding", metavar="EXCHANGE", choices=["binance", "bybit"],
+                     help="perpetual funding rates (no --timeframes)")
     sp.add_argument("--trading-mode", default="spot", choices=["spot", "futures"])
-    sp.add_argument("--timeframes", "-t", nargs="+", required=True)
+    sp.add_argument("--timeframes", "-t", nargs="+", help="required except with --funding")
     sp.add_argument("--symbols", "-s", nargs="+")
     sp.add_argument("--since")
     sp.add_argument("--full", action="store_true")
@@ -256,13 +259,18 @@ def main() -> None:
             if not res["ok"]:
                 sys.exit(1)
         elif args.cmd == "refresh":
-            if args.exchange:
+            if not args.funding and not args.timeframes:
+                p.error("refresh: --timeframes is required (except with --funding)")
+            if args.funding:
+                plan = {"provider": "funding", "target": {"exchange": args.funding}}
+            elif args.exchange:
                 plan = {"provider": "crypto", "target": {"exchange": args.exchange,
                                                          "trading_mode": args.trading_mode}}
             else:
                 plan = {"provider": "yf", "target": {"universe": args.universe} if args.universe
                         else {"asset_class": args.asset_class}}
-            plan["timeframes"] = args.timeframes
+            if args.timeframes:
+                plan["timeframes"] = args.timeframes
             for k in ("symbols", "since"):
                 if getattr(args, k):
                     plan[k] = getattr(args, k)

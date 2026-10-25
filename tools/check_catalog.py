@@ -44,6 +44,7 @@ from utils.catalog import (
     CatalogSpec,
     catalog_registry,
     provider_node_key,
+    read_funding_range,
     read_parquet_range,
     recompute_entry_bounds,
     resolve_from_repo,
@@ -196,7 +197,8 @@ def audit_catalog(spec: CatalogSpec, fix: bool, check_dates: bool) -> tuple[Audi
                 if not check_dates or node.get("schema") == "rate_series":
                     continue
 
-                actual = read_parquet_range(path)
+                actual = (read_funding_range(path) if node.get("schema") == "funding_rate"
+                          else read_parquet_range(path))
                 if actual is None:
                     continue
                 start, end, _ = actual

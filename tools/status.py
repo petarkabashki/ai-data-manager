@@ -38,6 +38,8 @@ from utils.calendars import calendar_for
 from utils.catalog import (
     CANONICAL_COLS,
     CANONICAL_ARROW_TYPES,
+    FUNDING_ARROW_TYPES,
+    FUNDING_COLS,
     catalog_registry,
     iter_timeframe_nodes,
     resolve_from_repo,
@@ -92,17 +94,22 @@ class CatalogStatus:
         }
 
 
-def _schema_ok(path: Path) -> bool:
-    """Same rule as check_schema.py: exact columns, exact arrow types."""
+def _schema_ok(path: Path, kind: str | None = "ohlcv") -> bool:
+    """Same rule as check_schema.py: exact columns, exact arrow types.
+
+    `kind` is the node's `schema`; a funding file has its own columns.
+    """
+    cols, types = ((FUNDING_COLS, FUNDING_ARROW_TYPES) if kind == "funding_rate"
+                   else (CANONICAL_COLS, CANONICAL_ARROW_TYPES))
     try:
         schema = pq.read_schema(path)
     except Exception:
         return False
     if len(schema.names) == 0:
         return True  # empty file — a failed download, not a schema violation
-    if list(schema.names) != CANONICAL_COLS:
+    if list(schema.names) != cols:
         return False
-    return all(str(schema.field(n).type) == CANONICAL_ARROW_TYPES[n] for n in CANONICAL_COLS)
+    return all(str(schema.field(n).type) == types[n] for n in cols)
 
 
 def summarize(spec, stale_days: int, deep: bool) -> CatalogStatus:
@@ -156,7 +163,7 @@ def summarize(spec, stale_days: int, deep: bool) -> CatalogStatus:
                 status.missing_files += 1
                 continue
             status.checked_files += 1
-            if node.get("schema") != "rate_series" and not _schema_ok(path):
+            if node.get("schema") != "rate_series" and not _schema_ok(path, node.get("schema")):
                 status.schema_mismatches += 1
 
     return status

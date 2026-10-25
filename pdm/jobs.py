@@ -42,6 +42,7 @@ TOOL_LANES: dict[str, str] = {
     "retry_ibkr_failed_sequentially": "equity",
     "check_catalog": "equity",          # --fix writes catalogs
     "download_crypto": "crypto",
+    "download_funding": "crypto",       # writes the crypto_futures catalogs too
     "convert_crypto": "crypto",
     "download_deribit_options": "options",
     "download_market_caps": "marketcap",

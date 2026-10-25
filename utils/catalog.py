@@ -19,6 +19,7 @@ import pandas as pd
 import yaml
 
 from utils.semantics import (
+    FUNDING_SEMANTICS,
     Semantics,
     apply_semantics,
     asset_class_from_categories,
@@ -406,7 +407,9 @@ def recompute_entry_bounds(entry: dict) -> None:
     Handles both catalog shapes, so callers don't need to know which one this
     asset class uses.
     """
-    nodes = _iter_provider_nodes(entry.get("timeframe_dates", {}))
+    # Funding settlements are not bars; an entry's bounds say what bars it has.
+    nodes = [n for n in _iter_provider_nodes(entry.get("timeframe_dates", {}))
+             if n.get("schema") != "funding_rate"]
     starts = [n["start_date"] for n in nodes if n.get("start_date")]
     ends = [n["end_date"] for n in nodes if n.get("end_date")]
     if starts:
@@ -726,6 +729,97 @@ def merge_rate_series(new: pd.Series, dst: Path) -> tuple[int, int]:
         tmp.unlink(missing_ok=True)
         raise
     return len(old), len(merged)
+
+
+# --- funding rates (crypto futures) --------------------------------------------
+# A perpetual's funding settlements, stored next to its bars as
+# `<SYMBOL>-funding.parquet`: `timestamp` (int64 ms UTC, the settlement time,
+# aligned to the hour), `funding_rate` (a fraction per settlement, positive =
+# longs pay shorts) and `mark_price` (Binance only, null elsewhere). Not OHLCV:
+# the catalog node is `timeframe_dates.funding` with `schema: funding_rate`,
+# keyed `funding` rather than `8h` because contracts settle every 8h, 4h or 1h
+# and switch between them.
+
+FUNDING_TIMEFRAME = "funding"
+FUNDING_COLS = ["timestamp", "funding_rate", "mark_price"]
+FUNDING_ARROW_TYPES: dict[str, str] = {
+    "timestamp": "int64", "funding_rate": "double", "mark_price": "double",
+}
+_HOUR_MS = 3_600_000
+
+
+def funding_file_path(exchange: str, symbol: str) -> Path:
+    """Canonical path for a perpetual's funding-rate file."""
+    return crypto_futures_file_path(exchange, symbol, FUNDING_TIMEFRAME)
+
+
+def read_funding(path: Path) -> pd.DataFrame:
+    """A funding file as a frame in `FUNDING_COLS` (empty if the file is absent)."""
+    path = Path(path)
+    if not path.exists():
+        return pd.DataFrame({"timestamp": pd.Series(dtype="int64"),
+                             "funding_rate": pd.Series(dtype="float64"),
+                             "mark_price": pd.Series(dtype="float64")})
+    df = pd.read_parquet(path)
+    missing = [c for c in FUNDING_COLS if c not in df.columns]
+    if missing:
+        raise ValueError(f"{path.name} is not a funding file (missing {missing})")
+    return df[FUNDING_COLS]
+
+
+def merge_funding(new: pd.DataFrame, dst: Path) -> tuple[int, int]:
+    """Merge settlements into a funding file, returning (rows_before, rows_after).
+
+    Exchanges stamp settlements with millisecond jitter (…003), so timestamps
+    are rounded to the hour to land on bar boundaries; on a shared settlement
+    the new row wins. Written atomically.
+    """
+    old = read_funding(dst)
+    new = new.reindex(columns=FUNDING_COLS)
+    frame = new if old.empty else (old if new.empty else pd.concat([old, new], ignore_index=True))
+    frame = frame.astype({"timestamp": "int64", "funding_rate": "float64", "mark_price": "float64"})
+    frame["timestamp"] = (frame["timestamp"] + _HOUR_MS // 2) // _HOUR_MS * _HOUR_MS
+    frame = (frame.drop_duplicates("timestamp", keep="last")
+             .sort_values("timestamp").reset_index(drop=True))
+    dst = Path(dst)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dst.with_name(dst.name + ".tmp")
+    try:
+        frame.to_parquet(tmp, index=False)
+        tmp.replace(dst)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+    return len(old), len(frame)
+
+
+def read_funding_range(path: Path) -> tuple[str, str, int] | None:
+    """(start_date, end_date, rows) of a funding file, like `read_parquet_range`."""
+    try:
+        ts = read_funding(path)["timestamp"]
+    except Exception:
+        return None
+    if ts.empty:
+        return None
+    day = lambda ms: datetime.fromtimestamp(int(ms) / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
+    return day(ts.min()), day(ts.max()), len(ts)
+
+
+def update_funding_entry(
+    catalog: dict, symbol: str, exchange: str, file_path: Path, start_date: str, end_date: str,
+) -> None:
+    """Record a funding file on its contract's crypto-futures entry (mutates in place).
+
+    The contract must already be in the catalog: funding belongs to a
+    perpetual whose bars we hold. `funding` is not added to the entry's
+    `timeframes` list, which names bar timeframes.
+    """
+    key = catalog_key(symbol, exchange)
+    if key not in catalog:
+        raise ValueError(f"{symbol} is not in crypto_futures_{exchange}; download its bars first")
+    node = {"start_date": start_date, "end_date": end_date, "file_path": relative_to_repo(file_path)}
+    apply_semantics(node, FUNDING_SEMANTICS)
+    catalog[key].setdefault("timeframe_dates", {})[FUNDING_TIMEFRAME] = node
 
 
 def update_simple_timeframe_entry(

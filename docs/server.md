@@ -161,6 +161,10 @@ Targets: a stock `universe`, an `asset_class` (`Index`, `Commodity`, or
 `Macro`, which is daily only), or a crypto `exchange`. The macro T-bill rate
 `WTB3MS` refreshes from Yahoo `^IRX`:
 `{"dry_run": false, "target": {"asset_class": "Macro"}, "timeframes": ["1d"]}`.
+Perpetual funding rates (Binance, Bybit) are `provider: "funding"`, with no
+timeframes: `{"dry_run": false, "provider": "funding", "target": {"exchange": "bybit"}}`
+(`pdm_client.py refresh --funding bybit`). They then read like any series:
+`series --timeframe funding`, and `bars ... timeframe=funding`.
 
 Full request/reply shape: the docstring of `pdm/refresh.py`.
 

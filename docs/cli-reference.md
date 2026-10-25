@@ -15,6 +15,7 @@ first when one is offered.
 | [`check_schema.py`](#check_schemapy) | read-only | Verify every OHLCV parquet matches the canonical schema |
 | [`check_splits.py`](#check_splitspy) | read-only | Find un-back-adjusted split seams inside stored price files |
 | [`download_crypto.py`](#download_cryptopy) | write | Download via freqtrade, merge parquet, update catalog |
+| [`download_funding.py`](#download_fundingpy) | write | Fetch perpetual funding-rate history next to each contract's bars |
 | [`convert_crypto.py`](#convert_cryptopy) | write | Bulk-normalize crypto parquet/JSON to canonical schema |
 | [`download_market_caps.py`](#download_market_capspy) | write | Fetch CoinGecko market-cap history + snapshot/top-N exports |
 | [`download_ibkr_stock_overnight.py`](#download_ibkr_stock_overnightpy) | write | Download IBKR US-stock bars for sp500/nasdaq100 |
@@ -257,6 +258,39 @@ existing parquet with `normalize_ohlcv()` + dedup-on-timestamp, and updates
 the exchange's YAML catalog. See [`docs/workflows.md`](workflows.md#crypto-refresh)
 for the full refresh workflow and [`.agent/skills/crypto_download/SKILL.md`](../.agent/skills/crypto_download/SKILL.md)
 for the agent-skill version.
+
+---
+
+## `download_funding.py`
+
+```
+uv run python tools/download_funding.py --exchange {binance,bybit} [--symbols SYM...]
+                                         [--since DATE] [--full] [--dry-run] [--json]
+```
+
+```bash
+# Append new settlements for every contract in crypto_futures_binance.yaml
+uv run python tools/download_funding.py --exchange binance
+
+# Two contracts; show where each fetch would start
+uv run python tools/download_funding.py --exchange bybit --symbols BTC_USDT ETH/USDT --dry-run
+```
+
+| Flag | Meaning |
+|---|---|
+| `--exchange` | `binance` or `bybit` (public endpoints, no key) |
+| `--symbols` | Contracts to fetch (`BTC_USDT` or `BTC/USDT`); must be in the catalog. Default: all |
+| `--since` | Start date when there is no file yet (or with `--full`) |
+| `--full` | Ignore the file and refetch from `--since` or the first bar; new rows win |
+| `--dry-run` | Plan only: no network, no writes |
+| `--json` | One JSON document on stdout (exchange, dry_run, plan[], results[], failures[], updated) |
+
+Writes `crypto-futures/<exchange>/<SYMBOL>/<SYMBOL>-funding.parquet`
+(`timestamp`, `funding_rate`, `mark_price`) and records it as
+`timeframe_dates.funding` (`schema: funding_rate`) on the contract's catalog
+entry. Resumes after the last settlement on disk. Exits 1 only when every
+contract failed; partial failures are listed. As a server refresh:
+`{"provider": "funding", "target": {"exchange": "binance"}, "dry_run": true}`.
 
 ---
 

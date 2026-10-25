@@ -185,6 +185,9 @@ def schedule_targets(s: Schedule) -> dict:
             catalog = "commodities"
         elif flags.get("asset-class") == "Macro":
             catalog = "macro"
+    elif s.tool == "download_funding" and "exchange" in flags:
+        catalog = f"crypto_futures_{flags['exchange']}"
+        timeframes = ["funding"]
     elif s.tool == "download_crypto" and "exchange" in flags:
         mode = flags.get("trading-mode", "spot")
         catalog = f"crypto_futures_{flags['exchange']}" if mode == "futures" else f"crypto_{flags['exchange']}"

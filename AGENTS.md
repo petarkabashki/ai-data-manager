@@ -28,7 +28,7 @@ ai-data-manager/
 │   │   ├── yf/<universe>/<SYMBOL>/<SYMBOL>-1d.parquet
 │   │   └── ibkr/<universe>/<SYMBOL>/<SYMBOL>-<session>-<TF>.parquet
 │   ├── cryptos/<exchange>/<symbol>/<symbol>-<TF>.parquet
-│   ├── crypto-futures/<exchange>/<symbol>/<symbol>-<TF>.parquet
+│   ├── crypto-futures/<exchange>/<symbol>/<symbol>-<TF>.parquet   # + <symbol>-funding.parquet
 │   ├── futures/<provider>/<CONTRACT>/<CONTRACT>-<TF>.parquet   # ESU26, CLZ26 …
 │   ├── indexes/yf/<SYMBOL>/<SYMBOL>-1d.parquet
 │   ├── commodities/yf/<SYMBOL>/<SYMBOL>-1d.parquet
@@ -107,6 +107,15 @@ directory level under the class:
   before anything is written. Macro's `WTB3MS` is the one exception (a plain
   rate series with `Value` in a DatetimeIndex, not OHLCV — don't push it
   through `normalize_ohlcv()`/`read_parquet_range()`).
+- Perpetual **funding rates** sit next to a contract's bars as
+  `crypto-futures/<exchange>/<SYMBOL>/<SYMBOL>-funding.parquet` (`timestamp`
+  int64 ms at the settlement, rounded to the hour; `funding_rate`, a fraction
+  per settlement, positive = longs pay shorts; `mark_price`, Binance only).
+  Also not OHLCV: the catalog node is `timeframe_dates.funding` on the
+  contract's `crypto_futures_<exchange>.yaml` entry, `schema: funding_rate`,
+  and `funding` is not in the entry's `timeframes` list or its bounds.
+  `tools/download_funding.py` owns them (they were py-qwant's
+  `scripts/sync_funding_rates.py` until 2026-10).
 
 ## Trading calendars (RULE — never judge a gap by the 24/7 clock)
 
@@ -222,6 +231,7 @@ uv run python tools/convert_crypto.py [--exchange X] [--dry-run]
 | `tools/check_catalog.py` | Verify every catalog node has valid semantics and matches its file; `--fix` backfills |
 | `tools/check_splits.py` | Find un-back-adjusted split seams inside stored files — history at the old share count spliced to bars at the new one |
 | `tools/download_crypto.py` | Download via freqtrade, merge parquet, update YAML metadata |
+| `tools/download_funding.py` | Fetch perpetual funding-rate history (Binance, Bybit) next to each contract's bars |
 | `tools/convert_crypto.py` | Bulk normalize all crypto parquet to canonical schema + JSON→parquet |
 | `tools/download_market_caps.py` | Fetch CoinGecko historical market-cap data and export snapshot/top-N universes |
 | `tools/download_ibkr_stock_overnight.py` | Download IBKR US stock bars for `sp500` / `nasdaq100`, with optional overnight-only filtering |
@@ -323,6 +333,16 @@ uv run python tools/download_crypto.py --exchange binance --pairs SOL/USDT --tim
 
 # Prepend historical data
 uv run python tools/download_crypto.py --exchange binance --pairs BTC/USDT --timeframes 1d --prepend --since 2017-01-01
+```
+
+### download_funding.py
+
+```bash
+# Append new settlements for every contract in the catalog
+uv run python tools/download_funding.py --exchange binance
+
+# A few contracts; plan only
+uv run python tools/download_funding.py --exchange bybit --symbols BTC_USDT ETH_USDT --dry-run
 ```
 
 ### download_yf.py
