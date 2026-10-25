@@ -389,15 +389,14 @@ deploy can restart `pdm` without waiting for the queue to drain.
 - 17 Yahoo files broke at the 2024-08-07 split seam. **Fixed 2026-10-25**:
   re-downloaded with `--full --since 2000-01-01`, then the stale rows were
   dropped (see the next item). `check_splits.py` now flags only real moves.
-- **Yahoo daily files have duplicate dates.** History through 2026-05-08 is
-  stamped 00:00 UTC; `download_yf` now stamps New York midnight (04:00 or
-  05:00 UTC). The merge deduplicates on the exact timestamp, so both copies of
-  the overlap days survive. That is 2,449 of 2,557 files and 101,615
-  duplicate rows. A `--full` run doubles a file's whole history, so don't use
-  it until this is fixed. **Owner decision**: the canonical daily timestamp
-  (recommended: 00:00 UTC, matching the history and crypto). Then make
-  `download_yf` emit it, make the merge deduplicate daily and longer bars by
-  date, and re-stamp and deduplicate every Yahoo daily and weekly file.
+- Yahoo daily files had duplicate dates: imported history was stamped
+  00:00 UTC, while `download_yf` wrote the exchange's local midnight, and the
+  merge deduplicated on the exact timestamp. **Fixed 2026-10-25.** Owner's
+  decision: date-labelled bars (1d/1w/1Mo) are stamped 00:00 UTC of their
+  date. `download_yf` now writes that, and the merge (`daily=True`) collapses
+  any two stamps of one date. `tools/fix_daily_stamps.py` rewrote 2,488
+  files, dropping 12,187 duplicate rows, with the originals in
+  `price-data.stamp-backup-2026-10-25` beside the data root on the host.
 - 22 bitget pairs have no `1w` series, and a probe (VET/USDT) returned 0 rows.
   **Owner decision**: drop `1w` for bitget, or find another source.
 - Yahoo adjustment differs per file: sp500 has 429 raw and 69 adjusted,
