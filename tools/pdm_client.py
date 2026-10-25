@@ -125,7 +125,7 @@ def main() -> None:
     tgt.add_argument("--universe")
     tgt.add_argument("--asset-class", choices=["Index", "Commodity", "Macro"])
     tgt.add_argument("--exchange", help="crypto: binance|bitget|bybit|kucoin")
-    tgt.add_argument("--funding", metavar="EXCHANGE", choices=["binance", "bybit"],
+    tgt.add_argument("--funding", metavar="EXCHANGE", choices=["binance", "bybit", "kucoin"],
                      help="perpetual funding rates (no --timeframes)")
     sp.add_argument("--trading-mode", default="spot", choices=["spot", "futures"])
     sp.add_argument("--timeframes", "-t", nargs="+", help="required except with --funding")

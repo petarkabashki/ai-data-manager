@@ -16,6 +16,8 @@ tmp/
 
 # Local configuration
 .env
+.env.*
+!.env.example
 
 # Scratch notes
 stuff.txt

@@ -869,7 +869,7 @@ def test_refresh_plan_accepts_funding():
         build_argv({"dry_run": True, "provider": "funding", "target": {"exchange": "binance"},
                     "timeframes": ["8h"]})
     with pytest.raises(PlanError, match="binance|bybit"):
-        build_argv({"dry_run": True, "provider": "funding", "target": {"exchange": "kucoin"}})
+        build_argv({"dry_run": True, "provider": "funding", "target": {"exchange": "bitget"}})
     s = Schedule.from_config({"name": "f", "every": "8h", "refresh": {
         "provider": "funding", "target": {"exchange": "binance"}}})
     assert schedule_targets(s) == {"catalog": "crypto_futures_binance", "symbols": None,

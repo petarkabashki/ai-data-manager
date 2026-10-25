@@ -110,7 +110,7 @@ directory level under the class:
 - Perpetual **funding rates** sit next to a contract's bars as
   `crypto-futures/<exchange>/<SYMBOL>/<SYMBOL>-funding.parquet` (`timestamp`
   int64 ms at the settlement, rounded to the hour; `funding_rate`, a fraction
-  per settlement, positive = longs pay shorts; `mark_price`, Binance only).
+  per settlement, positive = longs pay shorts; `mark_price`, Binance only; Binance, Bybit and KuCoin are covered).
   Also not OHLCV: the catalog node is `timeframe_dates.funding` on the
   contract's `crypto_futures_<exchange>.yaml` entry, `schema: funding_rate`,
   and `funding` is not in the entry's `timeframes` list or its bounds.

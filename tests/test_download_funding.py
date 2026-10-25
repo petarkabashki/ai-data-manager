@@ -25,14 +25,14 @@ T0 = 1_704_067_200_000          # 2024-01-01 00:00 UTC
 
 @pytest.fixture
 def env(tmp_path, monkeypatch):
-    """Temp data root with a Binance and a Bybit contract; the tool importable."""
+    """Temp data root with a Binance, Bybit and KuCoin contract; the tool importable."""
     root = tmp_path / "price-data"
     root.mkdir()
     monkeypatch.setenv("PRICE_DATA_ROOT", str(root))
     for name in [m for m in sys.modules if m.startswith("utils.") or m in ("download_funding", "check_schema", "status")]:
         monkeypatch.delitem(sys.modules, name)
     monkeypatch.syspath_prepend(str(REPO_ROOT / "tools"))
-    for exchange, key in (("binance", "BTC_USDT"), ("bybit", "BTC_USDT_bybit")):
+    for exchange, key in (("binance", "BTC_USDT"), ("bybit", "BTC_USDT_bybit"), ("kucoin", "BTC_USDT_kucoin")):
         bars = f"price-data/crypto-futures/{exchange}/BTC_USDT/BTC_USDT-1d.parquet"
         (root / f"crypto_futures_{exchange}.yaml").write_text(yaml.dump({key: {
             "name": "BTC_USDT", "common_name": "BTC/USDT:USDT", "provider": exchange,
@@ -170,6 +170,48 @@ def test_bybit_pages_backwards_down_to_the_start(env, monkeypatch):
     assert sorted(df["timestamp"]) == settlements[100:]
     assert df["mark_price"].isna().all()
     assert len(calls) == 2                      # stopped once a page reached the start
+
+
+def test_kucoin_uses_its_catalog_key(env, monkeypatch):
+    root, tool, catalog = env
+    assert _run(tool, monkeypatch, ["--symbols", "BTC/USDT"], FakeVenue(), exchange="kucoin") == 0
+    assert "funding" in _catalog(root, "kucoin")["BTC_USDT_kucoin"]["timeframe_dates"]
+
+
+def test_kucoin_contract_symbols():
+    import download_funding as tool  # noqa: PLC0415 — importable via the env fixture's path
+    assert tool.kucoin_contract("BTC_USDT") == "XBTUSDTM"
+    assert tool.kucoin_contract("ETH_USDT") == "ETHUSDTM"
+
+
+def test_kucoin_pages_backwards_down_to_the_start(env, monkeypatch):
+    _root, tool, _catalog_mod = env
+    settlements = [T0 + i * H8 for i in range(250)]             # newest first, 100 a page
+    calls = []
+
+    def fake_get(url, params):
+        calls.append(params["symbol"])
+        page = [t for t in reversed(settlements) if params["from"] <= t <= params["to"]][:100]
+        return {"code": "200000", "data": [{"symbol": params["symbol"], "fundingRate": 1.0e-4,
+                                            "timepoint": t} for t in page]}
+
+    monkeypatch.setattr(tool, "_get", fake_get)
+    monkeypatch.setattr(tool.time, "sleep", lambda s: None)
+    monkeypatch.setattr(tool.time, "time", lambda: (settlements[-1] + H8) / 1000)
+    start = settlements[60]
+    df = tool.fetch_kucoin("BTC_USDT", start)
+    assert sorted(df["timestamp"]) == settlements[60:]
+    assert df["mark_price"].isna().all() and (df["funding_rate"] == 1.0e-4).all()
+    assert calls == ["XBTUSDTM"] * 2            # 100 + 90 rows: second page is short
+
+
+def test_kucoin_in_body_error_is_a_failure_not_an_empty_history(env, monkeypatch):
+    # KuCoin answers an unknown contract with HTTP 200 and code 404000.
+    _root, tool, _catalog_mod = env
+    monkeypatch.setattr(tool, "_get", lambda url, params: {
+        "code": "404000", "msg": "This contract does not exist.", "data": None})
+    with pytest.raises(RuntimeError, match="kucoin XBTUSDTM: 404000"):
+        tool.fetch_kucoin("BTC_USDT", T0)
 
 
 def test_checkers_hold_funding_files_to_their_own_schema(env, monkeypatch):

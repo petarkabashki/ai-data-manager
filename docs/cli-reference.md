@@ -264,7 +264,7 @@ for the agent-skill version.
 ## `download_funding.py`
 
 ```
-uv run python tools/download_funding.py --exchange {binance,bybit} [--symbols SYM...]
+uv run python tools/download_funding.py --exchange {binance,bybit,kucoin} [--symbols SYM...]
                                          [--since DATE] [--full] [--dry-run] [--json]
 ```
 
@@ -278,7 +278,7 @@ uv run python tools/download_funding.py --exchange bybit --symbols BTC_USDT ETH/
 
 | Flag | Meaning |
 |---|---|
-| `--exchange` | `binance` or `bybit` (public endpoints, no key) |
+| `--exchange` | `binance`, `bybit` or `kucoin` (public endpoints, no key) |
 | `--symbols` | Contracts to fetch (`BTC_USDT` or `BTC/USDT`); must be in the catalog. Default: all |
 | `--since` | Start date when there is no file yet (or with `--full`) |
 | `--full` | Ignore the file and refetch from `--since` or the first bar; new rows win |

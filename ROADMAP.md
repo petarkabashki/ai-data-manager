@@ -19,6 +19,12 @@ schema. Every epic is constrained by them.
 | [E6](#e6--yahoo-finance-ingestion) | Yahoo Finance ingestion | done (network leg unverified) |
 | [E7](#e7--machine-readable-tool-surface) | Machine-readable tool surface | done |
 | [E8](#e8--one-source-of-truth-for-docs-and-skills) | One source of truth for docs & skills | done |
+| [E9](#e9--freshness-every-catalog-on-a-schedule) | Freshness: every catalog on a schedule | in progress |
+| [E10](#e10--off-host-backups) | Off-host backups | in progress |
+| [E11](#e11--the-data-host-deploys-from-git) | The data host deploys from git | done |
+| [E12](#e12--data-quality-backlog) | Data-quality backlog | in progress |
+| [E13](#e13--consumers-on-the-provider-first-layout) | Consumers on the provider-first layout | in progress |
+| [E14](#e14--funding-on-every-perpetual-venue) | Funding on every perpetual venue | code done, not deployed |
 
 Anything marked done has tests that fail against the previous behaviour.
 
@@ -320,3 +326,101 @@ harness can discover it — it is findable only by reading a table in
 
 **Done when.** Adding a tool requires editing one file, and `AGENTS.md` and
 the code agree on `useRTH`.
+
+---
+
+## E9 — Freshness: every catalog on a schedule
+
+**Why.** The data server owns the writes now, but only macro and funding ran
+on a timer. Every other catalog went stale the moment nobody remembered it:
+bybit and bitget spot had fallen behind because nothing ever scheduled them.
+
+**Scope.**
+
+- Daily schedules for every downloadable catalog, staggered so jobs that
+  share a lane don't pile up. Yahoo runs after the US close on weekdays:
+  sp500, nasdaq100, russell2000, indexes, commodities (22:30–23:30 UTC).
+  Crypto spot runs on binance, kucoin, bybit and bitget (00:15–01:45 UTC),
+  then futures on binance, bybit and kucoin (02:15–03:05 UTC). **Done.**
+- A one-off catch-up run for each, through the same lanes. **Submitted.**
+- Intraday crypto (binance 1m–30m for 436 pairs, bybit for 16 pairs, kucoin's
+  single 15m series). **Owner decision**: what to schedule, and how often.
+- IBKR catalogs. **Blocked**: there is no gateway on the data host.
+
+**Done when.** `status.py` reports no daily catalog more than one trading day
+old, except IBKR, without anyone running a download by hand.
+
+## E10 — Off-host backups
+
+**Why.** The data host holds the only writable copy. The local copy is now
+a read-only mount of it, so it is not a backup.
+
+**Scope.**
+
+- `deploy/pdm-backup.{sh,service,timer}`: a pull-based rsync at 04:30 every
+  day. Each run writes a dated snapshot, hard-linked against the last one.
+  An interrupted run resumes the next day. A snapshot with under 80% of the
+  previous one's files is never finalized. See
+  [docs/server.md](docs/server.md#backups). **Done; first snapshot running.**
+- Retention (`PDM_BACKUP_KEEP`, unset = keep everything) and whether a third
+  copy goes off-site. **Owner decision.**
+
+**Done when.** A restore from the newest snapshot has been rehearsed.
+
+## E11 — The data host deploys from git
+
+**Why.** The host checkout had drifted from `main` and was updated by
+copying files over, so nobody could say which code was running.
+
+**Scope.** The host now tracks `origin/main` over https. To deploy: `git pull
+--ff-only`, then `uv sync --frozen`, then restart `pdm` when no jobs are
+running. The host's local edits were stashed as `stash@{0}`. They are older
+subsets of committed files, so the stash can be dropped on the owner's word.
+
+**Done when.** Met: the host's HEAD is a commit on `main`.
+
+## E12 — Data-quality backlog
+
+**Scope.**
+
+- 17 Yahoo files break at the 2024-08-07 split seam. Full re-downloads have
+  been submitted. Re-run `check_splits.py` once they finish.
+- 22 bitget pairs have no `1w` series, and a probe (VET/USDT) returned 0 rows.
+  **Owner decision**: drop `1w` for bitget, or find another source.
+- Yahoo adjustment differs per file: sp500 has 429 raw and 69 adjusted,
+  nasdaq100 93/15, russell2000 93/1823, delisted 33/0. **Owner decision**:
+  pick one convention and re-download the rest.
+- Not gaps: two expired options series (expected), and `Adj Close`, which
+  the canonical schema drops anyway.
+
+**Done when.** `check_splits.py` is clean, and each provider uses one
+adjustment convention.
+
+## E13 — Consumers on the provider-first layout
+
+**Scope.**
+
+- bqn_quant: the loaders and their tests now use provider-first paths.
+  **Unverified**: its `bqn-extensions` submodule is empty, so the tests can't
+  run.
+- ai-quant: 18 files still use the old paths. **Owner decision**: fix it or
+  archive it.
+- py-qwant: `qwant/data/sync.py` no longer does anything and can go.
+
+**Done when.** No active repo reads a path the old layout used.
+
+## E14 — Funding on every perpetual venue
+
+**Scope.** `download_funding.py` now covers kucoin as well as binance and
+bybit. KuCoin calls bitcoin `XBT`, so BTC_USDT is fetched as `XBTUSDTM`. KuCoin
+also reports errors as HTTP 200 with an error code in the body, and these
+count as failures. `refresh --funding kucoin` is accepted. Still to do:
+
+- Deploy it.
+- Run a dry-run refresh, then a real one.
+- Add a `funding-kucoin` schedule, once the owner approves it.
+
+bitget has no funding source.
+
+**Done when.** Each of the three venues has funding on disk with a schedule
+behind it.

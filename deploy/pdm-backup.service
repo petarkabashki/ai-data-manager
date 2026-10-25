@@ -1,0 +1,12 @@
+# Nightly pull of the PDM host's price-data into hard-linked snapshots.
+# Install: cp deploy/pdm-backup.{service,timer} ~/.config/systemd/user/
+#          systemctl --user daemon-reload && systemctl --user enable --now pdm-backup.timer
+# Edit ExecStart if the checkout is not at ~/work/ai-data-manager.
+[Unit]
+Description=Pull-based snapshot backup of the PDM price-data
+
+[Service]
+Type=oneshot
+ExecStart=%h/work/ai-data-manager/deploy/pdm-backup.sh
+Nice=19
+IOSchedulingClass=idle

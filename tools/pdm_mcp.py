@@ -180,7 +180,7 @@ def pdm_refresh_preview(timeframes: list[str] | None = None, universe: str | Non
     """Dry-run a refresh: what would be fetched, per symbol and timeframe. Writes nothing.
     Target exactly one of: universe (sp500|nasdaq100|russell2000|delisted_stocks),
     asset_class (Index|Commodity|Macro; Macro is daily only), exchange (crypto: binance|bitget|bybit|kucoin),
-    or funding (perpetual funding rates: binance|bybit; no timeframes). timeframes is required otherwise."""
+    or funding (perpetual funding rates: binance|bybit|kucoin; no timeframes). timeframes is required otherwise."""
     return client().refresh(dry_run=True, **_plan(timeframes, universe, asset_class, exchange,
                                                   trading_mode, symbols, since, full, funding))
 

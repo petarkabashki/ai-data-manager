@@ -13,7 +13,7 @@ Request params:
                          | {"asset_class": "Index"|"Commodity"|"Macro"}   (Macro: 1d only)
                 crypto:  {"exchange": binance|bitget|bybit|kucoin,
                           "trading_mode": "spot"|"futures"}
-                funding: {"exchange": binance|bybit}   perpetual funding settlements
+                funding: {"exchange": binance|bybit|kucoin}   perpetual funding settlements
     timeframes  ["1d", ...]                required; funding: omit (or ["funding"])
     symbols     ["AAPL", ...] | ["BTC/USDT", ...]   optional; crypto default --all-pairs
     since       "YYYY-MM-DD"               optional
@@ -49,7 +49,7 @@ DEFAULT_TIMEOUT_S = 1800
 DRY_RUN_TIMEOUT_S = 120
 REFRESH_SOURCE = "refresh"
 YF_ASSET_CLASSES = ("Index", "Commodity", "Macro")
-FUNDING_EXCHANGES = ("binance", "bybit")
+FUNDING_EXCHANGES = ("binance", "bybit", "kucoin")
 
 _SYMBOL = re.compile(r"^[A-Za-z0-9.^=_/:-]{1,40}$")
 _DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")

@@ -200,6 +200,39 @@ refreshes on the host. Anything that wrote into the tree from a client must
 move: py-qwant's `scripts/sync_funding_rates.py`, which writes
 `crypto-futures/<venue>/<SYM>/<SYM>-funding.parquet`, is the one live case.
 
+### Backups
+
+The host holds the only copy of `price-data`, so a client machine pulls
+nightly, off-host snapshots. `deploy/pdm-backup.sh` runs `rsync -a --delete`
+over ssh (BatchMode) from `$PDM_SERVER:work/price-data/` into
+`$PDM_BACKUP_DIR/<YYYY-MM-DD>/` (default `~/backups/pdm-price-data`), with
+`--link-dest` on the previous snapshot, so unchanged files are hard links and
+each snapshot costs only what changed. It writes `<date>.partial` first
+(a failed or interrupted run leaves it, and the next run, on any day, adopts
+it and resumes), renames on success, and repoints a `latest` symlink. A
+snapshot with under 80% of the previous one's files is never finalized: an
+empty or truncated source can't become `latest` or rotate good snapshots out.
+`*.tmp` is excluded; a second run on the same day is a no-op. `PDM_SERVER`
+and the variables below come from the environment or the repo `.env`
+(unquoted or quoted values both work).
+
+Install the systemd user units (`deploy/pdm-backup.service`, idle I/O and CPU
+class, and `deploy/pdm-backup.timer`, daily 04:30 local, `Persistent=true`):
+
+    cp deploy/pdm-backup.{service,timer} ~/.config/systemd/user/
+    systemctl --user daemon-reload
+    systemctl --user enable --now pdm-backup.timer
+    systemctl --user start --no-block pdm-backup.service   # first snapshot now
+
+The first run copies everything (28 GB over Tailscale takes a while); follow
+it with `journalctl --user -u pdm-backup -f`.
+
+Retention is opt-in: `PDM_BACKUP_KEEP=N` keeps the newest N snapshots and
+removes older ones after a successful run. Unset (the default) keeps every
+snapshot and deletes nothing, so disk use grows with churn until the owner
+chooses a number. Restore by copying from `$PDM_BACKUP_DIR/latest/` (or a
+dated snapshot) back onto the host with rsync.
+
 ## Protocol
 
 Every message is a multipart message: a JSON control frame, plus optionally an

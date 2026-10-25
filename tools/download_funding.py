@@ -3,12 +3,13 @@
 
     uv run python tools/download_funding.py --exchange binance
     uv run python tools/download_funding.py --exchange bybit --symbols BTC_USDT ETH_USDT
+    uv run python tools/download_funding.py --exchange kucoin --symbols BTC_USDT
     uv run python tools/download_funding.py --exchange binance --dry-run --json
 
 Writes `price-data/crypto-futures/<exchange>/<SYMBOL>/<SYMBOL>-funding.parquet`
 (`timestamp` ms UTC at the settlement, aligned to the hour; `funding_rate`, a
 fraction per settlement, positive = longs pay shorts; `mark_price` on Binance,
-null on Bybit) and records it as `timeframe_dates.funding` on the contract's
+null on Bybit and KuCoin) and records it as `timeframe_dates.funding` on the contract's
 `crypto_futures_<exchange>.yaml` entry (`schema: funding_rate`).
 
 Which contracts: every one in that catalog, or `--symbols` (which must be in
@@ -51,9 +52,9 @@ from utils.catalog import (
 )
 from utils.config import relative_to_repo
 
-EXCHANGES = ("binance", "bybit")
+EXCHANGES = ("binance", "bybit", "kucoin")
 #: Nothing on disk and no first bar to start from: 2017-07-14, before any
-#: perpetual on either exchange.
+#: perpetual on any of these exchanges.
 FALLBACK_START_MS = 1_500_000_000_000
 
 SESSION = requests.Session()
@@ -114,7 +115,38 @@ def fetch_bybit(symbol: str, start_ms: int) -> pd.DataFrame:
     return _frame(rows)
 
 
-FETCH = {"binance": fetch_binance, "bybit": fetch_bybit}
+def kucoin_contract(symbol: str) -> str:
+    """BTC_USDT -> XBTUSDTM (KuCoin calls bitcoin XBT; linear perps end in M)."""
+    base, _, quote = symbol.partition("_")
+    return f"{'XBT' if base == 'BTC' else base}{quote}M"
+
+
+def fetch_kucoin(symbol: str, start_ms: int) -> pd.DataFrame:
+    # KuCoin serves a [from, to] window newest first, 100 a page: walk `to` down.
+    rows: list[dict] = []
+    end = int(time.time() * 1000)
+    contract = kucoin_contract(symbol)
+    while True:
+        payload = _get("https://api-futures.kucoin.com/api/v1/contract/funding-rates",
+                       {"symbol": contract, "from": start_ms, "to": end})
+        # KuCoin reports errors as HTTP 200 with a non-200000 code (404000 for an
+        # unknown contract); without this check they read as "no settlements".
+        if str(payload.get("code")) != "200000":
+            raise RuntimeError(f"kucoin {contract}: {payload.get('code')} {payload.get('msg')}")
+        items = payload.get("data") or []
+        if not items:
+            break
+        rows.extend({"timestamp": int(r["timepoint"]), "funding_rate": float(r["fundingRate"]),
+                     "mark_price": None} for r in items if int(r["timepoint"]) >= start_ms)
+        oldest = min(int(r["timepoint"]) for r in items)
+        if len(items) < 100 or oldest <= start_ms:
+            break
+        end = oldest - 1
+        time.sleep(0.25)
+    return _frame(rows)
+
+
+FETCH = {"binance": fetch_binance, "bybit": fetch_bybit, "kucoin": fetch_kucoin}
 
 
 def _day_ms(day: str) -> int:
