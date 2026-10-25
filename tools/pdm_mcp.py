@@ -156,6 +156,13 @@ def pdm_jobs(state: str | None = None, limit: int = 20) -> list[dict]:
 
 
 @tool(READ)
+def pdm_alerts(limit: int = 20) -> list[dict]:
+    """Recent alerts, newest first: kind job (a run failed or timed out), stale (series stopped
+    updating) or recovered, each with a one-line text."""
+    return client().call("alerts", limit=min(limit, 200))
+
+
+@tool(READ)
 def pdm_job(job_id: str, log_lines: int = 30) -> dict:
     """One job, with the tail of its log and (refresh jobs) the parsed result."""
     return client().job(job_id, log_lines=min(log_lines, 300))

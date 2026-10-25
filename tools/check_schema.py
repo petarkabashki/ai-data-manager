@@ -9,6 +9,10 @@ they have different, documented schemas and were never meant to match this one.
 Funding-rate files (`<SYMBOL>-funding.parquet` under crypto-futures) are checked
 against their own schema, `utils.catalog.FUNDING_COLS`, instead.
 
+Date-labelled files (`-1d`, `-1w`, `-1Mo`) must also follow the stamp rule:
+every `timestamp` at 00:00 UTC of the date it labels, one row per date.
+`tools/fix_daily_stamps.py --provider <p>` repairs a file that breaks it.
+
 Read-only: never modifies files. Run it after adding a new tool/provider to
 catch anything that wrote raw provider output straight to disk without
 routing through normalize_ohlcv().
@@ -36,6 +40,7 @@ from utils.catalog import (
     FUNDING_COLS,
     FUNDING_TIMEFRAME,
     REPO_ROOT,
+    is_date_labelled,
 )
 from utils.report import allow_broken_pipe
 
@@ -45,7 +50,11 @@ OHLCV_ROOTS = [
     DATA_ROOT / "stocks",
     DATA_ROOT / "indexes",
     DATA_ROOT / "commodities",
+    DATA_ROOT / "futures",
+    DATA_ROOT / "options",
 ]
+
+DAY_MS = 86_400_000
 
 
 def _display_path(path: Path) -> str:
@@ -79,7 +88,21 @@ def check_file(path: Path) -> str | None:
         if actual != expected:
             return f"{name}: dtype {actual!r} != {expected!r}"
 
+    if cols == CANONICAL_COLS and is_date_labelled(path):
+        return check_stamps(path)
     return None
+
+
+def check_stamps(path: Path) -> str | None:
+    """None if every bar is stamped 00:00 UTC and no date repeats."""
+    ts = pq.read_table(path, columns=["timestamp"]).column(0).to_numpy()
+    off = int((ts % DAY_MS != 0).sum())
+    repeats = len(ts) - len(set(((ts + DAY_MS // 2) // DAY_MS).tolist()))
+    if not off and not repeats:
+        return None
+    issue = [f"{off} bar(s) not at 00:00 UTC"] if off else []
+    issue += [f"{repeats} repeated date(s)"] if repeats else []
+    return "; ".join(issue) + " (fix_daily_stamps)"
 
 
 def main() -> None:

@@ -227,7 +227,7 @@ uv run python tools/convert_crypto.py [--exchange X] [--dry-run]
 | `tools/status.py` | One roll-up: coverage, staleness and (with `--deep`) file/metadata health across every class |
 | `tools/query.py` | Query available series — any asset class, any provider — with date ranges and staleness |
 | `tools/check_gaps.py` | Audit any catalog for internal gaps and staleness, against its trading calendar |
-| `tools/check_schema.py` | Verify every OHLCV-classed parquet file matches the canonical schema |
+| `tools/check_schema.py` | Verify every OHLCV-classed parquet file matches the canonical schema, and daily/weekly/monthly files the 00:00 UTC stamp rule |
 | `tools/check_catalog.py` | Verify every catalog node has valid semantics and matches its file; `--fix` backfills |
 | `tools/check_splits.py` | Find un-back-adjusted split seams inside stored files — history at the old share count spliced to bars at the new one |
 | `tools/fix_daily_stamps.py` | Restamp a provider's daily/weekly/monthly bars to 00:00 UTC of their date and drop duplicate dates, with backups |
@@ -302,10 +302,15 @@ uv run python tools/check_schema.py --path price-data/commodities # one class on
 ```
 
 Read-only. Flags any parquet file under crypto/crypto-futures/stocks/indexes/
-commodities whose on-disk columns or dtypes don't exactly match
+commodities/futures/options whose on-disk columns or dtypes don't exactly match
 `CANONICAL_COLS` (`timestamp` int64 ms + OHLCV float64) — e.g. a tool that
 wrote raw provider output straight to disk without routing it through
-`normalize_ohlcv()` first. Exits non-zero if any mismatches are found.
+`normalize_ohlcv()` first. A `-1d`/`-1w`/`-1Mo` file must also be date-labelled:
+every bar at 00:00 UTC of its date, one row per date (`fix_daily_stamps.py`
+repairs one that isn't). Exits non-zero if any mismatches are found.
+
+`merge_ohlcv_parquet()` restamps date-labelled files on every write (it reads
+the timeframe from the destination's name), so a writer can't break the rule.
 
 ### check_catalog.py
 
@@ -349,9 +354,9 @@ uv run python tools/download_funding.py --exchange bybit --symbols BTC_USDT ETH_
 ### fix_daily_stamps.py
 
 ```bash
-# What would change; then the real run (through PDM, in the equity lane)
-uv run python tools/fix_daily_stamps.py --provider yf --dry-run
-uv run python tools/pdm_client.py submit fix_daily_stamps -- --provider yf --json
+# What would change; then the real run (through PDM, in that provider's lane)
+uv run python tools/fix_daily_stamps.py --provider bitget --dry-run
+uv run python tools/pdm_client.py submit fix_daily_stamps -- --provider bitget --json
 ```
 
 ### download_yf.py

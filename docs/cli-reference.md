@@ -134,7 +134,9 @@ that can never succeed, a missed one shows up as staleness.
 ## `check_schema.py`
 
 Add `--json` for machine-readable output: `{"checked": N, "mismatches": [{"path", "issue"}]}`.
-Exits non-zero if any file mismatches, in either output mode.
+Exits non-zero if any file mismatches, in either output mode. A `-1d`/`-1w`/`-1Mo`
+file also mismatches when a bar is not at 00:00 UTC or a date repeats
+(`issue` names the counts; `fix_daily_stamps.py` repairs it).
 
 ```
 uv run python tools/check_schema.py [--path DIR]
@@ -298,17 +300,17 @@ contract failed; partial failures are listed. As a server refresh:
 ## `fix_daily_stamps.py`
 
 ```
-uv run python tools/fix_daily_stamps.py --provider yf [--backup-dir DIR] [--dry-run] [--json]
+uv run python tools/fix_daily_stamps.py --provider P [--backup-dir DIR] [--dry-run] [--json]
 ```
 
 ```bash
-uv run python tools/fix_daily_stamps.py --provider yf --dry-run
-uv run python tools/pdm_client.py submit fix_daily_stamps -- --provider yf --json
+uv run python tools/fix_daily_stamps.py --provider bitget --dry-run
+uv run python tools/pdm_client.py submit fix_daily_stamps -- --provider bitget --json
 ```
 
 | Flag | Meaning |
 |---|---|
-| `--provider` | `yf`: every `*-1d`/`-1w`/`-1Mo` parquet under `price-data/*/yf/` |
+| `--provider` | `yf`, `ibkr`, `binance`, `bybit`, `kucoin`, `bitget` or `deribit`: every `*-1d`/`-1w`/`-1Mo` parquet under `price-data/*/<provider>/` |
 | `--backup-dir` | Where originals are copied before rewriting. Default `<data root>.stamp-backup-<today>`, beside the data root; inside it is refused |
 | `--dry-run` | Report only: no backups, no writes |
 | `--json` | One JSON document on stdout (provider, dry_run, backup_dir, scanned, changed, rows_dropped, files[], skipped[], failures[]) |
@@ -319,8 +321,9 @@ venue's local midnight (04:00/05:00 UTC in New York, the previous UTC day in
 Frankfurt or Tokyo) to its own date. Then one row per date is kept: a
 venue-midnight row from download_yf beats a 00:00 row from the old import.
 Files already in convention are not touched, so reruns change nothing. Dates
-don't move, so catalogs aren't rewritten. Run it through PDM: its lane is
-`equity`, so it can't race a Yahoo download. Exits 1 if any file failed.
+don't move, so catalogs aren't rewritten. Run it through PDM: it runs in the
+provider's lane (`equity`, `crypto` or `options`), so it can't race that
+provider's downloader. Exits 1 if any file failed.
 
 ---
 
@@ -752,6 +755,7 @@ uv run python tools/pdm_client.py [--host H] [--req-port N] [--pub-port N]
 | `status [--catalog --stale-days]` | `status.py --json`, run on the server |
 | `submit [--wait] TOOL -- ARGS...` | Queue a whitelisted tool run (needs `PDM_TOKEN` if the server sets one) |
 | `jobs [--state --limit]` / `job ID [--log N]` / `cancel ID` | Job queue |
+| `alerts [--limit N]` / `alert-test` | Recent alerts (failed jobs, series that stopped updating); `alert-test` (token) sends one through `PDM_NOTIFY_CMD` |
 | `audit TOOL [option=value ...]` | Read-only check on the host, no token: `status`, `query`, `check_gaps`, `check_schema`, `check_catalog` (never `--fix`), `check_splits`. Options are the tool's flags with `_` for `-`; lists comma-separated |
 | `coverage SYMBOL` | Stored series, the schedules that refresh it, and its live feeds |
 | `refresh (--universe U \| --asset-class C \| --exchange E [--trading-mode M]) -t TF... [-s SYM...] [--since D] [--full] [--run [--wait]]` | Approved one-shot refresh; a dry-run preview unless `--run`. One at a time, 30-min cap |

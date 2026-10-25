@@ -140,7 +140,12 @@ def date_label_ms(ts: pd.Series) -> pd.Series:
     return ((ts.astype("int64") + day // 2) // day * day).astype("int64")
 
 
-def merge_ohlcv_parquet(src: pd.DataFrame | Path | str, dst: Path, daily: bool = False) -> tuple[int, int]:
+def is_date_labelled(path: Path | str) -> bool:
+    """True for a `<SYMBOL>-<tf>.parquet` whose timeframe is date-labelled."""
+    return any(Path(path).name.endswith(f"-{tf}.parquet") for tf in DATE_LABELLED_TIMEFRAMES)
+
+
+def merge_ohlcv_parquet(src: pd.DataFrame | Path | str, dst: Path, daily: bool | None = None) -> tuple[int, int]:
     """Merge OHLCV data into `dst`, returning (rows_before, rows_after).
 
     Both sides are normalized to the canonical schema first, concatenated,
@@ -150,8 +155,11 @@ def merge_ohlcv_parquet(src: pd.DataFrame | Path | str, dst: Path, daily: bool =
 
     `daily=True` (bars in DATE_LABELLED_TIMEFRAMES) restamps both sides with
     `date_label_ms` first, so one date is one row even if the two sides
-    stamped it differently.
+    stamped it differently. Left at None, it follows `dst`'s name
+    (`is_date_labelled`), so every writer keeps daily files at 00:00 UTC.
     """
+    if daily is None:
+        daily = is_date_labelled(dst)
     new_df = normalize_ohlcv(src if isinstance(src, pd.DataFrame) else pd.read_parquet(src))
     if daily:
         new_df = new_df.assign(timestamp=date_label_ms(new_df["timestamp"]))

@@ -18,6 +18,8 @@ Methods (request `method` → `params`):
   jobs       state limit                 recent jobs, newest first
   job        id log_lines                one job + the tail of its log
   cancel     id                          (auth)
+  alerts     limit                       recent alerts, newest first (pdm/alerts.py)
+  alert_test                             raise a test alert through the notify command (auth)
   refresh    provider target timeframes symbols since full dry_run timeout_s
                                          approved one-shot refresh (auth; pdm/refresh.py)
   coverage   symbol                      stored series + schedules + live subs for a symbol
@@ -52,6 +54,7 @@ import pandas as pd
 import pyarrow.parquet as pq
 import zmq
 
+from pdm.alerts import Alerter
 from pdm.index import SeriesIndex
 from pdm.jobs import READ_ONLY_TOOLS, TERMINAL, Job, JobManager
 from pdm import audit
@@ -74,7 +77,7 @@ log = logging.getLogger("pdm.server")
 MUTATING = {
     "submit", "cancel", "reload", "refresh",
     "schedule_put", "schedule_remove", "schedule_pause", "schedule_resume", "schedule_run",
-    "live_add", "live_remove",
+    "live_add", "live_remove", "alert_test",
 }
 MAX_CONCURRENT_DRY_RUNS = 2
 
@@ -127,6 +130,8 @@ TOPICS_DOC = {
     "prices": "py-qwant compatible quotes (qwant_compat): 2 frames, msgpack {symbol,timestamp,last,bid,ask}",
     "job/<state>/<tool>": "job lifecycle: queued, running, succeeded, failed, cancelled, timed_out, interrupted (requeued on restart)",
     "server/<event>": "server lifecycle: started, index, heartbeat (every 5s, with live feed ages)",
+    "server/alert": "something needs a look: kind job (a run failed or timed out), stale (series "
+                    "stopped updating) or recovered; text is one line",
     "hint": "subscribe with a trailing '/' to select exactly one node, e.g. bar/stocks/yf/sp500/AAPL/",
 }
 
@@ -167,6 +172,9 @@ class PdmServer:
         broadcast_max_rows: int = 5000,
         workers: int = 8,
         context: zmq.Context | None = None,
+        notify_cmd: str = "",
+        stale_alert_days: int = 4,
+        stale_check_seconds: float = 6 * 3600,
     ):
         from pdm.watch import DataWatcher
 
@@ -202,6 +210,8 @@ class PdmServer:
         self.watcher = DataWatcher(
             self.data_root, tmp_root / "pdm_watch.json", max_rows=broadcast_max_rows
         )
+        self.alerts = Alerter(self.publish, tmp_root, notify_cmd=notify_cmd, stale_days=stale_alert_days)
+        self.stale_check_seconds = stale_check_seconds
         self.jobs = JobManager(self.tools_dir, tmp_root / "pdm-jobs", on_event=self._on_job_event,
                                state_path=tmp_root / "pdm_jobs.json")
         schedules = [Schedule.from_config(s) for s in self.store.get("schedules") or []]
@@ -312,6 +322,7 @@ class PdmServer:
                  self.watcher.series_count(), reads, time.time() - t0)
         self.publish("server/started", {"type": "server", "event": "started",
                                          "series": len(self.index.rows)})
+        threading.Thread(target=self._stale_checks, name="stale-check", daemon=True).start()
         while not self._stop.wait(self.scan_seconds):
             self.scan_and_broadcast(trigger="periodic")
 
@@ -325,6 +336,16 @@ class PdmServer:
                 "time": datetime.now(timezone.utc).isoformat(),
                 "live": self.live.freshness(),
             })
+
+    def _stale_checks(self) -> None:
+        """Alert on series that stop updating: once at start, then periodically."""
+        while True:
+            try:
+                self.alerts.check_stale(self.index.rows)
+            except Exception:
+                log.exception("stale check failed")
+            if self._stop.wait(self.stale_check_seconds):
+                return
 
     def _reload_index(self) -> None:
         with self._reload_lock:
@@ -357,6 +378,7 @@ class PdmServer:
 
     def _on_job_event(self, job: Job) -> None:
         self.publish(job_topic(job.state, job.tool), {"type": "job", **job.public()})
+        self.alerts.on_job(job)
         # A failed or cancelled run may still have merged some series before it
         # stopped, so any job that actually started gets the disk diff.
         if job.state in TERMINAL and job.started_at and job.tool not in READ_ONLY_TOOLS:
@@ -534,6 +556,13 @@ class PdmServer:
         if log_lines:
             out["log"] = self.jobs.log_tail(id, int(log_lines))
         return out
+
+    def m_alerts(self, limit: int = 50) -> list[dict]:
+        return self.alerts.recent(int(limit))
+
+    def m_alert_test(self) -> dict:
+        notify = "the notify command" if self.alerts.notify else "no notify command (PDM_NOTIFY_CMD unset)"
+        return self.alerts.raise_("test", f"test alert from the PDM server, sent through {notify}")
 
     def m_cancel(self, id: str) -> dict:
         return self.jobs.cancel(id).public()

@@ -280,6 +280,7 @@ would hand back the wrong numbers.
 | `prices` | With `qwant_compat: true`: py-qwant's feed, byte-compatible — 2 frames, msgpack `{symbol, timestamp, last, bid, ask}` |
 | `job/<state>/<tool>` | Job queued / running / succeeded / failed / cancelled / timed_out / interrupted |
 | `server/started`, `server/index`, `server/heartbeat` | Lifecycle, index rebuilt, every 5s with each live feed's age |
+| `server/alert` | Something needs a look: `kind` job, stale or recovered, one-line `text` (see Alerts) |
 
 Live feeds use websockets through ccxt.pro (`watch_ohlcv`; `watch_bids_asks`
 — Binance's bookTicker — or `watch_ticker` for quotes) on binance, bitget,
@@ -303,6 +304,30 @@ sends the newest rows with `truncated: true`. Fetch the rest with `bars`.
 
 PUB/SUB doesn't buffer for absent subscribers. A client that was offline
 calls `bars --start <last seen>` to catch up, then subscribes again.
+
+## Alerts
+
+The server raises an alert when:
+
+- a job ends `failed` or `timed_out`. A scheduled job alerts once; while its
+  schedule keeps failing it stays quiet, and the next success sends
+  `recovered`. One-off jobs (submits, refreshes) alert every time.
+- series that were fresh at the previous check fall `PDM_STALE_ALERT_DAYS`
+  (default 4) or more behind their catalog `end_date`. The check runs at start
+  and every 6h. A series that stopped updating long ago never alerts, only one
+  that stops now, and it sends `recovered` when it catches up.
+
+Each alert is appended to `tmp/pdm_alerts.jsonl` and published on
+`server/alert`. `pdm_client alerts` lists the newest ones (also over HTTP).
+To get them on a phone or desktop, set `PDM_NOTIFY_CMD` in the host's `.env`.
+It is run without a shell; the one-line text goes on stdin and the full alert
+JSON in `$PDM_ALERT`:
+
+```bash
+PDM_NOTIFY_CMD="curl -fsS -d @- https://ntfy.sh/<your-private-topic>"
+```
+
+`pdm_client alert-test` (token) sends a test alert through it.
 
 ## Concurrency rules
 

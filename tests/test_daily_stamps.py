@@ -115,3 +115,38 @@ def test_fix_refuses_a_backup_dir_inside_the_data_root(tool):
     with pytest.raises(SystemExit) as exc:
         fix.main(["--provider", "yf", "--backup-dir", str(root / "bak")])
     assert exc.value.code == 2
+
+
+def test_merge_restamps_any_date_labelled_file_by_its_name(tmp_path):
+    from utils.catalog import merge_ohlcv_parquet
+
+    monthly = tmp_path / "BNB_USDT-1Mo.parquet"                              # bitget: 16:00 UTC = 00:00 UTC+8
+    merge_ohlcv_parquet(_bars([D0 - 8 * H], 1.0), monthly)
+    assert pd.read_parquet(monthly)["timestamp"].tolist() == [D0]
+    hourly = tmp_path / "BNB_USDT-1h.parquet"
+    merge_ohlcv_parquet(_bars([D0 - 8 * H], 1.0), hourly)
+    assert pd.read_parquet(hourly)["timestamp"].tolist() == [D0 - 8 * H]     # real instants stay
+
+
+def test_check_schema_flags_daily_stamps_off_midnight_or_repeated(tmp_path, monkeypatch):
+    monkeypatch.syspath_prepend(str(REPO_ROOT / "tools"))
+    from check_schema import check_file
+
+    def write(name, stamps):
+        path = tmp_path / name
+        _bars(stamps, 1.0).to_parquet(path, index=False)
+        return check_file(path)
+
+    assert write("A-1d.parquet", [D0, D0 + DAY]) is None
+    assert write("B-1d.parquet", [D0 + 8 * H, D0 + DAY + 8 * H]).startswith("2 bar(s) not at 00:00 UTC")
+    assert "1 repeated date(s)" in write("C-1w.parquet", [D0, D0 + 4 * H])
+    assert write("D-1h.parquet", [D0 + 8 * H]) is None                       # intraday out of scope
+
+
+def test_fix_reaches_every_provider(tool):
+    root, fix = tool
+    path = root / "options/deribit/BTC/X-C/X-C-1d.parquet"
+    path.parent.mkdir(parents=True)
+    _bars([D0 + 8 * H, D0 + DAY + 8 * H], 1.0).to_parquet(path, index=False)
+    assert fix.main(["--provider", "deribit", "--backup-dir", str(root.parent / "bak")]) == 0
+    assert pd.read_parquet(path)["timestamp"].tolist() == [D0, D0 + DAY]

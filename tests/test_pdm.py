@@ -133,6 +133,16 @@ def test_yf_and_ibkr_share_a_lane():
     assert TOOL_LANES["download_yf"] == TOOL_LANES["download_ibkr_index"]
 
 
+def test_a_provider_tool_runs_in_its_providers_lane():
+    """fix_daily_stamps rewrites the files that provider's downloader writes."""
+    from pdm.jobs import TOOL_LANES, lane_for
+
+    assert lane_for("fix_daily_stamps", ["--provider", "bitget"]) == TOOL_LANES["download_crypto"]
+    assert lane_for("fix_daily_stamps", ["--provider=deribit"]) == TOOL_LANES["download_deribit_options"]
+    assert lane_for("fix_daily_stamps", ["--provider", "yf"]) == TOOL_LANES["download_yf"]
+    assert lane_for("download_yf", ["--provider", "bitget"]) == TOOL_LANES["download_yf"]
+
+
 def _fake_tools(tmp_path: Path) -> Path:
     tools = tmp_path / "tools"
     tools.mkdir(parents=True)
@@ -617,6 +627,19 @@ def test_mutating_methods_need_the_token(running_server):
             c.submit("status", [])
         with pytest.raises(PdmError, match="unknown method"):
             c.call("drop_tables")
+        with pytest.raises(PdmError, match="unauthorized"):
+            c.call("alert_test")             # it runs the notify command
+        assert c.call("alerts") == []
+
+
+def test_alerts_over_the_wire(running_server):
+    from pdm.client import PriceDataClient
+
+    _, req, pub = running_server
+    with PriceDataClient("127.0.0.1", req, pub, token="sekret", timeout=10) as c:
+        sent = c.call("alert_test")
+        assert sent["kind"] == "test" and "PDM_NOTIFY_CMD unset" in sent["text"]
+        assert [a["id"] for a in c.call("alerts", limit=5)] == [sent["id"]]
 
 
 def test_coverage_refresh_schedules_and_live_over_the_wire(running_server):

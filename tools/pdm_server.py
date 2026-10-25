@@ -33,8 +33,10 @@ from utils.config import (
     PDM_BIND_HOST,
     PDM_CONFIG,
     PDM_HTTP_PORT,
+    PDM_NOTIFY_CMD,
     PDM_PUB_PORT,
     PDM_REQ_PORT,
+    PDM_STALE_ALERT_DAYS,
     PDM_TOKEN,
     REPO_ROOT,
     TMP_ROOT,
@@ -76,6 +78,8 @@ def main() -> None:
         config_path=args.config,
         scan_seconds=args.scan_seconds,
         broadcast_max_rows=args.broadcast_max_rows,
+        notify_cmd=PDM_NOTIFY_CMD,
+        stale_alert_days=PDM_STALE_ALERT_DAYS,
     )
     if args.check:
         print(f"config ok: {args.config} — {len(server.scheduler.schedules)} schedule(s), "

@@ -12,6 +12,7 @@ Usage examples:
   uv run python tools/pdm_client.py submit --wait download_yf -- --universe sp500 --timeframes 1d --limit 2
   uv run python tools/pdm_client.py jobs
   uv run python tools/pdm_client.py job <id> --log 40
+  uv run python tools/pdm_client.py alerts
   uv run python tools/pdm_client.py watch bar/cryptos/binance/ live/
   uv run python tools/pdm_client.py status
   uv run python tools/pdm_client.py coverage AAPL              # stored + scheduled + live
@@ -108,6 +109,10 @@ def main() -> None:
     sp = sub.add_parser("job")
     sp.add_argument("id")
     sp.add_argument("--log", type=int, default=0, metavar="LINES")
+
+    sp = sub.add_parser("alerts", help="recent alerts: failed jobs, series that stopped updating")
+    sp.add_argument("--limit", type=int, default=20)
+    sub.add_parser("alert-test", help="raise a test alert through the server's notify command")
 
     sp = sub.add_parser("cancel")
     sp.add_argument("id")
@@ -233,6 +238,10 @@ def main() -> None:
             emit(job, True)
             if log_text and not args.json:
                 print(log_text)
+        elif args.cmd == "alerts":
+            emit(client.call("alerts", limit=args.limit), args.json, ["time", "kind", "text"])
+        elif args.cmd == "alert-test":
+            emit(client.call("alert_test"), True)
         elif args.cmd == "cancel":
             emit(client.cancel(args.id), True)
         elif args.cmd == "coverage":

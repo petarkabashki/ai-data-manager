@@ -2,17 +2,20 @@
 """Restamp date-labelled bars to 00:00 UTC and drop the duplicate dates.
 
     uv run python tools/fix_daily_stamps.py --provider yf --dry-run
-    uv run python tools/fix_daily_stamps.py --provider yf --json
+    uv run python tools/fix_daily_stamps.py --provider bitget --json
 
 A daily (weekly, monthly) bar is labelled by its calendar date: `timestamp` is
-00:00 UTC of that date, whatever the venue's time zone. Yahoo files broke the
-rule. History imported before 2026-05 is stamped 00:00 UTC, but download_yf
+00:00 UTC of that date, whatever the venue's time zone. `check_schema` flags a
+file that breaks the rule, and `merge_ohlcv_parquet` restamps on every write,
+so new breaks don't happen. Older files did break it: bitget monthly candles
+open at 16:00 UTC (midnight UTC+8), Deribit dailies at 08:00 UTC, and Yahoo
+files mixed two conventions. History imported before 2026-05 is stamped 00:00 UTC, but download_yf
 then wrote Yahoo's own stamp, the exchange's local midnight (04:00/05:00 UTC
 for New York, the previous UTC day for Europe and Asia). The merge
 deduplicated on the exact timestamp, so every date both conventions covered
 was stored twice.
 
-For each `*-1d`/`-1w`/`-1Mo` parquet under `price-data/*/yf/`, this:
+For each `*-1d`/`-1w`/`-1Mo` parquet under `price-data/*/<provider>/`, this:
 
 - labels every row with `date_label_ms` (rounds to the nearest UTC midnight,
   which maps each venue's local midnight to its own date);
@@ -25,8 +28,9 @@ For each `*-1d`/`-1w`/`-1Mo` parquet under `price-data/*/yf/`, this:
 
 Dates and catalog bounds don't change, so no catalog is rewritten. A file
 already in convention is left alone, so a second run changes nothing. Run it
-through PDM (`submit fix_daily_stamps`): its lane is `equity`, so it can't
-race a Yahoo download over the same files.
+through PDM (`submit fix_daily_stamps -- --provider <p>`): it runs in that
+provider's lane (`equity`, `crypto` or `options`), so it can't race the
+provider's downloader over the same files.
 
 Exit status: 0 when every file was read (and, unless --dry-run, written),
 1 when any failed, 2 on a bad argument. `--json` writes one JSON document to
@@ -50,7 +54,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from utils.catalog import DATA_ROOT, DATE_LABELLED_TIMEFRAMES, date_label_ms, write_parquet_atomic
 from utils.config import relative_to_repo
 
-PROVIDERS = ("yf",)
+PROVIDERS = ("yf", "ibkr", "binance", "bybit", "kucoin", "bitget", "deribit")
 
 
 def provider_files(root: Path, provider: str) -> list[Path]:

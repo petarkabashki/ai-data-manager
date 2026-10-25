@@ -50,7 +50,7 @@ TOOL_LANES: dict[str, str] = {
     "download_ibkr_index": "equity",
     "retry_ibkr_failed_sequentially": "equity",
     "check_catalog": "equity",          # --fix writes catalogs
-    "fix_daily_stamps": "equity",       # rewrites the Yahoo files download_yf writes
+    "fix_daily_stamps": "equity",       # per provider, see PROVIDER_LANES
     "download_crypto": "crypto",
     "download_funding": "crypto",       # writes the crypto_futures catalogs too
     "convert_crypto": "crypto",
@@ -63,6 +63,25 @@ TOOL_LANES: dict[str, str] = {
     "check_schema": "audit",
     "check_splits": "audit",
 }
+
+#: Tools that rewrite whichever provider's files `--provider` names run in
+#: that provider's lane instead, so they never race its downloader.
+PROVIDER_TOOLS = {"fix_daily_stamps"}
+PROVIDER_LANES = {"binance": "crypto", "bybit": "crypto", "kucoin": "crypto",
+                  "bitget": "crypto", "deribit": "options"}
+
+
+def lane_for(tool: str, args: list[str]) -> str:
+    """The tool's lane, or for a PROVIDER_TOOLS job its provider's."""
+    provider = None
+    if tool in PROVIDER_TOOLS:
+        for i, a in enumerate(args):      # last one wins, as with argparse
+            if a == "--provider" and i + 1 < len(args):
+                provider = args[i + 1]
+            elif a.startswith("--provider="):
+                provider = a.split("=", 1)[1]
+    return PROVIDER_LANES.get(provider, TOOL_LANES[tool])
+
 
 #: Tools whose completion cannot have written bars — skip the disk diff.
 READ_ONLY_TOOLS = {"status", "query", "check_gaps", "check_schema", "check_splits"}
@@ -150,7 +169,7 @@ class JobManager:
         meta: dict | None = None,
     ) -> Job:
         tool, args = validate(tool, args)
-        job = Job(tool=tool, args=args, lane=TOOL_LANES[tool], source=source,
+        job = Job(tool=tool, args=args, lane=lane_for(tool, args), source=source,
                   timeout_s=timeout_s, json_stdout=json_stdout, meta=meta)
         with self._cond:
             if len(self._order) == self._order.maxlen:
@@ -353,7 +372,7 @@ class JobManager:
             except (TypeError, ValueError) as exc:
                 print(f"pdm.jobs: dropping saved job {raw.get('id')}: {exc}", file=sys.stderr, flush=True)
                 continue
-            job.lane = TOOL_LANES[job.tool]
+            job.lane = lane_for(job.tool, job.args)
             if job.state in ("running", INTERRUPTED) and job.error == "cancel requested":
                 job.state, job.finished_at = "cancelled", time.time()
             was_running = job.state in ("running", INTERRUPTED)

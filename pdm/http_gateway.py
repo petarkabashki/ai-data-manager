@@ -35,7 +35,7 @@ log = logging.getLogger("pdm.http")
 #: Methods the gateway routes. `refresh` additionally requires dry_run=true.
 READ_METHODS = {
     "ping", "topics", "catalogs", "series", "bars", "status", "coverage",
-    "schedules", "live", "jobs", "job", "audit", "refresh",
+    "schedules", "live", "jobs", "job", "audit", "refresh", "alerts",
 }
 _INT_PARAMS = {"limit", "stale_days", "log_lines", "timeout_s"}
 _LIST_PARAMS = {"timeframes", "symbols", "fields"}
