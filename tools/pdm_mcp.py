@@ -97,13 +97,17 @@ def pdm_catalogs() -> list[dict]:
 
 @tool(READ)
 def pdm_series(catalog: str | None = None, asset_class: str | None = None, symbol: str | None = None,
-               timeframe: str | None = None, provider: str | None = None,
-               stale_days: int | None = None, limit: int = 200) -> dict:
-    """Find stored series. `stale_days=N` keeps only series whose last bar is >= N days old.
+               name: str | None = None, timeframe: str | None = None, provider: str | None = None,
+               stale_days: int | None = None, fields: list[str] | None = None,
+               limit: int = 200) -> dict:
+    """Find stored series. `name` matches the asset's common name by leading whole words,
+    case-insensitively ("apple" → "Apple Inc."). `fields` keeps only those keys and collapses
+    duplicates, e.g. ["symbol", "catalog", "common_name"] for one row per asset.
+    `stale_days=N` keeps only series whose last bar is >= N days old.
     Crypto symbols use underscores (BTC_USDT)."""
     return client().call("series", limit=min(limit, 2000), **_given(
-        catalog=catalog, asset_class=asset_class, symbol=symbol, timeframe=timeframe,
-        provider=provider, stale_days=stale_days))
+        catalog=catalog, asset_class=asset_class, symbol=symbol, name=name, timeframe=timeframe,
+        provider=provider, stale_days=stale_days, fields=fields))
 
 
 @tool(READ)

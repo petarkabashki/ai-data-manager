@@ -10,6 +10,7 @@ token: only methods that change nothing are routed, plus `refresh` with
     POST /v1/<method>   {"key": value, ...}    JSON body, typed (use for audit options)
 
     GET /v1/series?symbol=AAPL&timeframe=1d
+    GET /v1/series?name=apple&fields=symbol,catalog,common_name   one row per asset
     GET /v1/bars?symbol=AAPL&catalog=sp500&timeframe=1d&start=2026-01-01
     GET /v1/bars?...&format=arrow              Arrow IPC stream (zstd) instead of JSON
     POST /v1/audit  {"tool": "check_gaps", "options": {"catalog": ["sp500"], "timeframe": "1d"}}
@@ -37,7 +38,7 @@ READ_METHODS = {
     "schedules", "live", "jobs", "job", "audit", "refresh",
 }
 _INT_PARAMS = {"limit", "stale_days", "log_lines", "timeout_s"}
-_LIST_PARAMS = {"timeframes", "symbols"}
+_LIST_PARAMS = {"timeframes", "symbols", "fields"}
 _BOOL_PARAMS = {"dry_run", "full"}
 MAX_BODY = 1 << 20
 

@@ -426,6 +426,7 @@ def running_server(tmp_path, ohlcv, monkeypatch):
     (root / "crypto_binance.yaml").write_text(yaml.safe_dump({
         "BTC_USDT_binance": {
             "name": "BTC_USDT",
+            "common_name": "Bitcoin/Tether",
             "timeframe_dates": {"1d": {
                 "start_date": "1970-01-01", "end_date": "1970-01-30",
                 "file_path": "price-data/cryptos/binance/BTC_USDT/BTC_USDT-1d.parquet",
@@ -766,3 +767,91 @@ def test_http_gateway_is_read_only(running_server):
     assert get("/bars?symbol=BTC_USDT&limit=x")[0] == 400
     assert get("/nope/deeper")[0] == 404
     assert [s.name for s in server.scheduler.schedules] == ["btc-daily"]   # untouched
+
+
+def test_series_name_filter_and_fields():
+    from pdm.index import SeriesIndex, name_matches, name_words
+
+    assert name_words("Apple Inc.") == ("apple", "inc")
+    assert name_matches(name_words("APPLE"), name_words("Apple Inc."))
+    assert name_matches(name_words("apple inc"), name_words("Apple Inc."))
+    assert not name_matches(name_words("app"), name_words("Apple Inc."))   # whole words only
+    assert not name_matches(name_words("inc"), name_words("Apple Inc."))   # leading words only
+
+    idx = SeriesIndex()
+    row = dict(catalog="sp500", asset_class="Stock", provider="YF", session=None, start_date=None,
+               end_date=None, adjustment=None, volume_basis=None, file_path=None)
+    idx.rows = [
+        {**row, "symbol": "AAPL", "common_name": "Apple Inc.", "timeframe": "1d"},
+        {**row, "symbol": "AAPL", "common_name": "Apple Inc.", "timeframe": "1h"},
+        {**row, "symbol": "APLE", "common_name": "Apple Hospitality REIT", "timeframe": "1d"},
+        {**row, "symbol": "NVDA", "common_name": "Nvidia", "timeframe": "1d"},
+        {**row, "symbol": "X", "common_name": None, "timeframe": "1d"},
+    ]
+    idx._words = {r["common_name"]: name_words(r["common_name"]) for r in idx.rows if r["common_name"]}
+    assert {r["symbol"] for r in idx.query(name="apple")} == {"AAPL", "APLE"}
+    assert {r["symbol"] for r in idx.query(name="Apple Inc")} == {"AAPL"}
+    assert [r["symbol"] for r in idx.query(name="nvidia")] == ["NVDA"]
+    with pytest.raises(ValueError):
+        idx.query(name="...")
+
+
+def test_series_name_and_fields_over_the_wire(running_server):
+    from pdm.client import PdmError, PriceDataClient
+
+    server, req, pub = running_server
+    with PriceDataClient("127.0.0.1", req, pub, timeout=10) as client:
+        _series_name_checks(server, client, PdmError)
+
+
+def _series_name_checks(server, client, PdmError):
+    import json
+
+    rows = client.series(symbol="BTC_USDT")
+    assert rows[0]["common_name"] == "Bitcoin/Tether"
+    res = client.call("series", name="bitcoin", fields=["symbol", "catalog", "common_name"], limit=0)
+    assert res["series"] == [{"symbol": "BTC_USDT", "catalog": "crypto_binance",
+                              "common_name": "Bitcoin/Tether"}]
+    assert client.call("series", name="tether")["count"] == 0          # not a leading word
+    with pytest.raises(PdmError, match="fields must be"):
+        client.call("series", fields=["nope"])
+    with pytest.raises(PdmError, match="name needs"):
+        client.call("series", name="  ")
+
+    status, body = _http(server, "/series?name=Bitcoin&fields=symbol,common_name")
+    assert status == 200
+    assert json.loads(body)["result"]["series"] == [{"symbol": "BTC_USDT", "common_name": "Bitcoin/Tether"}]
+
+
+def _http(server, path):
+    import urllib.error
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{server.http_port}/v1{path}", timeout=10) as r:
+            return r.status, r.read()
+    except urllib.error.HTTPError as e:
+        return e.code, e.read()
+
+
+def test_bars_derive_timestamp_for_dated_layouts(running_server):
+    """Macro files keep `Date` as the pandas index and have no `timestamp`;
+    bars must still carry the time, as int64 ms first, and honour start/end."""
+    from pdm.client import PdmError, PriceDataClient
+
+    server, req, pub = running_server
+    root = server.data_root
+    macro = root / "macro/yf/WTB3MS/WTB3MS-1d.parquet"
+    macro.parent.mkdir(parents=True)
+    dates = pd.to_datetime(["2026-01-05", "2026-01-12", "2026-01-19"])
+    pd.DataFrame({"Value": [4.1, 4.0, 3.9]}, index=pd.Index(dates, name="Date")).to_parquet(macro)
+    pd.DataFrame({"Value": [1.0]}).to_parquet(root / "macro/undated.parquet")
+
+    with PriceDataClient("127.0.0.1", req, pub, timeout=10) as c:
+        df, meta = c.bars(path="macro/yf/WTB3MS/WTB3MS-1d.parquet", limit=2, with_meta=True)
+        assert list(df.columns) == ["timestamp", "Value"] and meta["columns"] == ["timestamp", "Value"]
+        assert df["timestamp"].tolist() == [int(d.value // 10**6) for d in dates[1:]]
+        df = c.bars(path="macro/yf/WTB3MS/WTB3MS-1d.parquet", start="2026-01-10", end="2026-01-15")
+        assert df["Value"].tolist() == [4.0]
+        with pytest.raises(PdmError, match="no time column"):
+            c.bars(path="macro/undated.parquet")

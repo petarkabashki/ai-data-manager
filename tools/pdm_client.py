@@ -5,6 +5,7 @@ Usage examples:
   uv run python tools/pdm_client.py --host <host-tailscale-ip> ping
   uv run python tools/pdm_client.py catalogs
   uv run python tools/pdm_client.py series --symbol AAPL
+  uv run python tools/pdm_client.py series --name apple --fields symbol catalog common_name
   uv run python tools/pdm_client.py series --catalog crypto_binance --timeframe 1d --stale-days 7
   uv run python tools/pdm_client.py bars --symbol AAPL --catalog sp500 --timeframe 1d --start 2026-01-01
   uv run python tools/pdm_client.py bars --path cryptos/binance/BTC_USDT/BTC_USDT-1h.parquet --limit 24 --csv out.csv
@@ -76,6 +77,8 @@ def main() -> None:
 
     sp = sub.add_parser("series")
     add_filters(sp)
+    sp.add_argument("--name", help='common name, leading whole words: "apple" matches "Apple Inc."')
+    sp.add_argument("--fields", nargs="+", help="keep only these keys, one row per distinct result")
     sp.add_argument("--stale-days", type=int)
     sp.add_argument("--limit", type=int, default=1000)
 
@@ -180,12 +183,15 @@ def main() -> None:
         elif args.cmd == "catalogs":
             emit(client.catalogs(), args.json, ["catalog", "asset_class", "symbols", "series"])
         elif args.cmd == "series":
-            res = client.call("series", limit=args.limit, stale_days=args.stale_days, **filters)
+            res = client.call("series", limit=args.limit, stale_days=args.stale_days,
+                              **filters, **({"name": args.name} if args.name else {}),
+                              **({"fields": args.fields} if args.fields else {}))
             if args.json:
                 emit(res, True)
             else:
-                emit(res["series"], False, ["catalog", "symbol", "timeframe", "provider",
-                                            "session", "start_date", "end_date", "stale_days"])
+                emit(res["series"], False, args.fields or [
+                    "catalog", "symbol", "common_name", "timeframe", "provider",
+                    "session", "start_date", "end_date", "stale_days"])
                 print(f"{res['count']} series" + (" (truncated)" if res["truncated"] else ""))
         elif args.cmd == "bars":
             if args.path:

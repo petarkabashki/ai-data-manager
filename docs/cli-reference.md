@@ -681,7 +681,7 @@ uv run python tools/pdm_client.py [--host H] [--req-port N] [--pub-port N]
 |---|---|
 | `ping` | Server facts: index/watch readiness, lanes, auth |
 | `catalogs` | Every catalog with symbol and series counts |
-| `series [--catalog --asset-class --symbol --timeframe --provider --session --stale-days]` | Coverage rows, like `query.py` |
+| `series [--catalog --asset-class --symbol --name --timeframe --provider --session --stale-days --fields]` | Coverage rows, like `query.py`; `--name apple` matches common names by leading words, `--fields` projects and dedupes |
 | `bars (filters \| --path P) [--start --end --limit --csv F --parquet F]` | One series as the canonical frame; filters must match exactly one series |
 | `status [--catalog --stale-days]` | `status.py --json`, run on the server |
 | `submit [--wait] TOOL -- ARGS...` | Queue a whitelisted tool run (needs `PDM_TOKEN` if the server sets one) |

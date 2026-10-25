@@ -83,6 +83,28 @@ MAX_CONCURRENT_DRY_RUNS = 2
 MAX_BARS_ROWS = 100_000
 
 
+#: Date columns of the older non-OHLCV layouts, in the order they're tried.
+_DATE_COLUMNS = ("timestamp", "date", "datetime", "snapshot_date", "time")
+
+
+def with_timestamp(df: pd.DataFrame, name: str) -> pd.DataFrame:
+    """A frame from a file without a `timestamp` column, with one: int64 ms UTC,
+    first, derived from its date column or date index (macro files keep
+    `Date` as the pandas index). The source date column is dropped; every other
+    column is kept as stored. Refuses in words when there is no date to use."""
+    if not isinstance(df.index, pd.RangeIndex):
+        df = df.reset_index()
+    by_lower = {str(c).lower(): c for c in df.columns}
+    col = next((by_lower[c] for c in _DATE_COLUMNS if c in by_lower), None)
+    if col is None:
+        raise RequestError(f"{name} has no time column (columns: {list(map(str, df.columns))})")
+    ts = pd.to_datetime(df[col], utc=True)
+    epoch = pd.Timestamp(0, tz="UTC")
+    out = df.drop(columns=[col])
+    out.insert(0, "timestamp", ((ts - epoch) // pd.Timedelta(milliseconds=1)).astype("int64"))
+    return out.sort_values("timestamp", kind="stable").reset_index(drop=True)
+
+
 def needs_token(method: str, params: dict) -> bool:
     """Everything that changes state needs the token; a dry-run refresh reads
     only, so it stays open — an agent holding no secret can still preview."""
@@ -91,7 +113,11 @@ def needs_token(method: str, params: dict) -> bool:
     return method in MUTATING
 
 
-SERIES_FILTERS = ("catalog", "asset_class", "symbol", "timeframe", "provider", "session")
+#: Keys of a `series` row, for the `fields` projection.
+SERIES_FIELDS = ("catalog", "asset_class", "symbol", "common_name", "timeframe", "provider",
+                 "session", "start_date", "end_date", "adjustment", "volume_basis",
+                 "file_path", "stale_days")
+SERIES_FILTERS = ("catalog", "asset_class", "symbol", "name", "timeframe", "provider", "session")
 
 TOPICS_DOC = {
     "bar/<asset-dir>/<provider>[/<universe>]/<SYMBOL>/[<session>-]<tf>":
@@ -400,12 +426,34 @@ class PdmServer:
         self._need_index()
         return self.index.catalogs
 
-    def m_series(self, limit: int = 1000, stale_days: int | None = None, **filters) -> dict:
+    def m_series(self, limit: int = 1000, stale_days: int | None = None,
+                 fields: list[str] | None = None, **filters) -> dict:
+        """Series rows matching the filters. `name` matches the asset's common
+        name by leading whole words, case-insensitively ("apple" → "Apple Inc.").
+        `fields` keeps only those keys and collapses rows that become identical,
+        so `fields=[symbol, catalog, common_name]` is one row per asset."""
         self._need_index()
         unknown = set(filters) - set(SERIES_FILTERS)
         if unknown:
             raise RequestError(f"unknown filter(s): {sorted(unknown)}")
-        rows = self.index.query(stale_days=stale_days, limit=None, **filters)
+        try:
+            rows = self.index.query(stale_days=stale_days, limit=None, **filters)
+        except ValueError as exc:
+            raise RequestError(str(exc)) from None
+        if fields is not None:
+            if isinstance(fields, str):
+                fields = [fields]
+            bad = set(fields) - set(SERIES_FIELDS) if isinstance(fields, list) else {"?"}
+            if bad or not fields:
+                raise RequestError(f"fields must be a non-empty list of {list(SERIES_FIELDS)}")
+            seen, kept = set(), []
+            for row in rows:
+                out = {k: row[k] for k in fields}
+                key = tuple(map(str, out.values()))
+                if key not in seen:
+                    seen.add(key)
+                    kept.append(out)
+            rows = kept
         return {"count": len(rows), "series": rows[:limit] if limit else rows,
                 "truncated": bool(limit) and len(rows) > limit}
 
@@ -428,22 +476,30 @@ class PdmServer:
             raise RequestError(f"file missing on disk: {target.name}")
 
         start_ms, end_ms = to_ms(start), to_ms(end)
-        flt = []
-        if start_ms is not None:
-            flt.append(("timestamp", ">=", start_ms))
-        if end_ms is not None:
-            flt.append(("timestamp", "<=", end_ms))
         if limit is not None and (isinstance(limit, bool) or not isinstance(limit, int) or limit < 1):
             raise RequestError("limit must be a positive integer")
         if limit and limit > MAX_BARS_ROWS:
             raise RequestError(f"limit {limit} is over the {MAX_BARS_ROWS}-row cap per reply")
-        table = pq.read_table(target, filters=flt or None)
-        if not limit and table.num_rows > MAX_BARS_ROWS:
+        if "timestamp" in pq.read_schema(target).names:
+            flt = []
+            if start_ms is not None:
+                flt.append(("timestamp", ">=", start_ms))
+            if end_ms is not None:
+                flt.append(("timestamp", "<=", end_ms))
+            df = pq.read_table(target, filters=flt or None).to_pandas()
+        else:
+            # Older layouts (macro's Value + Date index, market-cap snapshots) are
+            # small: read whole, derive the canonical timestamp, filter here.
+            df = with_timestamp(pq.read_table(target).to_pandas(), target.name)
+            if start_ms is not None:
+                df = df[df["timestamp"] >= start_ms]
+            if end_ms is not None:
+                df = df[df["timestamp"] <= end_ms]
+        if not limit and len(df) > MAX_BARS_ROWS:
             raise RequestError(
-                f"{table.num_rows} rows match, over the {MAX_BARS_ROWS}-row cap per reply; "
+                f"{len(df)} rows match, over the {MAX_BARS_ROWS}-row cap per reply; "
                 "narrow start/end or pass limit (last N rows), or page by start/end"
             )
-        df = table.to_pandas()
         if limit:
             df = df.tail(limit).reset_index(drop=True)
         result = {"series": meta, "rows": len(df), "columns": list(df.columns)}

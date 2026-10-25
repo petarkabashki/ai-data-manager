@@ -192,6 +192,15 @@ environment, else `PDM_TOKEN_FILE` (default `~/.config/ai-data-manager/token`,
 mode 0600). Keep it out of the checkout: sandboxed agents that can read the
 repo must not be able to read the token.
 
+`series` rows carry the catalog's `common_name`. Filter by it with `name`:
+case-insensitive, matching the name's leading whole words, so "apple" and
+"apple inc" match "Apple Inc." but "app" and "inc" don't. `fields` keeps only
+the listed keys and collapses rows that become identical:
+`series?name=alphabet&fields=symbol,catalog,common_name` is one row per asset
+(GOOG and GOOGL in sp500 and nasdaq100). The names are whatever the catalogs
+hold: crypto pairs read "Bitcoin/Tether", and some entries carry only the
+ticker (commodities' `GC=F`), so keep an alias table for spoken names.
+
 `bars` replies are capped at 100,000 rows. A request over the cap is
 refused with the matching row count, never silently truncated. Narrow
 `start`/`end`, or pass `limit` (the last N rows).
