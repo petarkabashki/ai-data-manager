@@ -230,8 +230,9 @@ uv run python tools/convert_crypto.py [--exchange X] [--dry-run]
 | `tools/check_schema.py` | Verify every OHLCV-classed parquet file matches the canonical schema |
 | `tools/check_catalog.py` | Verify every catalog node has valid semantics and matches its file; `--fix` backfills |
 | `tools/check_splits.py` | Find un-back-adjusted split seams inside stored files — history at the old share count spliced to bars at the new one |
+| `tools/fix_daily_stamps.py` | Restamp a provider's daily/weekly/monthly bars to 00:00 UTC of their date and drop duplicate dates, with backups |
 | `tools/download_crypto.py` | Download via freqtrade, merge parquet, update YAML metadata |
-| `tools/download_funding.py` | Fetch perpetual funding-rate history (Binance, Bybit) next to each contract's bars |
+| `tools/download_funding.py` | Fetch perpetual funding-rate history (Binance, Bybit, KuCoin) next to each contract's bars |
 | `tools/convert_crypto.py` | Bulk normalize all crypto parquet to canonical schema + JSON→parquet |
 | `tools/download_market_caps.py` | Fetch CoinGecko historical market-cap data and export snapshot/top-N universes |
 | `tools/download_ibkr_stock_overnight.py` | Download IBKR US stock bars for `sp500` / `nasdaq100`, with optional overnight-only filtering |
@@ -343,6 +344,14 @@ uv run python tools/download_funding.py --exchange binance
 
 # A few contracts; plan only
 uv run python tools/download_funding.py --exchange bybit --symbols BTC_USDT ETH_USDT --dry-run
+```
+
+### fix_daily_stamps.py
+
+```bash
+# What would change; then the real run (through PDM, in the equity lane)
+uv run python tools/fix_daily_stamps.py --provider yf --dry-run
+uv run python tools/pdm_client.py submit fix_daily_stamps -- --provider yf --json
 ```
 
 ### download_yf.py

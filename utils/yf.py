@@ -31,7 +31,7 @@ from typing import Protocol
 
 import pandas as pd
 
-from utils.catalog import empty_ohlcv_frame, normalize_ohlcv
+from utils.catalog import DATE_LABELLED_TIMEFRAMES, empty_ohlcv_frame, normalize_ohlcv
 
 #: Our timeframe -> Yahoo `interval`. Yahoo has no 4h or 8h bar.
 OUR_TF_TO_YF_INTERVAL: dict[str, str] = {
@@ -127,12 +127,17 @@ def clamp_start(start: datetime, timeframe: str, now: datetime | None = None) ->
     return max(start, oldest)
 
 
-def frame_from_yahoo(raw: pd.DataFrame) -> pd.DataFrame:
+def frame_from_yahoo(raw: pd.DataFrame, timeframe: str | None = None) -> pd.DataFrame:
     """Normalize a yfinance history frame to the canonical schema.
 
     yfinance returns the timestamp as the index — named `Date` for daily bars
     and `Datetime` for intraday — so it has to be reset into a column before
     `normalize_ohlcv()` can recognise the Yahoo shape.
+
+    Yahoo stamps a daily (weekly, monthly) bar at midnight in the exchange's
+    time zone, which is 04:00/05:00 UTC for New York and the previous UTC day
+    for Europe and Asia. Bars of a `timeframe` in DATE_LABELLED_TIMEFRAMES are
+    restamped to 00:00 UTC of that exchange-local date, the repo's convention.
     """
     if raw is None or len(raw) == 0:
         return empty_ohlcv_frame()
@@ -146,6 +151,12 @@ def frame_from_yahoo(raw: pd.DataFrame) -> pd.DataFrame:
     if isinstance(frame.columns, pd.MultiIndex):
         # A single-ticker download can still come back column-multi-indexed.
         frame.columns = [c[0] if isinstance(c, tuple) else c for c in frame.columns]
+
+    if timeframe in DATE_LABELLED_TIMEFRAMES and "Date" in frame.columns:
+        when = pd.to_datetime(frame["Date"])
+        if isinstance(when.dtype, pd.DatetimeTZDtype):
+            when = when.dt.tz_localize(None)        # the exchange's wall clock
+        frame["Date"] = when.dt.normalize().dt.tz_localize("UTC")
 
     return normalize_ohlcv(frame)
 
@@ -206,4 +217,4 @@ def fetch_ohlcv(
     interval = yf_interval(timeframe)
     ticker = yf_ticker(symbol, asset_class)
     raw = fetcher.fetch(ticker, interval, clamp_start(start, timeframe), end, auto_adjust)
-    return frame_from_yahoo(raw)
+    return frame_from_yahoo(raw, timeframe)

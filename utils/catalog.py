@@ -123,19 +123,44 @@ def write_parquet_atomic(df: pd.DataFrame, dst: Path, compression: str = "snappy
         raise
 
 
-def merge_ohlcv_parquet(src: pd.DataFrame | Path | str, dst: Path) -> tuple[int, int]:
+#: Timeframes whose bars are labelled by calendar date: 00:00 UTC of the day
+#: (week, month) the bar covers, whatever the venue's time zone.
+DATE_LABELLED_TIMEFRAMES = frozenset({"1d", "1w", "1Mo"})
+
+
+def date_label_ms(ts: pd.Series) -> pd.Series:
+    """int64 ms timestamps -> 00:00 UTC of the calendar date each one labels.
+
+    Rounds to the nearest UTC midnight. That maps a venue's local midnight to
+    its own date on either side of UTC: New York's 04:00/05:00 UTC to the same
+    day, and Frankfurt's 22:00/23:00 or Tokyo's 15:00 UTC (previous UTC day)
+    to the next. An already date-labelled 00:00 is unchanged.
+    """
+    day = 86_400_000
+    return ((ts.astype("int64") + day // 2) // day * day).astype("int64")
+
+
+def merge_ohlcv_parquet(src: pd.DataFrame | Path | str, dst: Path, daily: bool = False) -> tuple[int, int]:
     """Merge OHLCV data into `dst`, returning (rows_before, rows_after).
 
     Both sides are normalized to the canonical schema first, concatenated,
     deduped on `timestamp` (new data wins) and sorted ascending. The write is
     atomic. This is the only merge implementation in the repo — crypto,
     futures, IBKR and the legacy JSON converter all route through it.
+
+    `daily=True` (bars in DATE_LABELLED_TIMEFRAMES) restamps both sides with
+    `date_label_ms` first, so one date is one row even if the two sides
+    stamped it differently.
     """
     new_df = normalize_ohlcv(src if isinstance(src, pd.DataFrame) else pd.read_parquet(src))
+    if daily:
+        new_df = new_df.assign(timestamp=date_label_ms(new_df["timestamp"]))
 
     dst = Path(dst)
     if dst.exists():
         old_df = normalize_ohlcv(pd.read_parquet(dst))
+        if daily:
+            old_df = old_df.assign(timestamp=date_label_ms(old_df["timestamp"]))
         old_rows = len(old_df)
         merged = (
             pd.concat([old_df, new_df])

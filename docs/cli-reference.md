@@ -14,6 +14,7 @@ first when one is offered.
 | [`check_gaps.py`](#check_gapspy) | read-only | Audit crypto data for internal gaps + trailing staleness |
 | [`check_schema.py`](#check_schemapy) | read-only | Verify every OHLCV parquet matches the canonical schema |
 | [`check_splits.py`](#check_splitspy) | read-only | Find un-back-adjusted split seams inside stored price files |
+| [`fix_daily_stamps.py`](#fix_daily_stampspy) | write | Restamp daily+ bars to 00:00 UTC of their date; drop duplicate dates |
 | [`download_crypto.py`](#download_cryptopy) | write | Download via freqtrade, merge parquet, update catalog |
 | [`download_funding.py`](#download_fundingpy) | write | Fetch perpetual funding-rate history next to each contract's bars |
 | [`convert_crypto.py`](#convert_cryptopy) | write | Bulk-normalize crypto parquet/JSON to canonical schema |
@@ -291,6 +292,35 @@ Writes `crypto-futures/<exchange>/<SYMBOL>/<SYMBOL>-funding.parquet`
 entry. Resumes after the last settlement on disk. Exits 1 only when every
 contract failed; partial failures are listed. As a server refresh:
 `{"provider": "funding", "target": {"exchange": "binance"}, "dry_run": true}`.
+
+---
+
+## `fix_daily_stamps.py`
+
+```
+uv run python tools/fix_daily_stamps.py --provider yf [--backup-dir DIR] [--dry-run] [--json]
+```
+
+```bash
+uv run python tools/fix_daily_stamps.py --provider yf --dry-run
+uv run python tools/pdm_client.py submit fix_daily_stamps -- --provider yf --json
+```
+
+| Flag | Meaning |
+|---|---|
+| `--provider` | `yf`: every `*-1d`/`-1w`/`-1Mo` parquet under `price-data/*/yf/` |
+| `--backup-dir` | Where originals are copied before rewriting. Default `<data root>.stamp-backup-<today>`, beside the data root; inside it is refused |
+| `--dry-run` | Report only: no backups, no writes |
+| `--json` | One JSON document on stdout (provider, dry_run, backup_dir, scanned, changed, rows_dropped, files[], skipped[], failures[]) |
+
+Date-labelled bars carry `timestamp` = 00:00 UTC of their calendar date.
+Each row is labelled by rounding to the nearest UTC midnight, which maps a
+venue's local midnight (04:00/05:00 UTC in New York, the previous UTC day in
+Frankfurt or Tokyo) to its own date. Then one row per date is kept: a
+venue-midnight row from download_yf beats a 00:00 row from the old import.
+Files already in convention are not touched, so reruns change nothing. Dates
+don't move, so catalogs aren't rewritten. Run it through PDM: its lane is
+`equity`, so it can't race a Yahoo download. Exits 1 if any file failed.
 
 ---
 

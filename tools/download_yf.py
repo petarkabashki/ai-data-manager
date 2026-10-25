@@ -48,6 +48,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from utils.calendars import calendar_for
 from utils.config import relative_to_repo
 from utils.catalog import (
+    DATE_LABELLED_TIMEFRAMES,
     REPO_ROOT,
     STOCK_UNIVERSES,
     commodity_file_path,
@@ -317,7 +318,8 @@ def main() -> None:
             if asset_class == "Macro":
                 old_rows, new_rows, start_date, end_date = merge_macro(frame, dst)
             else:
-                old_rows, new_rows = merge_ohlcv_parquet(frame, dst)
+                old_rows, new_rows = merge_ohlcv_parquet(
+                    frame, dst, daily=timeframe in DATE_LABELLED_TIMEFRAMES)
                 result = read_parquet_range(dst)
                 if result is None:
                     failures.append((symbol, timeframe, "merged file unreadable"))
