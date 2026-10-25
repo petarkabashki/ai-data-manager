@@ -24,7 +24,7 @@ schema. Every epic is constrained by them.
 | [E11](#e11--the-data-host-deploys-from-git) | The data host deploys from git | done |
 | [E12](#e12--data-quality-backlog) | Data-quality backlog | in progress |
 | [E13](#e13--consumers-on-the-provider-first-layout) | Consumers on the provider-first layout | in progress |
-| [E14](#e14--funding-on-every-perpetual-venue) | Funding on every perpetual venue | deployed; first download queued |
+| [E14](#e14--funding-on-every-perpetual-venue) | Funding on every perpetual venue | done |
 
 Anything marked done has tests that fail against the previous behaviour.
 
@@ -426,8 +426,9 @@ adjustment convention.
 **Scope.** `download_funding.py` now covers kucoin as well as binance and
 bybit. KuCoin calls bitcoin `XBT`, so BTC_USDT is fetched as `XBTUSDTM`. KuCoin
 also reports errors as HTTP 200 with an error code in the body, and these
-count as failures. Deployed 2026-10-25. The first full download (74
-contracts) is queued, and the `funding-kucoin` schedule runs every 8h.
+count as failures. Deployed 2026-10-25. The first full download fetched
+all 74 contracts with no failures: 309,824 settlements from 2020-03-30. The
+`funding-kucoin` schedule refreshes them every 8h.
 
 bitget has no funding source.
 
