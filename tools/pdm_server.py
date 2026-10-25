@@ -10,7 +10,7 @@ writes the file back.
 
 Usage examples:
   uv run python tools/pdm_server.py                          # PDM_* from env/.env
-  uv run python tools/pdm_server.py --bind 100.117.28.91     # tailnet only
+  uv run python tools/pdm_server.py --bind <host-tailscale-ip>     # tailnet only
   uv run python tools/pdm_server.py --config pdm.yaml --req-port 5555 --pub-port 5556
   uv run python tools/pdm_server.py --check                  # validate config and exit
 

@@ -3,7 +3,7 @@
 ```python
 from pdm.client import PriceDataClient
 
-with PriceDataClient("100.117.28.91") as pdm:
+with PriceDataClient("<host-tailscale-ip>") as pdm:
     pdm.series(symbol="AAPL")                       # what exists
     df = pdm.bars(symbol="BTC_USDT", catalog="crypto_binance", timeframe="1h",
                   start="2026-10-01")

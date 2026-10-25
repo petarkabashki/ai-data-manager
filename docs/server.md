@@ -27,7 +27,7 @@ the network. It does four jobs:
 
 | | |
 |---|---|
-| Host | `grenada-OptiPlex-3080`, Tailscale `100.117.28.91` |
+| Host | `<host>`, Tailscale `<host-tailscale-ip>` — the real values are kept out of this public repo; set `PDM_SERVER` in your local `.env` |
 | Repo | `~/work/ai-data-manager` (git checkout) |
 | Data | `~/work/price-data` (`price-data` symlink in the repo, as everywhere) |
 | Service | systemd user unit `pdm.service` (`deploy/pdm.service`), lingering so it runs without a login |
@@ -49,7 +49,7 @@ uv run python tools/pdm_server.py --check
 ## Clients
 
 ```bash
-# any tailnet machine with a checkout (PDM_SERVER=100.117.28.91 in .env)
+# any tailnet machine with a checkout (PDM_SERVER=<host-tailscale-ip> in .env)
 uv run python tools/pdm_client.py ping
 uv run python tools/pdm_client.py --json series --symbol AAPL
 uv run python tools/pdm_client.py bars --symbol BTC_USDT --catalog crypto_binance -t 1h --start 2026-10-01
@@ -63,7 +63,7 @@ uv run python tools/pdm_client.py live
 ```python
 from pdm.client import PriceDataClient, with_datetime_index
 
-with PriceDataClient("100.117.28.91") as pdm:
+with PriceDataClient("<host-tailscale-ip>") as pdm:
     df = pdm.bars(symbol="AAPL", catalog="sp500", timeframe="1d", start="2020-01-01")
     for topic, header, frame in pdm.subscribe("bar/cryptos/binance/", "live/"):
         ...
@@ -117,23 +117,23 @@ and `refresh` with `dry_run: true`. It never takes a token, and everything
 else gets 403.
 
 ```bash
-curl 'http://100.117.28.91:5580/v1/series?symbol=AAPL&timeframe=1d'
-curl 'http://100.117.28.91:5580/v1/bars?symbol=AAPL&catalog=sp500&timeframe=1d&provider=YF&start=2026-01-01'
-curl -o aapl.arrow 'http://100.117.28.91:5580/v1/bars?...&format=arrow'   # Arrow IPC stream
-curl -d '{"tool":"check_gaps","options":{"catalog":["sp500"],"timeframe":"1d"}}' http://100.117.28.91:5580/v1/audit
-curl -d '{"dry_run":true,"target":{"universe":"sp500"},"timeframes":["1d"],"symbols":["AAPL"]}' http://100.117.28.91:5580/v1/refresh
+curl 'http://<host-tailscale-ip>:5580/v1/series?symbol=AAPL&timeframe=1d'
+curl 'http://<host-tailscale-ip>:5580/v1/bars?symbol=AAPL&catalog=sp500&timeframe=1d&provider=YF&start=2026-01-01'
+curl -o aapl.arrow 'http://<host-tailscale-ip>:5580/v1/bars?...&format=arrow'   # Arrow IPC stream
+curl -d '{"tool":"check_gaps","options":{"catalog":["sp500"],"timeframe":"1d"}}' http://<host-tailscale-ip>:5580/v1/audit
+curl -d '{"dry_run":true,"target":{"universe":"sp500"},"timeframes":["1d"],"symbols":["AAPL"]}' http://<host-tailscale-ip>:5580/v1/refresh
 ```
 
 **HTTPS**: `tailscale serve` on the data host fronts the gateway with a
 Let's Encrypt certificate for its MagicDNS name, tailnet-only (Serve, not
 Funnel). It persists across reboots, and Tailscale renews the certificate:
 
-    https://grenada-optiplex-3080.tailebc201.ts.net/v1/<method>  →  http://100.117.28.91:5580
+    https://<host>.<tailnet>.ts.net/v1/<method>  →  http://<host-tailscale-ip>:5580
 
 Set up once, on the data host:
 
     sudo tailscale set --operator=$USER      # once, so serve doesn't need root
-    tailscale serve --bg --https=443 http://100.117.28.91:5580
+    tailscale serve --bg --https=443 http://<host-tailscale-ip>:5580
     tailscale serve status                   # check; `tailscale serve --https=443 off` removes it
 
 `GET` takes query params (repeat a key, or comma-separate `symbols` and

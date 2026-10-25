@@ -699,7 +699,7 @@ uv run python tools/pdm_client.py [--host H] [--req-port N] [--pub-port N]
 | `topics` / `reload` | Topic scheme; rebuild the series index |
 
 ```bash
-uv run python tools/pdm_client.py --host 100.117.28.91 series --symbol AAPL
+uv run python tools/pdm_client.py --host <host-tailscale-ip> series --symbol AAPL
 uv run python tools/pdm_client.py bars --symbol AAPL --catalog sp500 --timeframe 1d --start 2026-01-01
 uv run python tools/pdm_client.py submit --wait download_yf -- --universe sp500 --timeframes 1d
 uv run python tools/pdm_client.py watch bar/stocks/yf/sp500/AAPL/ live/binance/

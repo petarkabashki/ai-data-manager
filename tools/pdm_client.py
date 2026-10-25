@@ -2,7 +2,7 @@
 """Command-line client for the PDM server.
 
 Usage examples:
-  uv run python tools/pdm_client.py --host 100.117.28.91 ping
+  uv run python tools/pdm_client.py --host <host-tailscale-ip> ping
   uv run python tools/pdm_client.py catalogs
   uv run python tools/pdm_client.py series --symbol AAPL
   uv run python tools/pdm_client.py series --catalog crypto_binance --timeframe 1d --stale-days 7
