@@ -24,7 +24,7 @@ schema. Every epic is constrained by them.
 | [E11](#e11--the-data-host-deploys-from-git) | The data host deploys from git | done |
 | [E12](#e12--data-quality-backlog) | Data-quality backlog | in progress |
 | [E13](#e13--consumers-on-the-provider-first-layout) | Consumers on the provider-first layout | in progress |
-| [E14](#e14--funding-on-every-perpetual-venue) | Funding on every perpetual venue | code done, not deployed |
+| [E14](#e14--funding-on-every-perpetual-venue) | Funding on every perpetual venue | deployed; first download queued |
 
 Anything marked done has tests that fail against the previous behaviour.
 
@@ -377,14 +377,27 @@ copying files over, so nobody could say which code was running.
 running. The host's local edits were stashed as `stash@{0}`. They are older
 subsets of committed files, so the stash can be dropped on the owner's word.
 
+The job queue is durable since 2026-10-25 (`$TMP_ROOT/pdm_jobs.json`), so a
+deploy can restart `pdm` without waiting for the queue to drain.
+
 **Done when.** Met: the host's HEAD is a commit on `main`.
 
 ## E12 — Data-quality backlog
 
 **Scope.**
 
-- 17 Yahoo files break at the 2024-08-07 split seam. Full re-downloads have
-  been submitted. Re-run `check_splits.py` once they finish.
+- 17 Yahoo files broke at the 2024-08-07 split seam. **Fixed 2026-10-25**:
+  re-downloaded with `--full --since 2000-01-01`, then the stale rows were
+  dropped (see the next item). `check_splits.py` now flags only real moves.
+- **Yahoo daily files have duplicate dates.** History through 2026-05-08 is
+  stamped 00:00 UTC; `download_yf` now stamps New York midnight (04:00 or
+  05:00 UTC). The merge deduplicates on the exact timestamp, so both copies of
+  the overlap days survive. That is 2,449 of 2,557 files and 101,615
+  duplicate rows. A `--full` run doubles a file's whole history, so don't use
+  it until this is fixed. **Owner decision**: the canonical daily timestamp
+  (recommended: 00:00 UTC, matching the history and crypto). Then make
+  `download_yf` emit it, make the merge deduplicate daily and longer bars by
+  date, and re-stamp and deduplicate every Yahoo daily and weekly file.
 - 22 bitget pairs have no `1w` series, and a probe (VET/USDT) returned 0 rows.
   **Owner decision**: drop `1w` for bitget, or find another source.
 - Yahoo adjustment differs per file: sp500 has 429 raw and 69 adjusted,
@@ -414,11 +427,8 @@ adjustment convention.
 **Scope.** `download_funding.py` now covers kucoin as well as binance and
 bybit. KuCoin calls bitcoin `XBT`, so BTC_USDT is fetched as `XBTUSDTM`. KuCoin
 also reports errors as HTTP 200 with an error code in the body, and these
-count as failures. `refresh --funding kucoin` is accepted. Still to do:
-
-- Deploy it.
-- Run a dry-run refresh, then a real one.
-- Add a `funding-kucoin` schedule, once the owner approves it.
+count as failures. Deployed 2026-10-25. The first full download (74
+contracts) is queued, and the `funding-kucoin` schedule runs every 8h.
 
 bitget has no funding source.
 
