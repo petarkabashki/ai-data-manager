@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import subprocess
 import sys
 import threading
@@ -42,6 +43,19 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from pdm.protocol import new_id
+
+
+def _signal_tree(proc: subprocess.Popen, sig: int = signal.SIGTERM) -> None:
+    """Signal a job's whole process group, not only the tool.
+
+    Tools start children (download_crypto runs freqtrade); terminating just
+    the tool leaves them running as orphans, still downloading into a temp
+    dir nobody will merge. Each job leads its own group (start_new_session).
+    """
+    try:
+        os.killpg(proc.pid, sig)
+    except (ProcessLookupError, PermissionError):
+        pass
 
 #: tool name → lane. Anything not listed cannot be run through the server.
 TOOL_LANES: dict[str, str] = {
@@ -212,7 +226,7 @@ class JobManager:
             elif job.state == "running":
                 proc = self._procs.get(job_id)
                 if proc:
-                    proc.terminate()
+                    _signal_tree(proc)
                 job.error = "cancel requested"
             else:
                 return job
@@ -250,7 +264,7 @@ class JobManager:
         with self._cond:
             self._stopping = True
             for proc in self._procs.values():
-                proc.terminate()
+                _signal_tree(proc)
             self._cond.notify_all()
         for t in self._workers.values():
             t.join(timeout)
@@ -298,21 +312,22 @@ class JobManager:
                     stderr=log if json_path else subprocess.STDOUT,
                     stdin=subprocess.DEVNULL,
                     cwd=self.tools_dir.parent,
+                    start_new_session=True,
                 )
                 with self._cond:
                     self._procs[job.id] = proc
                     # cancel() or stop() between "running" and Popen found no process to stop
                     if job.error == "cancel requested" or self._stopping:
-                        proc.terminate()
+                        _signal_tree(proc)
                 try:
                     job.returncode = proc.wait(timeout=job.timeout_s)
                 except subprocess.TimeoutExpired:
                     timed_out = True
-                    proc.terminate()
+                    _signal_tree(proc)
                     try:
                         job.returncode = proc.wait(timeout=15)
                     except subprocess.TimeoutExpired:
-                        proc.kill()
+                        _signal_tree(proc, signal.SIGKILL)
                         job.returncode = proc.wait()
         except Exception as exc:  # e.g. the interpreter vanished
             job.error = f"{type(exc).__name__}: {exc}"

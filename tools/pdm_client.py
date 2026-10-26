@@ -53,8 +53,15 @@ def emit(obj, as_json: bool, columns: list[str] | None = None) -> None:
     print_table(columns, [["" if row.get(c) is None else row.get(c) for c in columns] for row in obj])
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
     allow_broken_pipe()
+    argv = sys.argv[1:] if argv is None else argv
+    # Everything after `--` goes to the tool verbatim. Split it off before
+    # parsing so --at/--tool/--wait may sit on either side of the name;
+    # argparse's REMAINDER would swallow them as tool args. Without `--`,
+    # the old form (tool args straight after the name) still works.
+    tail = argv[argv.index("--") + 1:] if "--" in argv else None
+    rest = "*" if tail is not None else argparse.REMAINDER
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--host", default=PDM_SERVER)
     p.add_argument("--req-port", type=int, default=PDM_REQ_PORT)
@@ -99,7 +106,7 @@ def main() -> None:
 
     sp = sub.add_parser("submit", help="queue a tool run: submit [--wait] <tool> -- <args...>")
     sp.add_argument("tool")
-    sp.add_argument("tool_args", nargs=argparse.REMAINDER)
+    sp.add_argument("tool_args", nargs=rest)
     sp.add_argument("--wait", action="store_true", help="block until the job finishes")
 
     sp = sub.add_parser("jobs")
@@ -153,7 +160,7 @@ def main() -> None:
     what = sp.add_mutually_exclusive_group(required=True)
     what.add_argument("--refresh", help="refresh plan as JSON (see the refresh method)")
     what.add_argument("--tool", help="whitelisted tool; its args follow --")
-    sp.add_argument("tool_args", nargs=argparse.REMAINDER)
+    sp.add_argument("tool_args", nargs=rest)
     sp.add_argument("--paused", action="store_true", help="create it disabled")
     for name in ("schedule-rm", "schedule-pause", "schedule-resume", "schedule-run"):
         sub.add_parser(name).add_argument("name")
@@ -177,7 +184,11 @@ def main() -> None:
     sp.add_argument("prefixes", nargs="*")
     sp.add_argument("--rows", type=int, default=3, help="rows of each frame to print")
 
-    args = p.parse_args()
+    args = p.parse_args(argv if tail is None else argv[:argv.index("--")])
+    if tail is not None:
+        if not hasattr(args, "tool_args"):
+            p.error("`--` only applies to submit and schedule-add")
+        args.tool_args = tail
     client = PriceDataClient(args.host, args.req_port, args.pub_port, args.token, args.timeout)
     filters = {
         k: getattr(args, k)

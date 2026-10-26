@@ -523,6 +523,12 @@ listing, kept current by the nightly schedules. Approved by the owner
   measured). That is roughly 20–25 h on the one crypto lane, dominated by
   kucoin and bitget futures (200-bar pages). Nightly refreshes grow to
   ~6,700 pairs.
+- Started 2026-10-26 04:21 UTC: the seven crypto schedules now run
+  `--universe`, joined by `crypto-futures-bitget-daily` (03:30), and all
+  eight ran at once as the backfill. The night's old-code bitget spot run was
+  cancelled first; it would have taken ~15 h. That cancel left freqtrade
+  running as an orphan: jobs now lead their own process group, and cancel,
+  stop and timeout signal the whole group.
 
 **Done when.** Each venue's catalog matches its listed universe, every new
 series reaches back to its listing, and `status` shows them current.

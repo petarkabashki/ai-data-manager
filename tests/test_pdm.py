@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import socket
 import sys
 import textwrap
@@ -17,11 +18,11 @@ import pandas as pd
 import pytest
 import yaml
 
-from pdm.jobs import JobManager, validate
 from pdm.config_store import ConfigStore
+from pdm.jobs import JobManager, validate
 from pdm.live import LiveManager, Subscription, ccxt_symbol, our_symbol
-from pdm.refresh import PlanError, build_argv
 from pdm.protocol import arrow_to_frame, bar_topic, frame_to_arrow, parse_series_path
+from pdm.refresh import PlanError, build_argv
 from pdm.scheduler import Schedule, Scheduler, parse_interval, schedule_targets
 from pdm.watch import DataWatcher, last_timestamp
 from utils.catalog import write_parquet_atomic
@@ -181,6 +182,39 @@ def test_cancel_queued_and_running_jobs(tmp_path):
     assert jm.cancel(second.id).state == "cancelled"
     jm.cancel(first.id)
     assert _wait_state(jm, first.id, {"cancelled"}).state == "cancelled"
+    jm.stop()
+
+
+def test_cancel_stops_the_tools_children_too(tmp_path):
+    # download_crypto runs freqtrade: cancelling must not leave it downloading as an orphan
+    tools = _fake_tools(tmp_path)
+    pid_file = tmp_path / "child.pid"
+    (tools / "download_crypto.py").write_text(textwrap.dedent(f"""
+        import subprocess, sys, time
+        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+        open({str(pid_file)!r}, "w").write(str(child.pid))
+        time.sleep(60)
+    """))
+    jm = JobManager(tools, tmp_path / "logs")
+    job = jm.submit("download_crypto", [])
+    deadline = time.time() + 10
+    while not (pid_file.exists() and pid_file.read_text()) and time.time() < deadline:
+        time.sleep(0.05)
+    child = int(pid_file.read_text())
+    jm.cancel(job.id)
+    _wait_state(jm, job.id, {"cancelled"})
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        try:
+            os.kill(child, 0)
+        except ProcessLookupError:
+            break
+        if Path(f"/proc/{child}/stat").exists() and Path(f"/proc/{child}/stat").read_text().split()[2] == "Z":
+            break                                        # a zombie awaiting its reaper is gone
+        time.sleep(0.05)
+    else:
+        os.kill(child, 9)
+        raise AssertionError("the tool's child survived the cancel")
     jm.stop()
 
 
@@ -672,6 +706,7 @@ def test_alerts_over_the_wire(running_server):
 
 def test_coverage_refresh_schedules_and_live_over_the_wire(running_server):
     import msgpack  # noqa: F401  (the client decodes `prices` with it)
+
     from pdm.client import PdmError, PriceDataClient
 
     server, req, pub = running_server
@@ -998,3 +1033,31 @@ def test_refresh_plan_accepts_macro():
     assert schedule_targets(Schedule(name="m", tool="download_yf",
                                      args=["--asset-class", "Macro", "--timeframes", "1d"],
                                      every=timedelta(days=1)))["catalog"] == "macro"
+
+
+def test_client_tool_args_follow_double_dash_wherever_the_options_sit(monkeypatch):
+    # `schedule-add NAME --at … --tool T -- ARGS` is the documented order; argparse's
+    # REMAINDER used to swallow --at and --tool as tool args and reject it
+    import tools.pdm_client as cli
+
+    sent = []
+
+    class FakeClient:
+        def __init__(self, *a, **k):
+            pass
+
+        def close(self):
+            pass
+
+        def schedule_put(self, schedule):
+            sent.append(schedule)
+            return schedule
+
+    monkeypatch.setattr(cli, "PriceDataClient", FakeClient)
+    monkeypatch.setattr(cli, "emit", lambda *a, **k: None)
+    args = ["--exchange", "bybit", "--universe", "--timeframes", "1h", "1d"]
+    cli.main(["schedule-add", "crypto-x", "--at", "01:15", "--tool", "download_crypto", "--", *args])
+    cli.main(["schedule-add", "--at", "01:15", "--tool", "download_crypto", "crypto-x", "--", *args])
+    cli.main(["schedule-add", "--at", "01:15", "--tool", "download_crypto", "crypto-x", *args])
+    assert [s["args"] for s in sent] == [args] * 3
+    assert {s["at"] for s in sent} == {"01:15"} and {s["tool"] for s in sent} == {"download_crypto"}
