@@ -20,7 +20,7 @@ schema. Every epic is constrained by them.
 | [E7](#e7--machine-readable-tool-surface) | Machine-readable tool surface | done |
 | [E8](#e8--one-source-of-truth-for-docs-and-skills) | One source of truth for docs & skills | done |
 | [E9](#e9--freshness-every-catalog-on-a-schedule) | Freshness: every catalog on a schedule | in progress |
-| [E10](#e10--off-host-backups) | Off-host backups | in progress |
+| [E10](#e10--off-host-backups) | Off-host backups | done |
 | [E11](#e11--the-data-host-deploys-from-git) | The data host deploys from git | done |
 | [E12](#e12--data-quality-backlog) | Data-quality backlog | in progress |
 | [E13](#e13--consumers-on-the-provider-first-layout) | Consumers on the provider-first layout | in progress |
@@ -367,11 +367,20 @@ a read-only mount of it, so it is not a backup.
   day. Each run writes a dated snapshot, hard-linked against the last one.
   An interrupted run resumes the next day. A snapshot with under 80% of the
   previous one's files is never finalized. See
-  [docs/server.md](docs/server.md#backups). **Done; first snapshot running.**
+  [docs/server.md](docs/server.md#backups). **Done.** A run pulls the data
+  first and the catalogs last, so a catalog is never older than its files.
+- Restore procedure: stop `pdm`, rsync the snapshot back, run
+  `check_catalog.py --fix` and `check_schema.py`, start `pdm`. See
+  [docs/server.md](docs/server.md#backups). `check_catalog --fix` now adopts
+  crypto files that no catalog lists, and `download_crypto` saves its catalog
+  every 60s, so a snapshot taken mid-download restores cleanly. **Done.**
 - Retention (`PDM_BACKUP_KEEP`, unset = keep everything) and whether a third
   copy goes off-site. **Owner decision.**
 
-**Done when.** A restore from the newest snapshot has been rehearsed.
+**Done when.** Met 2026-10-26: a restore of the newest snapshot into a scratch
+tree on the host. The copy took 27 min (30 GB, 27,067 files) with 0 checksum
+diffs. The repair refreshed 5,608 dates, backfilled 4,242 nodes and adopted
+3,465 orphan files. Nothing was left over that live doesn't also have.
 
 ## E11 — The data host deploys from git
 
@@ -409,6 +418,12 @@ deploy can restart `pdm` without waiting for the queue to drain.
   midnight UTC+8) and 2 Deribit dailies (08:00 UTC). A full sweep of 28,095
   files is clean. The originals (716K) are in
   `price-data.stamp-backup-2026-10-25` on the host.
+- Live catalogs were repaired 2026-10-26 with `check_catalog --fix`:
+  2,125 crypto_binance and 10 crypto_futures_kucoin nodes backfilled with
+  their semantics, and 7 crypto_binance date ranges refreshed. The audit is
+  now clean apart from 6 stock files that no catalog lists: EA (ibkr
+  nasdaq100 all-1d/1h/4h/8h, yf sp500 1d) and SATS (yf russell2000 1d).
+  **Owner decision**: catalog them or remove them.
 - 22 bitget pairs have no `1w` series, and a probe (VET/USDT) returned 0 rows.
   **Owner decision**: drop `1w` for bitget, or find another source.
 - Yahoo adjustment differs per file: sp500 has 429 raw and 69 adjusted,
