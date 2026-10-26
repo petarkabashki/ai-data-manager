@@ -212,7 +212,9 @@ each snapshot costs only what changed. It writes `<date>.partial` first
 it and resumes), renames on success, and repoints a `latest` symlink. A
 snapshot with under 80% of the previous one's files is never finalized: an
 empty or truncated source can't become `latest` or rotate good snapshots out.
-`*.tmp` is excluded; a second run on the same day is a no-op. `PDM_SERVER`
+`*.tmp` is excluded; a second run on the same day is a no-op. The catalogs
+(top-level `*.yaml`) are copied in a second pass after the data, so a
+snapshot's catalog is never older than its files. `PDM_SERVER`
 and the variables below come from the environment or the repo `.env`
 (unquoted or quoted values both work).
 
@@ -230,8 +232,36 @@ it with `journalctl --user -u pdm-backup -f`.
 Retention is opt-in: `PDM_BACKUP_KEEP=N` keeps the newest N snapshots and
 removes older ones after a successful run. Unset (the default) keeps every
 snapshot and deletes nothing, so disk use grows with churn until the owner
-chooses a number. Restore by copying from `$PDM_BACKUP_DIR/latest/` (or a
-dated snapshot) back onto the host with rsync.
+chooses a number.
+
+**Restoring.** A snapshot is a plain copy of `price-data`, but one taken
+while a download was merging can hold files whose catalog nodes weren't
+saved yet, and dates the catalog hadn't caught up with. Step 3 repairs both.
+
+1. On the host, stop the server so nothing writes: `systemctl --user stop pdm`.
+2. From the client, copy the snapshot back. `--delete` drops anything on the
+   host newer than the snapshot, so to keep newer files, restore into a
+   sibling directory first and compare:
+
+       rsync -a --delete -e "ssh -o BatchMode=yes" \
+           ~/backups/pdm-price-data/latest/ <data host>:work/price-data/
+
+3. On the host, repair the catalogs and check the files:
+
+       uv run python tools/check_catalog.py --fix
+       uv run python tools/check_schema.py
+
+   `--fix` refreshes drifted dates, backfills semantics, and adopts orphan
+   crypto files (the path names their catalog). If it still exits 1, it
+   lists what it couldn't adopt.
+4. `systemctl --user start pdm`. The next scheduled runs fetch whatever the
+   snapshot is missing, since every tool plans from what is on disk.
+
+Rehearsed 2026-10-25 into a scratch directory, with `PRICE_DATA_ROOT`
+pointing the tools at it. Copying 30 GB (27,067 files) back over Tailscale
+took 27 min, and a checksum pass found 0 differences. That snapshot was taken
+mid-download: step 3 refreshed 5,608 dates, backfilled 4,242 nodes and
+adopted 3,465 orphan files.
 
 ## Protocol
 

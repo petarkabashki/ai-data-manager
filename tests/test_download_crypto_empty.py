@@ -94,3 +94,24 @@ def test_process_downloads_reports_a_merge_that_adds_nothing(tmp_path, monkeypat
     changes = dc.process_downloads("bitget", ["RAY/USDT"], ["1d"], datadir, catalog)
     assert changes == [("RAY_USDT", "1d", 5, 5)]
     assert "1 series gained no rows" in capsys.readouterr().out
+
+
+def test_the_catalog_is_saved_while_merging_not_only_at_the_end(tmp_path, monkeypatch, ohlcv):
+    """A crash or a backup mid-merge must not leave files with no catalog node."""
+    root = tmp_path / "price-data"
+    root.mkdir()
+    dc = _fresh_download_crypto(monkeypatch, root)
+    datadir = tmp_path / "ft"
+    datadir.mkdir()
+    for sym in ("RAY_USDT", "VET_USDT"):
+        ohlcv(n=5).to_parquet(datadir / f"{sym}-1d.parquet", index=False)
+
+    saved: list[set] = []
+    catalog: dict = {}
+    checkpoint = dc.CatalogCheckpoint(lambda: saved.append(set(catalog)), every_s=0)
+    dc.process_downloads("bitget", ["RAY/USDT", "VET/USDT"], ["1d"], datadir, catalog, checkpoint=checkpoint)
+    assert len(saved) == 2 and len(saved[0]) == 1          # the first pair was saved before the second merged
+
+    quiet = dc.CatalogCheckpoint(lambda: saved.append(set()), every_s=3600)
+    quiet()
+    assert quiet.saves == 0                                 # throttled: one save a minute at most

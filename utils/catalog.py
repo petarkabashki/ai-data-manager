@@ -1015,6 +1015,41 @@ def refresh_entry_dates(entry: dict) -> bool:
     return changed
 
 
+def refresh_dates_for_files(paths: list[Path] | set[Path]) -> list[str]:
+    """Refresh the dates of every catalog node that points at one of `paths`.
+
+    For a tool that rewrote files in place and so moved their first or last
+    date. Only catalogs that hold such a node are saved. Returns their names.
+    """
+    wanted = {Path(p).resolve() for p in paths}
+    written: list[str] = []
+    if not wanted:
+        return written
+    for spec in catalog_registry():
+        catalog = spec.load()
+        changed = False
+        for entry in catalog.values():
+            if not isinstance(entry, dict):
+                continue
+            touched = False
+            for node in _iter_provider_nodes(entry.get("timeframe_dates", {})):
+                fp_str = node.get("file_path", "")
+                path = resolve_from_repo(fp_str).resolve() if fp_str else None
+                if path not in wanted:
+                    continue
+                result = read_parquet_range(path)
+                if result and (node.get("start_date"), node.get("end_date")) != result[:2]:
+                    node["start_date"], node["end_date"] = result[0], result[1]
+                    touched = True
+            if touched:
+                recompute_entry_bounds(entry)
+                changed = True
+        if changed:
+            spec.save(catalog)
+            written.append(spec.name)
+    return written
+
+
 def refresh_stock_catalog_dates(universe: str) -> int:
     """Scan parquet files and update start/end dates in a stock catalog.
     Returns count of entries updated."""

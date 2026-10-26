@@ -26,8 +26,10 @@ For each `*-1d`/`-1w`/`-1Mo` parquet under `price-data/*/<provider>/`, this:
   `<data root>.stamp-backup-<today>`, beside the data root, never inside it),
   then writes the result atomically.
 
-Dates and catalog bounds don't change, so no catalog is rewritten. A file
-already in convention is left alone, so a second run changes nothing. Run it
+A bar stamped before midnight UTC (Europe, Asia, bitget, Yahoo's European
+indexes) moves to the next date, so the catalog nodes of every rewritten
+file get their dates refreshed (`catalogs_written`). A file already in
+convention is left alone, so a second run changes nothing. Run it
 through PDM (`submit fix_daily_stamps -- --provider <p>`): it runs in that
 provider's lane (`equity`, `crypto` or `options`), so it can't race the
 provider's downloader over the same files.
@@ -35,7 +37,8 @@ provider's downloader over the same files.
 Exit status: 0 when every file was read (and, unless --dry-run, written),
 1 when any failed, 2 on a bad argument. `--json` writes one JSON document to
 stdout (keys: provider, dry_run, backup_dir, scanned, changed, rows_dropped,
-files[], skipped[] (files without a `timestamp` column), failures[]) and the progress log to stderr.
+files[], skipped[] (files without a `timestamp` column), failures[],
+catalogs_written[]) and the progress log to stderr.
 """
 
 from __future__ import annotations
@@ -51,7 +54,13 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from utils.catalog import DATA_ROOT, DATE_LABELLED_TIMEFRAMES, date_label_ms, write_parquet_atomic
+from utils.catalog import (
+    DATA_ROOT,
+    DATE_LABELLED_TIMEFRAMES,
+    date_label_ms,
+    refresh_dates_for_files,
+    write_parquet_atomic,
+)
 from utils.config import relative_to_repo
 
 PROVIDERS = ("yf", "ibkr", "binance", "bybit", "kucoin", "bitget", "deribit")
@@ -90,7 +99,8 @@ def main(argv: list[str] | None = None) -> int:
     files = provider_files(root, args.provider)
     doc = {"provider": args.provider, "dry_run": args.dry_run, "backup_dir": str(backup_dir),
            "scanned": len(files), "changed": 0, "rows_dropped": 0, "files": [], "skipped": [],
-           "failures": []}
+           "failures": [], "catalogs_written": []}
+    rewritten: list[Path] = []
     for path in files:
         rel = relative_to_repo(path)
         try:
@@ -106,6 +116,7 @@ def main(argv: list[str] | None = None) -> int:
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(path, dst)
                 write_parquet_atomic(fixed, path)
+                rewritten.append(path)
         except Exception as exc:  # noqa: BLE001 — one file's failure is reported, not fatal
             doc["failures"].append({"file": rel, "error": f"{type(exc).__name__}: {exc}"})
             log(f"{rel}: FAILED {type(exc).__name__}: {exc}")
@@ -115,10 +126,16 @@ def main(argv: list[str] | None = None) -> int:
         doc["rows_dropped"] += dropped
         doc["files"].append({"file": rel, "rows_before": len(df), "rows_after": len(fixed),
                              "dropped": dropped})
+    try:
+        doc["catalogs_written"] = refresh_dates_for_files(rewritten)
+    except Exception as exc:  # noqa: BLE001 — the files are fixed; say what's left
+        doc["failures"].append({"file": "(catalogs)", "error": f"{type(exc).__name__}: {exc}; "
+                                "run check_catalog.py --fix"})
     verb = "would change" if args.dry_run else "changed"
     log(f"{doc['scanned']} {args.provider} file(s) scanned, {verb} {doc['changed']}, "
         f"{doc['rows_dropped']} duplicate row(s) dropped, {len(doc['failures'])} failed"
-        + ("" if args.dry_run or not doc["changed"] else f"; originals in {backup_dir}"))
+        + ("" if args.dry_run or not doc["changed"] else f"; originals in {backup_dir}")
+        + (f"; dates refreshed in {', '.join(doc['catalogs_written'])}" if doc["catalogs_written"] else ""))
     if args.json:
         print(json.dumps(doc))
     return 1 if doc["failures"] else 0

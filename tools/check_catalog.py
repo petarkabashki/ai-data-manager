@@ -27,6 +27,13 @@ and repo-wide:
 `--fix` only ever adds information: it stamps default semantics on nodes that
 lack them, migrates flat nodes to the nested shape, and refreshes drifted
 dates from the files. It never deletes a node or touches a parquet file.
+
+With `--fix`, an orphan crypto or crypto-futures file is also adopted: its
+path names the catalog, symbol and timeframe, so it gets the node
+`download_crypto` (or `download_funding`) would have written. Orphans arise
+when a run is cut short, or a backup was taken mid-run, before the catalog
+was saved; this is the repair step of a restore (docs/server.md#backups).
+Other orphans (stocks: the universe isn't in the path) stay reported.
 """
 
 from __future__ import annotations
@@ -41,6 +48,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from utils.catalog import (
+    FUNDING_TIMEFRAME,
     CatalogSpec,
     catalog_registry,
     provider_node_key,
@@ -48,6 +56,8 @@ from utils.catalog import (
     read_parquet_range,
     recompute_entry_bounds,
     resolve_from_repo,
+    update_catalog_entry,
+    update_funding_entry,
 )
 from utils.config import DATA_ROOT, relative_to_repo
 from utils.report import allow_broken_pipe, print_table
@@ -235,6 +245,56 @@ def find_orphans(referenced: set[str]) -> list[Path]:
     return sorted(orphans)
 
 
+def adopt_orphans(orphans: list[Path], specs: list[CatalogSpec]) -> tuple[list[Path], list[str]]:
+    """Give each orphan crypto / crypto-futures file its catalog node.
+
+    Returns (adopted files, catalogs written). Funding files go last: they
+    attach to their contract's entry, which an orphan bar file may create.
+    """
+    by_name = {s.name: s for s in specs}
+    loaded: dict[str, dict] = {}
+    adopted: list[Path] = []
+
+    def place(path: Path) -> tuple[str, str, str, str] | None:
+        try:
+            top, exchange, symbol, name = path.relative_to(DATA_ROOT).parts
+        except ValueError:
+            return None
+        stem, _, timeframe = name.removesuffix(".parquet").rpartition("-")
+        catalog = {"cryptos": f"crypto_{exchange}", "crypto-futures": f"crypto_futures_{exchange}"}.get(top)
+        if stem != symbol or catalog not in by_name:
+            return None
+        return catalog, exchange, symbol, timeframe
+
+    for path in sorted(orphans, key=lambda p: p.name.endswith(f"-{FUNDING_TIMEFRAME}.parquet")):
+        where = place(path)
+        if not where:
+            continue
+        name, exchange, symbol, timeframe = where
+        futures = name.startswith("crypto_futures_")
+        funding = futures and timeframe == FUNDING_TIMEFRAME
+        bounds = read_funding_range(path) if funding else read_parquet_range(path)
+        if not bounds:
+            continue                     # empty: a failed download, not a series
+        if name not in loaded:           # not setdefault: that would load on every call
+            loaded[name] = by_name[name].load()
+        catalog = loaded[name]
+        if funding:
+            try:
+                update_funding_entry(catalog, symbol, exchange, path, bounds[0], bounds[1])
+            except ValueError:
+                continue                 # no bars for the contract: leave it reported
+        else:
+            base, _, quote = symbol.partition("_")
+            update_catalog_entry(catalog, exchange, symbol, timeframe, path, bounds[0], bounds[1],
+                                 categories=["Crypto Futures"] if futures else None,
+                                 common_name=f"{base}/{quote}:{quote}" if futures else None)
+        adopted.append(path)
+    for name, catalog in loaded.items():
+        by_name[name].save(catalog)
+    return adopted, sorted(loaded)
+
+
 def main() -> None:
     allow_broken_pipe()
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -270,6 +330,12 @@ def main() -> None:
             catalogs_written.append(spec.name)
 
     orphans = [] if args.skip_orphans or args.catalog else find_orphans(referenced)
+    adopted: list[Path] = []
+    if args.fix and orphans:
+        adopted, written = adopt_orphans(orphans, specs)
+        taken = set(adopted)
+        orphans = [o for o in orphans if o not in taken]
+        catalogs_written = sorted(set(catalogs_written) | set(written))
 
     if args.json:
         json.dump(
@@ -278,6 +344,7 @@ def main() -> None:
                 "nodes_checked": nodes_checked,
                 "issues": [i.as_dict() for i in issues],
                 "orphan_files": [relative_to_repo(o) for o in orphans],
+                "orphans_adopted": [relative_to_repo(o) for o in adopted],
                 "catalogs_written": catalogs_written,
             },
             sys.stdout,
@@ -307,6 +374,8 @@ def main() -> None:
         else:
             print("Every node is complete and consistent with its file.")
 
+        if adopted:
+            print(f"\nAdopted {len(adopted)} orphan crypto file(s) into their catalogs.")
         if orphans:
             print(f"\n{len(orphans)} parquet file(s) on disk that no catalog references:")
             for path in orphans[:20]:

@@ -203,3 +203,37 @@ def test_orphan_files_are_found(catalog_env, ohlcv):
 
     orphans = checker.find_orphans({str(referenced.resolve())})
     assert orphans == [orphan]
+
+
+def test_fix_adopts_orphan_crypto_files_the_path_names(catalog_env, ohlcv):
+    """A restore of a mid-run snapshot: files on disk, nodes never saved."""
+    import pandas as pd
+
+    root, catalog, checker = catalog_env
+    spot = catalog.crypto_file_path("binance", "SATS_USDT", "1d")
+    bars = catalog.crypto_futures_file_path("kucoin", "BTC_USDT", "1h")
+    funding = catalog.funding_file_path("kucoin", "BTC_USDT")
+    stock = catalog.index_file_path("IBKR", "NDX", "1h")        # universe not in the path: stays
+    empty = catalog.crypto_file_path("bitget", "VET_USDT", "1w")
+    for path in (spot, bars, stock):
+        catalog.write_parquet_atomic(ohlcv(n=3), path)
+    catalog.write_parquet_atomic(pd.DataFrame({"timestamp": pd.Series([0, 28_800_000], dtype="int64"),
+                                               "funding_rate": 0.0001, "mark_price": 1.0}), funding)
+    empty.parent.mkdir(parents=True)
+    pd.DataFrame().to_parquet(empty)
+
+    specs = catalog.catalog_registry()
+    adopted, written = checker.adopt_orphans(checker.find_orphans(set()), specs)
+    assert sorted(adopted) == sorted([spot, bars, funding])
+    assert written == ["crypto_binance", "crypto_futures_kucoin"]
+
+    node = catalog.load_crypto_catalog("binance")[catalog.catalog_key("SATS_USDT", "binance")]["timeframe_dates"]["1d"]
+    assert (node["start_date"], node["end_date"], node["schema"]) == ("1970-01-01", "1970-01-03", "ohlcv")
+    entry = catalog.load_crypto_futures_catalog("kucoin")[catalog.catalog_key("BTC_USDT", "kucoin")]
+    assert entry["common_name"] == "BTC/USDT:USDT" and entry["categories"] == ["Crypto Futures"]
+    assert entry["timeframe_dates"]["funding"]["schema"] == "funding_rate"
+
+    audits = [checker.audit_catalog(s, fix=False, check_dates=True)[0] for s in specs if s.name in written]
+    assert [i for a in audits for i in a.issues] == []                 # adopted nodes are complete
+    referenced = set().union(*(a.referenced_paths for a in audits))
+    assert checker.find_orphans(referenced) == sorted([stock, empty])

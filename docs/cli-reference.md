@@ -170,7 +170,7 @@ uv run python tools/check_catalog.py
 | Flag | Meaning |
 |---|---|
 | `--catalog` | Limit to named catalogs (`indexes`, `sp500`, `crypto_binance`, `macro`, …). Suppresses the orphan scan |
-| `--fix` | Backfill missing semantics, migrate flat nodes, refresh drifted dates |
+| `--fix` | Backfill missing semantics, migrate flat nodes, refresh drifted dates, adopt orphan crypto files |
 | `--skip-dates` | Don't open parquet files to verify dates — much faster on 5,000 symbols |
 | `--skip-orphans` | Don't walk the data tree looking for unreferenced files |
 | `--json` | Machine-readable output |
@@ -185,7 +185,7 @@ Issue kinds:
 | `file_missing` | `file_path` points at nothing | No — investigate |
 | `no_file_path` | The node records no path at all | No |
 | `no_provider` | Provider can't be determined from node, key or entry | No |
-| `orphan_file` | A parquet under an OHLCV root that no catalog references | No |
+| `orphan_file` | A parquet under an OHLCV root that no catalog references | Crypto and crypto-futures: adopted (the path names the catalog, symbol and timeframe; JSON `orphans_adopted`). Others: no |
 
 ```bash
 uv run python tools/check_catalog.py --json

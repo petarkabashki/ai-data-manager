@@ -54,15 +54,22 @@ mkdir -p "$part"
 
 info=stats1
 [ -t 1 ] && info=stats1,progress2
-rc=0
-rsync -a --delete --exclude='*.tmp' --partial --info="$info" \
-  -e "ssh -o BatchMode=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=6" \
-  "${linkopt[@]}" "$src" "$part/" || rc=$?
-# 24 = source files vanished mid-transfer (live host); acceptable
-if [ "$rc" -ne 0 ] && [ "$rc" -ne 24 ]; then
-  echo "rsync failed (rc=$rc); leaving $part for resume" >&2
-  exit "$rc"
-fi
+ssh_cmd="ssh -o BatchMode=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=6"
+pull() {
+  local rc=0
+  rsync -a --delete --exclude='*.tmp' --partial "$@" -e "$ssh_cmd" \
+    "${linkopt[@]}" "$src" "$part/" || rc=$?
+  # 24 = source files vanished mid-transfer (live host); acceptable
+  if [ "$rc" -ne 0 ] && [ "$rc" -ne 24 ]; then
+    echo "rsync failed (rc=$rc); leaving $part for resume" >&2
+    exit "$rc"
+  fi
+}
+# Data first, the catalogs (top-level *.yaml) last. A catalog copied after
+# its files can only be newer than them: dates that check_catalog --fix
+# refreshes, never files that no catalog lists.
+pull --info="$info" --exclude='/*.yaml'
+pull --info=stats0 --include='/*.yaml' --exclude='*'
 
 # A source that came back empty or truncated (path moved, host wiped) still
 # rsyncs cleanly. Refuse to finalize a snapshot with under 80% of the

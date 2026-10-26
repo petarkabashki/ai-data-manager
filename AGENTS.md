@@ -228,7 +228,7 @@ uv run python tools/convert_crypto.py [--exchange X] [--dry-run]
 | `tools/query.py` | Query available series — any asset class, any provider — with date ranges and staleness |
 | `tools/check_gaps.py` | Audit any catalog for internal gaps and staleness, against its trading calendar |
 | `tools/check_schema.py` | Verify every OHLCV-classed parquet file matches the canonical schema, and daily/weekly/monthly files the 00:00 UTC stamp rule |
-| `tools/check_catalog.py` | Verify every catalog node has valid semantics and matches its file; `--fix` backfills |
+| `tools/check_catalog.py` | Verify every catalog node has valid semantics and matches its file; `--fix` backfills and adopts orphan crypto files |
 | `tools/check_splits.py` | Find un-back-adjusted split seams inside stored files — history at the old share count spliced to bars at the new one |
 | `tools/fix_daily_stamps.py` | Restamp a provider's daily/weekly/monthly bars to 00:00 UTC of their date and drop duplicate dates, with backups |
 | `tools/download_crypto.py` | Download via freqtrade, merge parquet, update YAML metadata |

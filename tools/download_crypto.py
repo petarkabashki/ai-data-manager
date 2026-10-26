@@ -24,6 +24,8 @@ import argparse
 import subprocess
 import sys
 import tempfile
+import time
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -218,6 +220,27 @@ def _is_empty_parquet(path: Path) -> bool:
         return True
 
 
+class CatalogCheckpoint:
+    """Save the catalog every `every_s` seconds while merging, not only at the end.
+
+    A bulk run merges hundreds of files. Saving the catalog once at the end
+    meant a crash, or a backup taken mid-merge, left files on disk that no
+    catalog node pointed at. Call it after each pair; main still saves once
+    more when the run ends.
+    """
+
+    def __init__(self, save: Callable[[], None] | None, every_s: float = 60.0):
+        self.save, self.every_s = save, every_s
+        self.last = time.monotonic()
+        self.saves = 0
+
+    def __call__(self) -> None:
+        if self.save and time.monotonic() - self.last >= self.every_s:
+            self.save()
+            self.saves += 1
+            self.last = time.monotonic()
+
+
 def process_downloads(
     exchange: str,
     pairs: list[str],
@@ -226,6 +249,7 @@ def process_downloads(
     catalog: dict,
     dry_run: bool = False,
     trading_mode: str = "spot",
+    checkpoint: Callable[[], None] | None = None,
 ) -> list[tuple[str, str, int, int]]:
     """Move downloaded files into price-data/, merge with existing, return change log."""
     changes: list[tuple[str, str, int, int]] = []
@@ -280,6 +304,8 @@ def process_downloads(
                     categories=["Crypto Futures"] if is_futures else None,
                     common_name=pair if is_futures else None,
                 )
+        if checkpoint and not dry_run:
+            checkpoint()
 
     _warn_zero_delta(zero_delta)
     return changes
@@ -352,6 +378,7 @@ def download_and_merge_ccxt_futures(
     since: str = "2020-01-01",
     dry_run: bool = False,
     full: bool = False,
+    checkpoint: Callable[[], None] | None = None,
 ) -> list[tuple[str, str, int, int]]:
     """Download futures OHLCV via ccxt directly (for exchanges freqtrade doesn't support in futures mode)."""
     import ccxt as _ccxt
@@ -423,6 +450,8 @@ def download_and_merge_ccxt_futures(
                     categories=["Crypto Futures"],
                     common_name=pair,
                 )
+        if checkpoint and not dry_run:
+            checkpoint()
 
     _warn_zero_delta(zero_delta)
     return changes
@@ -496,10 +525,15 @@ def main() -> None:
     if args.dry_run:
         print("\n[dry-run mode — no files will be changed]\n")
 
+    def save_catalog() -> None:
+        (save_crypto_futures_catalog if is_futures else save_crypto_catalog)(args.exchange, catalog)
+
+    checkpoint = CatalogCheckpoint(save_catalog)
+
     if use_ccxt:
         changes = download_and_merge_ccxt_futures(
             args.exchange, pairs, timeframes, catalog,
-            since=since_str, dry_run=args.dry_run, full=args.full,
+            since=since_str, dry_run=args.dry_run, full=args.full, checkpoint=checkpoint,
         )
         if args.dry_run:
             return
@@ -579,16 +613,13 @@ def main() -> None:
             print("\nMerging downloaded files into price-data/…")
             changes = process_downloads(
                 args.exchange, pairs, timeframes, tmppath, catalog,
-                dry_run=False, trading_mode=args.trading_mode,
+                dry_run=False, trading_mode=args.trading_mode, checkpoint=checkpoint,
             )
 
     catalog_name = f"crypto_futures_{args.exchange}.yaml" if is_futures else f"crypto_{args.exchange}.yaml"
     if changes:
         print(f"\nSaving updated catalog to price-data/{catalog_name}…")
-        if is_futures:
-            save_crypto_futures_catalog(args.exchange, catalog)
-        else:
-            save_crypto_catalog(args.exchange, catalog)
+        save_catalog()
         print(f"Done. {len(changes)} file(s) updated.")
     else:
         print("\nNo changes.")

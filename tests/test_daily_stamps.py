@@ -150,3 +150,20 @@ def test_fix_reaches_every_provider(tool):
     _bars([D0 + 8 * H, D0 + DAY + 8 * H], 1.0).to_parquet(path, index=False)
     assert fix.main(["--provider", "deribit", "--backup-dir", str(root.parent / "bak")]) == 0
     assert pd.read_parquet(path)["timestamp"].tolist() == [D0, D0 + DAY]
+
+
+def test_fix_refreshes_the_catalog_dates_it_moves(tool):
+    root, fix = tool
+    from utils.catalog import load_index_catalog, save_index_catalog
+    from utils.config import relative_to_repo
+
+    path = root / "indexes/yf/GDAXI/GDAXI-1d.parquet"                       # Frankfurt: 22:00 UTC
+    path.parent.mkdir(parents=True)
+    _bars([D0 - 2 * H, D0 + DAY - 2 * H], 1.0).to_parquet(path, index=False)
+    node = {"start_date": "2026-05-03", "end_date": "2026-05-04", "file_path": relative_to_repo(path)}
+    save_index_catalog({"GDAXI": {"name": "GDAXI", "categories": ["Index"], "timeframes": ["1d"],
+                                  "timeframe_dates": {"1d": {"yf": node}}}})
+
+    assert fix.main(["--provider", "yf", "--backup-dir", str(root.parent / "bak"), "--json"]) == 0
+    got = load_index_catalog()["GDAXI"]["timeframe_dates"]["1d"]["yf"]
+    assert (got["start_date"], got["end_date"]) == ("2026-05-04", "2026-05-05")
