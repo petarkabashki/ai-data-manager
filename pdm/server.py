@@ -216,7 +216,8 @@ class PdmServer:
                                state_path=tmp_root / "pdm_jobs.json")
         schedules = [Schedule.from_config(s) for s in self.store.get("schedules") or []]
         self.scheduler = Scheduler(
-            self.jobs, schedules, on_change=lambda raws: self.store.set("schedules", raws)
+            self.jobs, schedules, on_change=lambda raws: self.store.set("schedules", raws),
+            state_path=tmp_root / "pdm_schedules.json",
         )
         self.live = LiveManager(
             self.publish,

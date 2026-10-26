@@ -21,6 +21,13 @@ server (`schedule_*` methods); every change is written back to `pdm.yaml`.
 
 A schedule whose previous run is still queued or running is skipped rather
 than queued again, so a slow provider can't build an ever-growing backlog.
+
+Each schedule's last run is saved to `state_path`, so a restart doesn't
+reset the clock. Next run = the first due time after the last run, or now if
+that has already passed. Before, `every: 8h` counted from server start, and
+funding stopped for 16h on a day with four deploys; an `at` slot that fell
+while the server was down was skipped until the next day. A schedule that
+has never run starts from now, so a fresh install doesn't fire everything.
 Times are UTC on purpose: market closes move with daylight saving, and a
 schedule that silently shifts by an hour twice a year is worse than one that
 says plainly which clock it uses.
@@ -28,12 +35,15 @@ says plainly which clock it uses.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime, time as dtime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
+from datetime import time as dtime
+from pathlib import Path
 
 from pdm.jobs import JobManager, validate
 from pdm.refresh import DEFAULT_TIMEOUT_S, build_argv
@@ -201,17 +211,26 @@ class Scheduler:
         schedules: list[Schedule],
         run_on_start: bool = False,
         on_change: Callable[[list[dict]], None] | None = None,
+        state_path: Path | None = None,
     ):
         self.jobs = jobs
         self._schedules: dict[str, Schedule] = {}
         self._lock = threading.RLock()
         self._stop = threading.Event()
         self.on_change = on_change or (lambda raws: None)
+        self.state_path = state_path
+        last_runs = self._load_last_runs()
         now = datetime.now(timezone.utc)
         for s in schedules:
             if s.name in self._schedules:
                 raise ValueError(f"duplicate schedule name {s.name!r}")
-            s.next_run = now if (run_on_start and s.every) else s.compute_next(now)
+            s.last_run = last_runs.get(s.name)
+            if run_on_start and s.every:
+                s.next_run = now
+            elif s.last_run:
+                s.next_run = max(s.compute_next(s.last_run), now)
+            else:
+                s.next_run = s.compute_next(now)
             self._schedules[s.name] = s
         self._thread = threading.Thread(target=self._loop, name="scheduler", daemon=True)
 
@@ -270,6 +289,32 @@ class Scheduler:
     def _changed(self) -> None:
         self.on_change([s.raw for s in self._schedules.values()])
 
+    # --- last runs, kept across restarts ----------------------------------------
+
+    def _load_last_runs(self) -> dict[str, datetime]:
+        if not self.state_path:
+            return {}
+        try:
+            raw = json.loads(self.state_path.read_text())
+            return {name: datetime.fromisoformat(ts) for name, ts in (raw.get("last_run") or {}).items()}
+        except (OSError, ValueError, AttributeError) as exc:
+            if not isinstance(exc, FileNotFoundError):
+                log.warning("ignoring unreadable schedule state %s: %s", self.state_path, exc)
+            return {}
+
+    def _save_last_runs(self) -> None:
+        if not self.state_path:
+            return
+        with self._lock:
+            runs = {s.name: s.last_run.isoformat() for s in self._schedules.values() if s.last_run}
+        try:
+            self.state_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self.state_path.with_name(self.state_path.name + ".tmp")
+            tmp.write_text(json.dumps({"version": 1, "last_run": runs}))
+            tmp.replace(self.state_path)
+        except OSError as exc:
+            log.error("cannot save schedule state: %s", exc)
+
     # --- firing ---------------------------------------------------------------
 
     def _fire(self, s: Schedule, now: datetime):
@@ -284,6 +329,7 @@ class Scheduler:
             meta={"schedule": s.name, "plan": s.plan} if s.plan else {"schedule": s.name},
         )
         s.last_run, s.last_job_id = now, job.id
+        self._save_last_runs()
         return job
 
     def tick(self, now: datetime) -> list[str]:

@@ -363,6 +363,11 @@ bybit and bitget spot had fallen behind because nothing ever scheduled them.
 - Monthly crypto bars had not updated since 2024 on any exchange.
   freqtrade writes `1M` as `-1Mo.parquet`, and `download_crypto` looked for
   `-1M`. **Fixed 2026-10-26**; the next scheduled run catches them up.
+- `every:` schedules counted from server start, so binance and bybit
+  funding (every 8h) went 16h without a run on a day of four deploys, and an
+  `at` slot that passed during a restart was skipped. The scheduler now keeps
+  each schedule's last run in `$TMP_ROOT/pdm_schedules.json` and resumes from
+  it. **Fixed 2026-10-26.**
 - What is still stale under the new count (2026-10-26): IBKR, at
   2026-09-16 (blocked, above); bitget `3d`/`1w`, which mostly ended in 2024
   (E12); 73 russell2000 Yahoo dailies, mostly dropped or delisted symbols; and

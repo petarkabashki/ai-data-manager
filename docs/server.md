@@ -387,3 +387,10 @@ newest finished jobs are saved too, results included, so a client polling an
 id across a restart still gets its outcome. Older ones survive only as logs
 in `$TMP_ROOT/pdm-jobs/`. A deploy can therefore restart `pdm` at any time. The only cost is the
 running job's progress since its last write.
+
+**Restarts don't reset schedules either.** Each schedule's last run is kept in
+`$TMP_ROOT/pdm_schedules.json`. On start, a schedule is due at the first time
+after its last run, or at once if that time passed while the server was down,
+in which case it fires once, not once per missed slot. A schedule that has never run
+waits for its first slot. Before 2026-10-26, `every: 8h` counted from server
+start, so a day of deploys kept pushing funding back.

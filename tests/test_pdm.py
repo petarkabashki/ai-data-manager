@@ -282,6 +282,34 @@ def test_busy_schedule_is_skipped_not_stacked(tmp_path):
     jm.stop()
 
 
+def test_a_restart_keeps_each_schedules_clock(tmp_path):
+    """`every: 8h` used to count from server start, so frequent deploys starved it."""
+    jm = JobManager(_fake_tools(tmp_path), tmp_path / "logs")
+    state = tmp_path / "pdm_schedules.json"
+
+    def configs():
+        return [Schedule.from_config({"name": "funding", "tool": "status", "every": "8h"}),
+                Schedule.from_config({"name": "close", "tool": "status", "at": "22:30"}),
+                Schedule.from_config({"name": "new", "tool": "status", "every": "8h"})]
+
+    first = Scheduler(jm, configs(), state_path=state)
+    now = datetime.now(timezone.utc)
+    first.get("close").last_run = now - timedelta(days=2)   # its slot passed while we were down
+    first.run_now("funding")                                # saves both
+    assert set(json.loads(state.read_text())["last_run"]) == {"funding", "close"}
+
+    again = Scheduler(jm, configs(), state_path=state)
+    after = datetime.now(timezone.utc)
+    funding = again.get("funding")
+    assert funding.last_run is not None and funding.next_run == funding.last_run + timedelta(hours=8)
+    assert again.get("close").next_run <= after                         # missed slot: due now, once
+    assert again.get("new").next_run >= after + timedelta(hours=8) - timedelta(seconds=5)   # never ran
+
+    state.write_text("{not json")
+    assert Scheduler(jm, configs(), state_path=state).get("funding").last_run is None
+    jm.stop()
+
+
 def test_scheduler_management_persists_every_change(tmp_path):
     jm = JobManager(_fake_tools(tmp_path), tmp_path / "logs")
     saved = []
