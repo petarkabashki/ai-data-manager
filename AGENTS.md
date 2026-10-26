@@ -344,10 +344,14 @@ uv run python tools/download_crypto.py --exchange binance --pairs BTC/USDT --tim
 uv run python tools/download_crypto.py --exchange bitget --trading-mode futures --universe --timeframes 1h 4h 1d
 ```
 
-- **The universe** (`--universe`) is every USDT spot pair, or every
-  USDT-settled linear perpetual, the venue lists now — minus leveraged tokens
-  and bitget's innovation zone (`areaSymbol: yes`, ~3,000 on-chain tokens
-  beside its 502 main-board pairs). Catalog pairs the venue no longer lists
+- **The universe** (`--universe`) is every spot pair the venue lists now,
+  whatever its quote (USDT, USDC, BTC, TRY, EUR…), or every perpetual, linear
+  or inverse, whatever it settles in — minus leveraged tokens, bitget's
+  innovation zone (`areaSymbol: yes`, ~3,000 on-chain tokens beside its
+  main board) and bitget's demo contracts (`SUSDT`…). Dated futures are not
+  included. Futures store without the settlement (`BTC/USDC:USDC` is
+  `BTC_USDC`, inverse `BTC/USD:BTC` is `BTC_USD`); two contracts that would
+  share a name keep the linear one. Catalog pairs the venue no longer lists
   get `retired: <date>` + `retired_reason` on their entry: files and dates
   stay, `--all-pairs`/`--universe` stop requesting them, `status.py` counts
   them under *Retired* instead of *Stale*, and the stale alert ignores them.
@@ -358,8 +362,9 @@ uv run python tools/download_crypto.py --exchange bitget --trading-mode futures 
   bitget `openTime`), else the first monthly bar; `EARLIEST` (2017-01-01) if
   none. freqtrade batches round it down to 1 January so a backfill is a
   handful of runs, `FT_BATCH_PAIRS` (50) pairs each, merged as they finish.
-- **ccxt instead of freqtrade** for the paths in `CCXT_ROUTES`: kucoin and
-  bitget futures, bitget spot 3d/1w/1Mo. bitget fills a since/until window
+- **ccxt instead of freqtrade** for the paths in `CCXT_ROUTES` (kucoin and
+  bitget futures, bitget spot 3d/1w/1Mo) and for every perpetual not settled
+  in USDT, which freqtrade's futures mode can't take. bitget fills a since/until window
   from the *until* end and caps futures windows at 90 days at 1d and above,
   so `CCXT_PAGING` sizes each request to one page. Only closed bars are kept.
 

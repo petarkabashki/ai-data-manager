@@ -228,3 +228,30 @@ def test_checkers_hold_funding_files_to_their_own_schema(env, monkeypatch):
     assert "columns" in check_schema.check_file(bad)
     assert not status._schema_ok(bad, "funding_rate")
     assert catalog.read_funding_range(good) == ("2024-01-01", "2024-01-03", 9)
+
+
+def test_retired_contracts_are_not_fetched(env, monkeypatch):
+    root, tool, _ = env
+    path = root / "crypto_futures_binance.yaml"
+    catalog = yaml.safe_load(path.read_text())
+    catalog["MATIC_USDT"] = {**catalog["BTC_USDT"], "name": "MATIC_USDT", "common_name": "MATIC/USDT:USDT",
+                             "retired": "2026-10-26", "retired_reason": "not listed on binance"}
+    path.write_text(yaml.dump(catalog))
+    venue = FakeVenue()
+    assert _run(tool, monkeypatch, [], venue) == 0
+    assert [s for s, _ in venue.calls] == ["BTC_USDT"]
+
+
+def test_contracts_not_settled_in_usdt_use_the_venues_own_ids(env, monkeypatch):
+    """bybit's USDC bitcoin perpetual is BTCPERP; coin-margined ones are another category or API."""
+    _, tool, _ = env
+    seen = []
+    monkeypatch.setattr(tool, "_get", lambda url, params: seen.append((url, params)) or
+                        ({"result": {"list": []}} if "bybit" in url else []))
+    tool.fetch_bybit("BTC_USDC", T0, market={"id": "BTCPERP", "linear": True})
+    tool.fetch_bybit("BTC_USD", T0, market={"id": "BTCUSD", "inverse": True})
+    tool.fetch_binance("BTC_USD", T0, market={"id": "BTCUSD_PERP", "inverse": True})
+    tool.fetch_binance("BTC_USDT", T0)
+    assert [(p["category"], p["symbol"]) for u, p in seen[:2]] == [("linear", "BTCPERP"), ("inverse", "BTCUSD")]
+    assert seen[2][0].startswith("https://dapi.") and seen[2][1]["symbol"] == "BTCUSD_PERP"
+    assert seen[3][0].startswith("https://fapi.") and seen[3][1]["symbol"] == "BTCUSDT"

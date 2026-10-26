@@ -42,9 +42,11 @@ def spot(base, quote="USDT", **kw):
     return {"symbol": f"{base}/{quote}", "base": base, "quote": quote, "spot": True, "active": True, **kw}
 
 
-def test_the_universe_is_usdt_pairs_without_leveraged_or_innovation_zone_tokens():
+def test_the_universe_is_every_quote_without_leveraged_innovation_zone_or_demo_markets():
     assert in_universe(spot("BTC"), "binance", "spot")
-    assert not in_universe(spot("BTC", "USDC"), "binance", "spot")
+    assert in_universe(spot("BTC", "USDC"), "binance", "spot")
+    assert in_universe(spot("ETH", "BTC"), "kucoin", "spot")
+    assert in_universe(spot("BTC", "TRY"), "binance", "spot")
     assert not in_universe(spot("BTC3L"), "kucoin", "spot")
     assert not in_universe(spot("ETHUP"), "binance", "spot")
     assert not in_universe(spot("OLD", active=False), "binance", "spot")
@@ -52,7 +54,11 @@ def test_the_universe_is_usdt_pairs_without_leveraged_or_innovation_zone_tokens(
     assert not in_universe(spot("RNNNN", info={"areaSymbol": "yes"}), "bitget", "spot")
     swap = {"symbol": "BTC/USDT:USDT", "swap": True, "linear": True, "settle": "USDT", "active": True}
     assert in_universe(swap, "bybit", "futures")
-    assert not in_universe({**swap, "linear": False, "settle": "BTC"}, "bybit", "futures")
+    assert in_universe({**swap, "symbol": "BTC/USDC:USDC", "settle": "USDC"}, "bybit", "futures")
+    assert in_universe({**swap, "symbol": "BTC/USD:BTC", "linear": False, "inverse": True, "settle": "BTC"},
+                       "bybit", "futures")
+    assert not in_universe({**swap, "settle": "SUSDT"}, "bitget", "futures")     # demo trading
+    assert not in_universe({**swap, "swap": False, "future": True}, "bybit", "futures")   # dated
     assert not in_universe(spot("BTC"), "bybit", "futures")
 
 
@@ -162,6 +168,11 @@ def test_routing_sends_only_the_broken_paths_to_ccxt():
     assert dc.ccxt_timeframes("bitget", "futures", tfs) == tfs
     assert dc.ccxt_timeframes("kucoin", "futures", tfs) == tfs
     assert dc.ccxt_timeframes("binance", "spot", tfs) == []
+    # freqtrade's futures mode is USDT-margined only; the rest goes through ccxt whole.
+    assert dc.freqtrade_can("futures", "BTC/USDT:USDT")
+    assert not dc.freqtrade_can("futures", "BTC/USDC:USDC")
+    assert not dc.freqtrade_can("futures", "BTC/USD:BTC")
+    assert dc.freqtrade_can("spot", "ETH/BTC")
 
 
 def test_all_pairs_skips_retired_entries():

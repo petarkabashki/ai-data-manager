@@ -12,7 +12,7 @@ fraction per settlement, positive = longs pay shorts; `mark_price` on Binance,
 null on Bybit and KuCoin) and records it as `timeframe_dates.funding` on the contract's
 `crypto_futures_<exchange>.yaml` entry (`schema: funding_rate`).
 
-Which contracts: every one in that catalog, or `--symbols` (which must be in
+Which contracts: every one in that catalog except retired ones, or `--symbols` (which must be in
 it — funding belongs to a perpetual whose bars we hold). Where each fetch
 starts: after the last settlement on disk; with no file, at `--since` or the
 contract's first bar. `--full` ignores the file and refetches from there,
@@ -45,8 +45,8 @@ from utils.catalog import (
     FUNDING_COLS,
     funding_file_path,
     load_crypto_futures_catalog,
-    read_funding,
     merge_funding,
+    read_funding,
     save_crypto_futures_catalog,
     update_funding_entry,
 )
@@ -77,13 +77,15 @@ def _frame(rows: list[dict]) -> pd.DataFrame:
         {"timestamp": "int64", "funding_rate": "float64", "mark_price": "float64"})
 
 
-def fetch_binance(symbol: str, start_ms: int) -> pd.DataFrame:
+def fetch_binance(symbol: str, start_ms: int, market: dict | None = None) -> pd.DataFrame:
     # With no startTime Binance returns the most RECENT page, so always name one.
     rows: list[dict] = []
     start = start_ms
+    url = ("https://dapi.binance.com/dapi/v1/fundingRate" if market and market.get("inverse")
+           else "https://fapi.binance.com/fapi/v1/fundingRate")
+    contract = market["id"] if market else symbol.replace("_", "")
     while True:
-        page = _get("https://fapi.binance.com/fapi/v1/fundingRate",
-                    {"symbol": symbol.replace("_", ""), "startTime": start, "limit": 1000})
+        page = _get(url, {"symbol": contract, "startTime": start, "limit": 1000})
         if not page:
             break
         rows.extend({"timestamp": int(r["fundingTime"]), "funding_rate": float(r["fundingRate"]),
@@ -95,13 +97,15 @@ def fetch_binance(symbol: str, start_ms: int) -> pd.DataFrame:
     return _frame(rows)
 
 
-def fetch_bybit(symbol: str, start_ms: int) -> pd.DataFrame:
+def fetch_bybit(symbol: str, start_ms: int, market: dict | None = None) -> pd.DataFrame:
     # Bybit pages backwards from endTime; walk down to start_ms.
     rows: list[dict] = []
     end = int(time.time() * 1000)
+    category = "inverse" if market and market.get("inverse") else "linear"
+    contract = market["id"] if market else symbol.replace("_", "")
     while True:
         payload = _get("https://api.bybit.com/v5/market/funding/history",
-                       {"category": "linear", "symbol": symbol.replace("_", ""), "endTime": end, "limit": 200})
+                       {"category": category, "symbol": contract, "endTime": end, "limit": 200})
         items = (payload.get("result") or {}).get("list") or []
         if not items:
             break
@@ -121,11 +125,11 @@ def kucoin_contract(symbol: str) -> str:
     return f"{'XBT' if base == 'BTC' else base}{quote}M"
 
 
-def fetch_kucoin(symbol: str, start_ms: int) -> pd.DataFrame:
+def fetch_kucoin(symbol: str, start_ms: int, market: dict | None = None) -> pd.DataFrame:
     # KuCoin serves a [from, to] window newest first, 100 a page: walk `to` down.
     rows: list[dict] = []
     end = int(time.time() * 1000)
-    contract = kucoin_contract(symbol)
+    contract = market["id"] if market else kucoin_contract(symbol)
     while True:
         payload = _get("https://api-futures.kucoin.com/api/v1/contract/funding-rates",
                        {"symbol": contract, "from": start_ms, "to": end})
@@ -147,6 +151,21 @@ def fetch_kucoin(symbol: str, start_ms: int) -> pd.DataFrame:
 
 
 FETCH = {"binance": fetch_binance, "bybit": fetch_bybit, "kucoin": fetch_kucoin}
+
+
+def contract_markets(exchange: str) -> dict[str, dict]:
+    """{storage name: ccxt market} for the venue's perpetuals.
+
+    Only consulted for contracts not settled in USDT (USDC, USD1, inverse),
+    whose exchange ids don't follow from the name: bybit's USDC BTC perpetual
+    is BTCPERP, binance's coin-margined ones live on another API. USDT
+    contracts keep the derivation, so the common case needs no market load.
+    """
+    from utils.catalog import futures_pair_to_symbol
+    from utils.crypto_universe import ccxt_exchange
+
+    markets = ccxt_exchange(exchange, "futures").load_markets()
+    return {futures_pair_to_symbol(m["symbol"]): m for m in markets.values() if m.get("swap")}
 
 
 def _day_ms(day: str) -> int:
@@ -200,7 +219,8 @@ def main(argv: list[str] | None = None) -> int:
             p.error(f"not in crypto_futures_{args.exchange}: {unknown}")
         symbols = sorted(set(wanted))
     else:
-        symbols = sorted(by_symbol)
+        # Retired contracts (delisted; see download_crypto --universe) settle no more.
+        symbols = sorted(s for s, (_, entry) in by_symbol.items() if not entry.get("retired"))
 
     plan = [plan_symbol(args.exchange, s, by_symbol[s][1], args.since, args.full) for s in symbols]
     doc = {"exchange": args.exchange, "dry_run": args.dry_run, "plan": plan,
@@ -210,11 +230,22 @@ def main(argv: list[str] | None = None) -> int:
             log(f"{item['symbol']}: from {item['start']} ({item['reason']}), {item['rows_on_disk']} rows on disk")
         log(f"{len(plan)} contract(s) planned on {args.exchange}; dry run, nothing fetched")
     else:
+        markets: dict[str, dict] | None = None
         try:
             for item in plan:
                 symbol = item["symbol"]
                 try:
-                    new = FETCH[args.exchange](symbol, item["start_ms"])
+                    extra = {}
+                    if not symbol.endswith("_USDT"):
+                        if markets is None:
+                            try:
+                                markets = contract_markets(args.exchange)
+                            except Exception as exc:  # noqa: BLE001 — fall back to the derived id
+                                log(f"market list unavailable ({type(exc).__name__}); deriving contract ids")
+                                markets = {}
+                        if symbol in markets:
+                            extra["market"] = markets[symbol]
+                    new = FETCH[args.exchange](symbol, item["start_ms"], **extra)
                     path = funding_file_path(args.exchange, symbol)
                     before, after = merge_funding(new, path)
                 except Exception as exc:  # noqa: BLE001 — one contract's failure is reported, not fatal

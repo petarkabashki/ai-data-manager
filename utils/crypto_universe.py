@@ -5,10 +5,13 @@ the other question — "every pair the venue trades" — for `download_crypto
 --universe`, and tells delisted catalog pairs apart so they can be marked
 retired instead of re-requested every night.
 
-The universe is USDT-quoted spot pairs and USDT-settled linear perpetuals,
-excluding leveraged tokens (`BTC3L`, `ETHUP`) and, on bitget, the
-"innovation zone" (`areaSymbol: yes`): ~3,000 on-chain tokens that bitget
-lists as spot pairs (`rNNNN/USDT`), against 502 on its main board.
+The universe is every active spot pair, whatever its quote (USDT, USDC, BTC,
+TRY, EUR…), and every active perpetual, linear or inverse, whatever it
+settles in. It excludes leveraged tokens (`BTC3L`, `ETHUP`), bitget's
+"innovation zone" (`areaSymbol: yes`: ~3,000 on-chain tokens that bitget lists
+as spot pairs, `rNNNN/USDT`, against ~550 on its main board) and bitget's
+demo-trading contracts (settled in `SUSDT`, `SUSDC`, `SBTC`…). Dated futures
+are not part of it: they expire, and have no catalog shape here yet.
 
 Listing dates matter because kucoin and bitget answer a request that starts
 before a pair existed with an empty page rather than with the first bars, so
@@ -22,11 +25,13 @@ from __future__ import annotations
 import re
 from datetime import datetime, timezone
 
-QUOTE = "USDT"
 EARLIEST = "2017-01-01"          # before any pair we track was listed
 
 # Leveraged and directional tokens: BTC3L, ETH5S, BNBUP, XRPBEAR.
 _LEVERAGED = re.compile(r"\d+[LS]$|(UP|DOWN|BULL|BEAR)$")
+
+# bitget's simulated-trading settlement coins.
+_BITGET_DEMO = re.compile(r"^S(USDT|USDC|BTC|ETH)$")
 
 # ccxt classes where the spot class can't serve futures.
 _FUTURES_CLASS = {"kucoin": "kucoinfutures"}
@@ -48,8 +53,10 @@ def in_universe(market: dict, exchange: str, trading_mode: str) -> bool:
     if market.get("active") is False:
         return False
     if trading_mode == "futures":
-        return bool(market.get("swap") and market.get("linear") and market.get("settle") == QUOTE)
-    if not market.get("spot") or market.get("quote") != QUOTE or _LEVERAGED.search(market.get("base") or ""):
+        if not market.get("swap") or not market.get("settle"):
+            return False
+        return not (exchange == "bitget" and _BITGET_DEMO.match(market["settle"]))
+    if not market.get("spot") or not market.get("quote") or _LEVERAGED.search(market.get("base") or ""):
         return False
     if exchange == "bitget" and (market.get("info") or {}).get("areaSymbol") == "yes":
         return False
@@ -57,7 +64,7 @@ def in_universe(market: dict, exchange: str, trading_mode: str) -> bool:
 
 
 def listed_markets(ccxt_ex, exchange: str, trading_mode: str) -> dict[str, dict]:
-    """{pair: market} for the universe; spot pairs `BTC/USDT`, futures `BTC/USDT:USDT`."""
+    """{pair: market} for the universe; spot pairs `ETH/BTC`, futures `BTC/USDC:USDC`."""
     markets = ccxt_ex.load_markets()
     return {m["symbol"]: m for m in markets.values() if in_universe(m, exchange, trading_mode)}
 

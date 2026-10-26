@@ -274,13 +274,14 @@ uv run python tools/download_crypto.py --exchange bitget --trading-mode futures 
 
 | Flag | Meaning |
 |---|---|
-| `--universe` | Every USDT spot pair (or USDT linear perpetual) the venue lists now, minus leveraged tokens and bitget's innovation zone. Catalog pairs it no longer lists get `retired: <date>` and are skipped from then on |
+| `--universe` | Every spot pair (any quote) or perpetual (any settlement, linear or inverse) the venue lists now, minus leveraged tokens, bitget's innovation zone and demo contracts. Catalog pairs it no longer lists get `retired: <date>` and are skipped from then on |
 | `--all-pairs` | The catalog's pairs, except retired ones |
 | `--since` | Start for series with no data (and for `--full`). Default: the pair's listing |
 | `--full` | Ignore stored data and refetch from `--since` or the listing |
 
-kucoin and bitget futures, and bitget spot 3d/1w/1Mo, go through ccxt
-(`CCXT_ROUTES`) because freqtrade can't page them; everything else through
+kucoin and bitget futures, bitget spot 3d/1w/1Mo, and every perpetual not
+settled in USDT go through ccxt (`CCXT_ROUTES`, `freqtrade_can`) because
+freqtrade can't page or trade them; everything else through
 freqtrade, `FT_BATCH_PAIRS` pairs per run, each batch merged before the next.
 
 Wraps freqtrade's public (unauthenticated) OHLCV download, merges into
@@ -309,7 +310,7 @@ uv run python tools/download_funding.py --exchange bybit --symbols BTC_USDT ETH/
 | Flag | Meaning |
 |---|---|
 | `--exchange` | `binance`, `bybit` or `kucoin` (public endpoints, no key) |
-| `--symbols` | Contracts to fetch (`BTC_USDT` or `BTC/USDT`); must be in the catalog. Default: all |
+| `--symbols` | Contracts to fetch (`BTC_USDT` or `BTC/USDT`); must be in the catalog. Default: all but retired. Non-USDT contracts (`BTC_USDC`, inverse `BTC_USD`) use the venue's own id from ccxt |
 | `--since` | Start date when there is no file yet (or with `--full`) |
 | `--full` | Ignore the file and refetch from `--since` or the first bar; new rows win |
 | `--dry-run` | Plan only: no network, no writes |

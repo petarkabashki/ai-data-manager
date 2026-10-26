@@ -86,11 +86,19 @@ CCXT_PAGING: dict[tuple[str, str], tuple[int, int | None]] = {
     ("kucoin", "futures"): (200, None),
     ("bitget", "futures"): (200, 90 * DAY_MS),
     ("bitget", "spot"): (100, 365 * 10 * DAY_MS),
+    ("binance", "futures"): (1000, None),
+    ("bybit", "futures"): (1000, None),
 }
 
 # freqtrade runs this many pairs at a time and merges before the next batch,
 # so a backfill interrupted by a restart keeps every finished batch.
 FT_BATCH_PAIRS = 50
+
+
+def freqtrade_can(trading_mode: str, pair: str) -> bool:
+    """freqtrade's futures mode handles USDT-margined perpetuals only; USDC,
+    USD1 and coin-margined (inverse) ones go through ccxt whole."""
+    return trading_mode == "spot" or pair.endswith(":USDT")
 
 
 def ccxt_timeframes(exchange: str, trading_mode: str, timeframes: list[str]) -> list[str]:
@@ -584,7 +592,17 @@ def select_pairs(args, catalog: dict, is_futures: bool, ccxt_ex=None) -> tuple[l
     if args.universe:
         ccxt_ex = ccxt_ex or ccxt_exchange(args.exchange, args.trading_mode)
         markets = listed_markets(ccxt_ex, args.exchange, args.trading_mode)
-        names = {_symbol(p, is_futures) for p in markets}
+        # Two contracts must not share a storage name (the settlement suffix is
+        # dropped: BTC/USD:BTC is BTC_USD). Keep the linear one if they would.
+        by_name: dict[str, str] = {}
+        for pair in sorted(markets, key=lambda p: not markets[p].get("linear")):
+            name = _symbol(pair, is_futures)
+            if name in by_name:
+                print(f"  [skip] {pair}: stores as {name}, already taken by {by_name[name]}")
+                continue
+            by_name[name] = pair
+        markets = {pair: markets[pair] for pair in by_name.values()}
+        names = set(by_name)
         known = {e.get("name") for e in catalog.values() if isinstance(e, dict)}
         today = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
         retired, relisted = mark_retired(catalog, names, args.exchange, today)
@@ -722,8 +740,7 @@ def main() -> None:
     timeframes = args.timeframes
     ccxt_tfs = ccxt_timeframes(args.exchange, args.trading_mode, timeframes)
     ft_tfs = [tf for tf in timeframes if tf not in ccxt_tfs]
-    needs_ccxt = args.universe or bool(ccxt_tfs) or not (args.since or args.prepend)
-    ccxt_ex = ccxt_exchange(args.exchange, args.trading_mode) if needs_ccxt else None
+    ccxt_ex = ccxt_exchange(args.exchange, args.trading_mode)   # no network until used
 
     pairs, markets = select_pairs(args, catalog, is_futures, ccxt_ex)
     starts = {} if (args.since or args.prepend) else listing_starts(
@@ -746,23 +763,30 @@ def main() -> None:
 
     checkpoint = CatalogCheckpoint(save_catalog)
 
+    # (pairs, timeframes) per backend: freqtrade takes what it can page; ccxt
+    # takes the routed timeframes for every pair and whole pairs freqtrade can't.
+    ft_pairs = [p for p in pairs if freqtrade_can(args.trading_mode, p)]
+    ccxt_jobs = [(pairs, ccxt_tfs), ([p for p in pairs if p not in set(ft_pairs)], ft_tfs)]
+
     changes: list = []
     failed = 0
-    if ft_tfs:
+    if ft_tfs and ft_pairs:
         if args.prepend and args.since is None:
             print("--prepend requires --since. Nothing to do.")
             return
-        ft_changes, failed = download_with_freqtrade(args, pairs, ft_tfs, catalog, starts, checkpoint)
+        ft_changes, failed = download_with_freqtrade(args, ft_pairs, ft_tfs, catalog, starts, checkpoint)
         changes += ft_changes
-    if ccxt_tfs:
+    for job_pairs, job_tfs in ccxt_jobs:
+        if not (job_pairs and job_tfs):
+            continue
         if args.prepend:
-            print(f"  [warn] --prepend is not supported on the ccxt path; skipping {', '.join(ccxt_tfs)}")
-        else:
-            changes += download_and_merge_ccxt(
-                args.exchange, pairs, ccxt_tfs, catalog, trading_mode=args.trading_mode,
-                starts=starts, since=args.since, dry_run=args.dry_run, full=args.full,
-                checkpoint=checkpoint, ccxt_ex=ccxt_ex,
-            )
+            print(f"  [warn] --prepend is not supported on the ccxt path; skipping {len(job_pairs)} pair(s)")
+            continue
+        changes += download_and_merge_ccxt(
+            args.exchange, job_pairs, job_tfs, catalog, trading_mode=args.trading_mode,
+            starts=starts, since=args.since, dry_run=args.dry_run, full=args.full,
+            checkpoint=checkpoint, ccxt_ex=ccxt_ex,
+        )
     if args.dry_run:
         return
 

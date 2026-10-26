@@ -489,9 +489,10 @@ behind it.
 
 ## E15 — The full crypto universe
 
-**Scope.** Every USDT spot pair and every USDT-settled linear perpetual on
-binance, kucoin, bybit and bitget, `1h` and up, from listing, kept current
-by the nightly schedules. Approved by the owner 2026-10-26.
+**Scope.** Every spot pair, in any quote currency, and every perpetual,
+linear or inverse, on binance, kucoin, bybit and bitget. `1h` and up, from
+listing, kept current by the nightly schedules. Approved by the owner
+2026-10-26, non-USDT pairs included. Dated futures are out of scope.
 
 - `download_crypto --universe` lists what the venue trades now. Leveraged
   tokens and bitget's innovation zone are left out: ~3,000 on-chain tokens,
@@ -513,10 +514,15 @@ by the nightly schedules. Approved by the owner 2026-10-26.
 - The new catalog `crypto_futures_bitget` goes through ccxt: requests at 1d
   and above are capped at 90 days, and bitget fills a window from its end.
   Funding for bitget remains open (E14).
-- Estimate: ~4,030 new pairs, ~105M bars, ~3 GB of parquet (29 bytes a bar
-  measured), and ~270k requests. That is roughly 15–20 h on the one crypto
-  lane, dominated by kucoin and bitget futures (200-bar pages). Nightly
-  refreshes grow to ~5,300 pairs.
+- Non-USDT markets add ~1,180 spot pairs and ~190 perpetuals. Spot quotes
+  include TRY, USDC, BTC, EUR, USD1 and FDUSD; perpetuals settle in USDC,
+  USD1, or the coin itself (inverse). They are downloaded the same way. Perps
+  that freqtrade can't take go through ccxt. Funding resolves each contract's
+  venue id (bybit's USDC BTC perp is `BTCPERP`), and skips retired contracts.
+- Estimate: ~5,400 new pairs, ~170M bars, ~5 GB of parquet (29 bytes a bar
+  measured). That is roughly 20–25 h on the one crypto lane, dominated by
+  kucoin and bitget futures (200-bar pages). Nightly refreshes grow to
+  ~6,700 pairs.
 
 **Done when.** Each venue's catalog matches its listed universe, every new
 series reaches back to its listing, and `status` shows them current.
