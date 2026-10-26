@@ -43,6 +43,7 @@ from utils.catalog import (
     catalog_key,
     crypto_file_path,
     crypto_futures_file_path,
+    ft_file_timeframe,
     ft_timeframe,
     futures_pair_to_ft_symbol,
     futures_pair_to_symbol,
@@ -263,9 +264,8 @@ def process_downloads(
         symbol = futures_pair_to_symbol(pair) if is_futures else pair_to_symbol(pair)
         ft_sym = futures_pair_to_ft_symbol(pair) if is_futures else pair_to_symbol(pair)
         for tf in timeframes:
-            ft_tf = ft_timeframe(tf)
             src_suffix = "-futures" if is_futures else ""
-            src = src_dir / f"{ft_sym}-{ft_tf}{src_suffix}.parquet"
+            src = src_dir / f"{ft_sym}-{ft_file_timeframe(tf)}{src_suffix}.parquet"
             if not src.exists():
                 print(f"  [warn] expected {src.name} not found in download output")
                 continue

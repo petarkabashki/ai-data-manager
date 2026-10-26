@@ -79,6 +79,21 @@ def test_process_downloads_skips_a_rejected_download(tmp_path, monkeypatch, ohlc
     assert nodes == {"1d"}
 
 
+def test_process_downloads_finds_freqtrades_monthly_file(tmp_path, monkeypatch, ohlcv):
+    """freqtrade writes 1M bars to `-1Mo.parquet`; looking for `-1M` missed them."""
+    root = tmp_path / "price-data"
+    root.mkdir()
+    dc = _fresh_download_crypto(monkeypatch, root)
+    datadir = tmp_path / "ft"
+    datadir.mkdir()
+    ohlcv(n=5).to_parquet(datadir / "RAY_USDT-1Mo.parquet", index=False)
+
+    changes = dc.process_downloads("bitget", ["RAY/USDT"], ["1Mo"], datadir, {})
+
+    assert [(s, tf) for s, tf, _, _ in changes] == [("RAY_USDT", "1Mo")]
+    assert dc.crypto_file_path("bitget", "RAY_USDT", "1Mo").exists()
+
+
 def test_process_downloads_reports_a_merge_that_adds_nothing(tmp_path, monkeypatch, ohlcv, capsys):
     """Re-merging the same rows used to raise NameError (zero_delta was only
     defined in the futures path)."""

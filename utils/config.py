@@ -101,9 +101,10 @@ PDM_HTTP_PORT = _int_from_env("PDM_HTTP_PORT", 5580)
 #: only logged and broadcast. Often holds a secret (a ntfy topic): .env only.
 PDM_NOTIFY_CMD = os.environ.get("PDM_NOTIFY_CMD", "")
 
-#: A series this many days behind its catalog end_date counts as stale for
-#: alerts. 4 rides out a weekend plus a holiday on a daily equity series.
-PDM_STALE_ALERT_DAYS = _int_from_env("PDM_STALE_ALERT_DAYS", 4)
+#: A series this many session days overdue (utils.planning.days_behind)
+#: counts as stale for alerts. Weekends and holidays don't count, and a bar
+#: that closed since the last scheduled run is 1, so 2 means a missed run.
+PDM_STALE_ALERT_DAYS = _int_from_env("PDM_STALE_ALERT_DAYS", 2)
 
 #: File holding the token, outside the checkout — so a sandbox that can read
 #: the repo (an LLM agent running the audit scripts) can't read the secret.

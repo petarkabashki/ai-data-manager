@@ -5,9 +5,12 @@ Two things raise an alert:
 * **job**: a run ended `failed` or `timed_out`. A scheduled job alerts once.
   While its schedule keeps failing it stays quiet, and the next success sends
   one `recovered` alert. A one-off job (a client submit, a refresh) always
-  alerts.
+  alerts. A check tool that exits 1 has found problems, which is its report
+  rather than a failure (as in `pdm/audit.py`), unless its log ends in a
+  Python error.
 * **stale**: series that were fresh at the previous check and are now
-  `stale_days` or more behind their catalog `end_date`. A series that stopped
+  `stale_days` or more session days overdue (`utils.planning.days_behind`,
+  the count `status.py` uses). A series that stopped
   updating long ago never alerts, only one that stops now. Such a series
   sends `recovered` once it is fresh again. The first check after a fresh
   install only records which series are fresh.
@@ -28,6 +31,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shlex
 import subprocess
 import threading
@@ -36,12 +40,17 @@ from collections.abc import Callable, Iterable
 from datetime import datetime, timezone
 from pathlib import Path
 
+from pdm.audit import AUDIT_TOOLS
 from pdm.protocol import new_id
-from utils.planning import days_stale
+from utils.calendars import calendar_for
+from utils.planning import days_behind
 
 log = logging.getLogger("pdm.alerts")
 
 FAILED = {"failed", "timed_out"}
+#: Tools that exit 1 when they find problems. `query` only filters.
+CHECK_TOOLS = frozenset(AUDIT_TOOLS) - {"query"}
+_CRASH = re.compile(r"^(Traceback \(most recent call last\)|[\w.]*(Error|Exception|Interrupt)\b)")
 MAX_TEXT = 400
 
 
@@ -61,6 +70,14 @@ def log_tail(path: str | None, lines: int = 3) -> list[str]:
     except OSError:
         return []
     return [ln.strip()[:200] for ln in text.splitlines() if ln.strip()][-lines:]
+
+
+def found_problems(job) -> bool:
+    """A check tool's exit 1 with a report, rather than a crash."""
+    if job.tool not in CHECK_TOOLS or job.state != "failed" or job.returncode != 1:
+        return False
+    tail = log_tail(job.log_path, lines=1)
+    return bool(tail) and not _CRASH.match(tail[-1])
 
 
 class Alerter:
@@ -89,9 +106,10 @@ class Alerter:
     def on_job(self, job) -> dict | None:
         """Call with every job event; alerts on failures and recoveries."""
         schedule = job.source if job.source.startswith("schedule:") else None
+        state = "succeeded" if found_problems(job) else job.state
         with self._lock:
-            failed = job.state in FAILED and schedule not in self._failing
-            recovered = job.state == "succeeded" and schedule in self._failing
+            failed = state in FAILED and schedule not in self._failing
+            recovered = state == "succeeded" and schedule in self._failing
             if schedule and (failed or recovered):
                 (self._failing.add if failed else self._failing.discard)(schedule)
                 self._save()
@@ -111,7 +129,9 @@ class Alerter:
         """Diff series freshness against the previous check; returns the alerts raised."""
         rows = list(rows)
         stale_rows = {series_key(r): r for r in rows
-                      if (d := days_stale(r.get("end_date"))) is not None and d >= self.stale_days}
+                      if (d := days_behind(r.get("end_date"), r.get("timeframe"),
+                                           calendar_for(r.get("asset_class")))) is not None
+                      and d >= self.stale_days}
         fresh = {series_key(r) for r in rows} - set(stale_rows)
         alerts = []
         with self._lock:

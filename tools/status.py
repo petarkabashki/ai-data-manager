@@ -36,15 +36,15 @@ import pyarrow.parquet as pq
 
 from utils.calendars import calendar_for
 from utils.catalog import (
-    CANONICAL_COLS,
     CANONICAL_ARROW_TYPES,
+    CANONICAL_COLS,
     FUNDING_ARROW_TYPES,
     FUNDING_COLS,
     catalog_registry,
     iter_timeframe_nodes,
     resolve_from_repo,
 )
-from utils.planning import days_stale
+from utils.planning import days_behind
 from utils.report import allow_broken_pipe, print_table
 from utils.semantics import validate_node_semantics
 
@@ -113,10 +113,11 @@ def _schema_ok(path: Path, kind: str | None = "ohlcv") -> bool:
 
 
 def summarize(spec, stale_days: int, deep: bool) -> CatalogStatus:
+    calendar = calendar_for(spec.asset_class)
     status = CatalogStatus(
         name=spec.name,
         asset_class=spec.asset_class,
-        calendar=calendar_for(spec.asset_class).name,
+        calendar=calendar.name,
     )
 
     for key, entry in spec.load().items():
@@ -142,7 +143,7 @@ def summarize(spec, stale_days: int, deep: bool) -> CatalogStatus:
             if end and (status.newest is None or end > status.newest):
                 status.newest = end
 
-            stale = days_stale(end)
+            stale = days_behind(end, timeframe, calendar)
             if stale is None:
                 status.undated += 1
             elif stale >= stale_days:
@@ -173,8 +174,8 @@ def main() -> None:
     allow_broken_pipe()
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--catalog", nargs="+", help="Limit to these catalogs by name")
-    p.add_argument("--stale-days", type=int, default=3, metavar="N",
-                   help="Series with an end date at least N days old count as stale (default 3)")
+    p.add_argument("--stale-days", type=int, default=2, metavar="N",
+                   help="Series N or more session days overdue count as stale (default 2)")
     p.add_argument("--deep", action="store_true",
                    help="Also verify files exist, match the canonical schema, and carry semantics")
     p.add_argument("--json", action="store_true", help="Emit machine-readable JSON")

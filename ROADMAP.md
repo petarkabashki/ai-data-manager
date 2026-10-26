@@ -352,6 +352,21 @@ bybit and bitget spot had fallen behind because nothing ever scheduled them.
   fallen 4+ days behind. Alerts go to `tmp/pdm_alerts.jsonl`, `server/alert`,
   `pdm_client alerts`, and optionally `PDM_NOTIFY_CMD`. **Done 2026-10-25**;
   the notify channel is the owner's choice.
+- Stale means session days overdue (`utils.planning.days_behind`), counted
+  from when the bar after a series' last one closed: trading days on equity
+  calendars, every day on crypto. Before, it was days since `end_date`, so
+  `status` called every equity series stale on a Monday, and 3-day and
+  weekly bars alerted while their next bar was still forming. `status`,
+  `query`, PDM's `series` and the stale alert share it, default 2 (a missed
+  run). A check tool exiting 1 with a report no longer alerts as a failed
+  job. **Done 2026-10-26.**
+- Monthly crypto bars had not updated since 2024 on any exchange.
+  freqtrade writes `1M` as `-1Mo.parquet`, and `download_crypto` looked for
+  `-1M`. **Fixed 2026-10-26**; the next scheduled run catches them up.
+- What is still stale under the new count (2026-10-26): IBKR, at
+  2026-09-16 (blocked, above); bitget `3d`/`1w`, which mostly ended in 2024
+  (E12); 73 russell2000 Yahoo dailies, mostly dropped or delisted symbols; and
+  crypto pairs that stopped trading, which make up most of the crypto count.
 
 **Done when.** `status.py` reports no daily catalog more than one trading day
 old, except IBKR, without anyone running a download by hand.

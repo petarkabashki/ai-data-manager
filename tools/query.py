@@ -24,18 +24,18 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from utils.calendars import calendar_for
 from utils.catalog import (
     catalog_registry,
     iter_timeframe_nodes,
     read_parquet_range,
     resolve_from_repo,
 )
-from utils.planning import days_stale
+from utils.planning import days_behind
 from utils.report import allow_broken_pipe, print_table
 
 ASSET_CLASSES = ["Crypto", "Crypto Futures", "Stock", "Index", "Commodity", "Macro"]
@@ -87,7 +87,7 @@ def collect(args, parser) -> list[dict]:
                     if actual:
                         start, end, rows_count = actual
 
-                stale = days_stale(end)
+                stale = days_behind(end, timeframe, calendar_for(spec.asset_class))
                 if args.stale_days is not None and (stale is None or stale < args.stale_days):
                     continue
 
@@ -145,7 +145,7 @@ def main() -> None:
     p.add_argument("--timeframe", "-t", help="Single timeframe (e.g. 1d)")
     p.add_argument("--timeframes", nargs="+", help="Multiple timeframes")
     p.add_argument("--provider", help="Filter by provider (YF, IBKR, binance…), case-insensitive")
-    p.add_argument("--stale-days", type=int, metavar="N", help="Only series stale by >= N days")
+    p.add_argument("--stale-days", type=int, metavar="N", help="Only series N or more session days overdue")
     p.add_argument("--rescan", action="store_true",
                    help="Read dates from the parquet files instead of the catalog (slow, authoritative)")
     p.add_argument("--list-catalogs", action="store_true", help="List catalogs with symbol/series counts")

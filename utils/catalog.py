@@ -268,6 +268,16 @@ def ft_timeframe(tf: str) -> str:
     return OUR_TF_TO_FT.get(tf, tf)
 
 
+def ft_file_timeframe(tf: str) -> str:
+    """The timeframe in freqtrade's data file names.
+
+    freqtrade writes `1M` as `-1Mo` (`IDataHandler.timeframe_to_file`), so
+    it can't collide with `-1m` on a case-insensitive disk. Looking for
+    `-1M.parquet` found nothing, and monthly bars stopped updating in 2024.
+    """
+    return ft_timeframe(tf).replace("M", "Mo")
+
+
 def our_timeframe(ft_tf: str) -> str:
     """Convert freqtrade timeframe name to ours."""
     return FT_TF_TO_OURS.get(ft_tf, ft_tf)

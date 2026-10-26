@@ -31,6 +31,8 @@ from datetime import date, datetime, time, timedelta, timezone
 from functools import lru_cache
 from zoneinfo import ZoneInfo
 
+import numpy as np
+
 NY_TZ = ZoneInfo("America/New_York")
 
 DAY_MS = 86_400_000
@@ -151,6 +153,14 @@ def is_us_trading_day(day: date) -> bool:
     return day.weekday() < 5 and day not in us_market_holidays(day.year)
 
 
+def us_trading_days_between(first: date, last: date) -> int:
+    """US trading days in [first, last], both ends included; 0 if last < first."""
+    if last < first:
+        return 0
+    holidays = [d for year in range(first.year, last.year + 1) for d in us_market_holidays(year)]
+    return int(np.busday_count(first, last + timedelta(days=1), holidays=holidays))
+
+
 # --- calendars ----------------------------------------------------------------
 
 def _to_ms(moment: datetime) -> int:
@@ -186,6 +196,13 @@ class ContinuousCalendar:
 
     name = "continuous"
 
+    def is_session_day(self, day: date) -> bool:
+        return True
+
+    def session_days(self, first: date, last: date) -> int:
+        """Days in [first, last] with a session; 0 if last < first."""
+        return max(0, (last - first).days + 1)
+
     def windows(self, start_ms: int, end_ms: int) -> list[Window]:
         return [Window(start_ms, end_ms)]
 
@@ -212,6 +229,12 @@ class UsEquityCalendar:
             raise ValueError(f"Unknown equity session {session!r}")
         self.session = "rth" if session == "all" else session
         self.name = f"us_equity_{self.session}"
+
+    def is_session_day(self, day: date) -> bool:
+        return is_us_trading_day(day)
+
+    def session_days(self, first: date, last: date) -> int:
+        return us_trading_days_between(first, last)
 
     # -- session windows --
 
@@ -325,6 +348,13 @@ class CmeFuturesCalendar:
 
         close = self.EARLY_CLOSE if close_day in us_early_closes(close_day.year) else self.CLOSE
         return Window(_to_ms(_ny(open_day, self.OPEN)), _to_ms(_ny(close_day, close)))
+
+    # A session closes on exactly the US trading days (Monday's opens on Sunday).
+    def is_session_day(self, day: date) -> bool:
+        return is_us_trading_day(day)
+
+    def session_days(self, first: date, last: date) -> int:
+        return us_trading_days_between(first, last)
 
     def windows(self, start_ms: int, end_ms: int) -> list[Window]:
         first = datetime.fromtimestamp(start_ms / 1000, tz=timezone.utc).astimezone(NY_TZ).date()

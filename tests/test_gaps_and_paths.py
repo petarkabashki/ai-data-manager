@@ -9,6 +9,7 @@ import pytest
 from utils.catalog import (
     crypto_file_path,
     crypto_futures_file_path,
+    ft_file_timeframe,
     ft_timeframe,
     futures_pair_to_ft_symbol,
     futures_pair_to_symbol,
@@ -57,6 +58,8 @@ def test_freqtrade_naming_round_trips():
     assert symbol_to_pair("BTC_USDT") == "BTC/USDT"
     assert ft_timeframe("1Mo") == "1M" and our_timeframe("1M") == "1Mo"
     assert ft_timeframe("1d") == "1d"
+    # freqtrade's file names spell 1M as 1Mo; 1m stays 1m
+    assert [ft_file_timeframe(tf) for tf in ("1Mo", "1m", "1d", "1w")] == ["1Mo", "1m", "1d", "1w"]
     assert futures_pair_to_symbol("BTC/USDT:USDT") == "BTC_USDT"
     assert futures_pair_to_ft_symbol("BTC/USDT:USDT") == "BTC_USDT_USDT"
 

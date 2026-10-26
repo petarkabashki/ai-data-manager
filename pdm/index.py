@@ -13,8 +13,9 @@ import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from utils.calendars import calendar_for
 from utils.catalog import catalog_registry, iter_timeframe_nodes, resolve_from_repo
-from utils.planning import days_stale
+from utils.planning import days_behind
 
 _WORD = re.compile(r"[a-z0-9]+")
 
@@ -126,7 +127,7 @@ class SeriesIndex:
                 continue
             if session and (row["session"] or "all") != session:
                 continue
-            stale = days_stale(row["end_date"])
+            stale = days_behind(row["end_date"], row["timeframe"], calendar_for(row["asset_class"]))
             if stale_days is not None and (stale is None or stale < stale_days):
                 continue
             out.append({**row, "stale_days": stale})

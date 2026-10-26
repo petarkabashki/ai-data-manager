@@ -36,9 +36,18 @@ uv run python tools/status.py [--catalog NAME ...] [--stale-days N] [--deep] [--
 | Flag | Meaning |
 |---|---|
 | `--catalog` | Limit to named catalogs |
-| `--stale-days` | End date at least N days old counts as stale (default 3) |
+| `--stale-days` | N or more session days overdue counts as stale (default 2); see below |
 | `--deep` | Also check files exist, match the canonical schema, and carry semantics |
 | `--json` | Machine-readable output |
+
+**Stale** means session days overdue (`utils.planning.days_behind`). A series is
+overdue once the bar after its last one has closed and it still lacks it. The
+count runs from then: trading days on an equity calendar, every day on
+crypto's. A current series is 0, one whose newest bar closed since the last
+scheduled run is 1, and a daily series missing its last N bars is N. The next
+bar comes from the series' own last one, so a 3-day or weekly series isn't
+stale while its next bar is still forming, whatever its venue's grid.
+`query.py`, PDM's `series` and the stale alert use the same count.
 
 The roll-up over the three audits. Shallow by default — a few YAML loads, no
 parquet reads — so it's cheap enough to run constantly. `--deep` opens every
@@ -68,7 +77,7 @@ uv run python tools/query.py
 | `--catalog` / `--asset-class` | Narrow by catalog name or by `Crypto`, `Crypto Futures`, `Stock`, `Index`, `Commodity`, `Macro` |
 | `--symbol(s)` / `--timeframe(s)` | The usual filters |
 | `--provider` | `YF`, `IBKR`, `binance`… case-insensitive, so callers needn't know that directories are lowercase and catalog nodes upper |
-| `--stale-days` | Only series whose end date is at least N days old |
+| `--stale-days` | Only series N or more session days overdue (as in `status.py`) |
 | `--rescan` | Read dates from the parquet files rather than the catalog — authoritative, but opens every file |
 | `--list-catalogs` | Catalogs with symbol and series counts |
 | `--list-symbols` | Matching symbol names, deduped, one per line |

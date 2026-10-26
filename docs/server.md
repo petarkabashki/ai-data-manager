@@ -341,9 +341,12 @@ The server raises an alert when:
 
 - a job ends `failed` or `timed_out`. A scheduled job alerts once; while its
   schedule keeps failing it stays quiet, and the next success sends
-  `recovered`. One-off jobs (submits, refreshes) alert every time.
-- series that were fresh at the previous check fall `PDM_STALE_ALERT_DAYS`
-  (default 4) or more behind their catalog `end_date`. The check runs at start
+  `recovered`. One-off jobs (submits, refreshes) alert every time. A check
+  tool (`status`, `check_*`) exiting 1 has found problems; that is its report,
+  not a failure, unless its log ends in a Python error.
+- series that were fresh at the previous check become `PDM_STALE_ALERT_DAYS`
+  (default 2) or more session days overdue, as `status.py` counts it (see
+  [cli-reference](cli-reference.md#statuspy)). The check runs at start
   and every 6h. A series that stopped updating long ago never alerts, only one
   that stops now, and it sends `recovered` when it catches up.
 

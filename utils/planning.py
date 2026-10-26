@@ -14,12 +14,13 @@ from __future__ import annotations
 import math
 import time
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import pandas as pd
 
-from utils.catalog import normalize_ohlcv
+from utils.calendars import CONTINUOUS, DAY_MS
+from utils.catalog import TF_TO_MS, normalize_ohlcv
 
 
 @dataclass(slots=True)
@@ -35,19 +36,51 @@ def utc_now() -> datetime:
     return datetime.now(tz=timezone.utc)
 
 
-def days_stale(end_date: str | None) -> int | None:
-    """Days between a catalog `end_date` and now, or None if it isn't a date.
+def _add_month(day: date) -> date:
+    return date(day.year + day.month // 12, day.month % 12 + 1, 1)
 
-    Shared by `status.py` and `query.py`, which must agree on what "stale"
-    means or their two tables disagree about the same series.
+
+def days_behind(end_date: str | None, timeframe: str | None = None, calendar=None,
+                now: datetime | None = None) -> int | None:
+    """Session days a series has been overdue, or None if `end_date` isn't a date.
+
+    A series is overdue once the bar after its last one has closed and it
+    still doesn't have it. The count is the session days since then: trading
+    days on an equity calendar, every day on crypto's. So 0 means current, and
+    a daily series is N behind when it lacks its last N daily bars.
+
+    Days since `end_date` (what this replaced) called every equity series
+    stale on a Monday morning, and a 3-day or weekly series stale while its
+    next bar was still forming. The next bar is found from the series' own
+    last one, because multi-day grids differ by venue: binance weeks start on
+    Monday, kucoin's on Thursday, and binance 3d bars run from each pair's
+    listing date. Intraday series count like daily ones, since `end_date`
+    only has day resolution. Shared by `status.py`, `query.py` and PDM, which
+    must agree on what "stale" means.
     """
     if not end_date:
         return None
     try:
-        end = datetime.strptime(end_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        end = date.fromisoformat(end_date)
     except ValueError:
         return None
-    return (utc_now() - end).days
+    cal = calendar or CONTINUOUS
+    today = (now or utc_now()).astimezone(timezone.utc).date()
+
+    if timeframe == "1Mo":
+        due = _add_month(_add_month(end))
+    else:
+        span_days = (TF_TO_MS.get(timeframe or "") or DAY_MS) // DAY_MS
+        if span_days <= 1:
+            nxt = end + timedelta(days=1)
+            for _ in range(14):                     # longest closure: well under two weeks
+                if cal.is_session_day(nxt):
+                    break
+                nxt += timedelta(days=1)
+            due = nxt + timedelta(days=1)
+        else:
+            due = end + timedelta(days=2 * span_days)
+    return cal.session_days(due, today)
 
 
 def parse_date(value: str) -> datetime:
