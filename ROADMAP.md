@@ -416,8 +416,7 @@ deploy can restart `pdm` without waiting for the queue to drain.
   off 00:00 UTC or a repeated date, and `fix_daily_stamps.py` takes any
   provider. **Fixed 2026-10-25**: 56 bitget monthly files (stamped 16:00 UTC,
   midnight UTC+8) and 2 Deribit dailies (08:00 UTC). A full sweep of 28,095
-  files is clean. The originals (716K) are in
-  `price-data.stamp-backup-2026-10-25` on the host.
+  files is clean (the owner deleted the backup of the originals).
 - Live catalogs were repaired 2026-10-26 with `check_catalog --fix`:
   2,125 crypto_binance and 10 crypto_futures_kucoin nodes backfilled with
   their semantics, and 7 crypto_binance date ranges refreshed. The audit is
