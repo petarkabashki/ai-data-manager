@@ -922,7 +922,7 @@ class CatalogSpec:
 
 
 STOCK_UNIVERSES = ["sp500", "nasdaq100", "russell2000", "delisted_stocks"]
-CRYPTO_FUTURES_EXCHANGES = ["binance", "bybit", "kucoin"]
+CRYPTO_FUTURES_EXCHANGES = ["binance", "bitget", "bybit", "kucoin"]
 
 
 def catalog_registry() -> list[CatalogSpec]:

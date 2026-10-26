@@ -33,36 +33,72 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from utils.config import TMP_ROOT, relative_to_repo
 from utils.catalog import (
     CANONICAL_COLS,
     CRYPTO_EXCHANGES,
     FREQTRADE_BIN,
-    TF_TO_MS,
     REPO_ROOT,
+    TF_TO_MS,
     catalog_key,
     crypto_file_path,
     crypto_futures_file_path,
+    empty_ohlcv_frame,
     ft_file_timeframe,
     ft_timeframe,
     futures_pair_to_ft_symbol,
     futures_pair_to_symbol,
-    empty_ohlcv_frame,
     load_crypto_catalog,
     load_crypto_futures_catalog,
     merge_ohlcv_parquet,
-    normalize_ohlcv,
     pair_to_symbol,
     read_parquet_range,
     save_crypto_catalog,
     save_crypto_futures_catalog,
     update_catalog_entry,
 )
+from utils.config import TMP_ROOT, relative_to_repo
+from utils.crypto_universe import (
+    EARLIEST,
+    ccxt_exchange,
+    listed_markets,
+    listing_date,
+    mark_retired,
+)
 
-# Exchanges where freqtrade doesn't support futures — use ccxt directly instead
-CCXT_FUTURES_CLASS: dict[str, str] = {
-    "kucoin": "kucoinfutures",
+DAY_MS = 86_400_000
+
+# Series downloaded with ccxt instead of freqtrade, by (exchange, trading mode):
+# "*" for every timeframe, else the set. Each needs paging freqtrade doesn't do:
+#   kucoin futures — freqtrade doesn't support them at all;
+#   bitget futures — requests at 1d and above are capped at a 90-day window;
+#   bitget spot 3d/1w/1Mo — bitget serves 100 bars a page there, freqtrade
+#     assumes more and stops after the first page (JST 1w ended 2023-11-20).
+CCXT_ROUTES: dict[tuple[str, str], str | frozenset[str]] = {
+    ("kucoin", "futures"): "*",
+    ("bitget", "futures"): "*",
+    ("bitget", "spot"): frozenset({"3d", "1w", "1Mo"}),
 }
+
+# (page limit, max request window in ms or None) for the ccxt path. bitget
+# answers a since/until window with the bars *nearest until*, so its windows
+# are sized to one page and the cursor walks forward window by window.
+CCXT_PAGING: dict[tuple[str, str], tuple[int, int | None]] = {
+    ("kucoin", "futures"): (200, None),
+    ("bitget", "futures"): (200, 90 * DAY_MS),
+    ("bitget", "spot"): (100, 365 * 10 * DAY_MS),
+}
+
+# freqtrade runs this many pairs at a time and merges before the next batch,
+# so a backfill interrupted by a restart keeps every finished batch.
+FT_BATCH_PAIRS = 50
+
+
+def ccxt_timeframes(exchange: str, trading_mode: str, timeframes: list[str]) -> list[str]:
+    """The requested timeframes that go through ccxt rather than freqtrade."""
+    route = CCXT_ROUTES.get((exchange, trading_mode))
+    if route is None:
+        return []
+    return list(timeframes) if route == "*" else [tf for tf in timeframes if tf in route]
 
 
 def _date_to_yyyymmdd(date_str: str) -> str:
@@ -83,9 +119,13 @@ def build_timerange(
     since: str | None,
     prepend: bool,
     trading_mode: str = "spot",
+    default_start: str | None = None,
 ) -> str | None:
     """Compute --timerange argument for freqtrade.
-    Returns None to download everything (no restriction).
+
+    A series with no data starts at `default_start` (the pair's listing) or,
+    failing that, EARLIEST — not 2020: kucoin and bitget return nothing for
+    a window that ends before the pair existed.
     """
     if prepend:
         # Download from 'since' up to the earliest known date
@@ -108,7 +148,7 @@ def build_timerange(
         return f"{start_part}-{end_part}" if end_part else f"{start_part}-"
 
     if full:
-        start = since or "20200101"
+        start = since or default_start or EARLIEST
         return f"{_date_to_yyyymmdd(start)}-"
 
     # Append mode: start from the last known end date
@@ -142,8 +182,8 @@ def build_timerange(
         end_dt = datetime.strptime(last_date, "%Y-%m-%d") - timedelta(days=1)
         return f"{end_dt.strftime('%Y%m%d')}-"
 
-    # No existing data → download everything from 2020
-    fallback = since or "2020-01-01"
+    # No existing data → from the pair's listing (default_start), else EARLIEST
+    fallback = default_start or EARLIEST
     return f"{_date_to_yyyymmdd(fallback)}-"
 
 
@@ -325,7 +365,8 @@ def _last_stored_timestamp(path) -> int | None:
 
 
 def _fetch_ohlcv_paginated(
-    ccxt_ex, pair: str, tf_ccxt: str, since_ms: int, tf_ms: int, limit: int = 200
+    ccxt_ex, pair: str, tf_ccxt: str, since_ms: int, tf_ms: int, limit: int = 200,
+    max_window_ms: int | None = None,
 ) -> pd.DataFrame:
     """Paginate ccxt fetch_ohlcv from since_ms to now. Skips forward when API returns empty.
 
@@ -335,16 +376,29 @@ def _fetch_ohlcv_paginated(
     `--since 2026-05-01` the 1h series stopped at 2026-05-09, 4h at 2026-06-03
     and 8h at 2026-07-06, each precisely `200 * tf` past the start. Advance on
     the last timestamp instead and stop only when the API stops making progress.
+
+    With `max_window_ms` every request carries an explicit `until`, one page
+    wide and never wider than the cap. bitget needs this: it rejects futures
+    windows over 90 days at 1d and above, and it fills a window from the *until*
+    end, so a window wider than a page skips the bars at its start.
+
+    `tf_ms` for a monthly series is an upper bound (31 days); the cursor then
+    advances by one millisecond past the last bar instead of by a bar length.
     """
     import time as _time
 
     all_rows: list = []
     current = since_ms
     now_ms = int(_time.time() * 1000)
-    skip_ms = max(limit * tf_ms, 30 * 86_400_000)
+    window = min(limit * tf_ms, max_window_ms) if max_window_ms else None
+    skip_ms = window or max(limit * tf_ms, 30 * DAY_MS)
+    step = 1 if tf_ccxt == "1M" else tf_ms
 
     while current < now_ms:
-        rows = ccxt_ex.fetch_ohlcv(pair, tf_ccxt, since=current, limit=limit)
+        # bitget's until is inclusive: a window one page wide plus its end bar
+        # holds limit + 1 bars, and the first is the one dropped.
+        params = {"until": current + window - 1} if window else {}
+        rows = ccxt_ex.fetch_ohlcv(pair, tf_ccxt, since=current, limit=limit, params=params)
         if not rows:
             current += skip_ms
             _time.sleep(0.1)
@@ -355,12 +409,20 @@ def _fetch_ohlcv_paginated(
             break
         # Guard against an exchange that keeps returning the same page: without
         # this a non-advancing cursor would spin forever.
-        if last_ts + tf_ms <= current:
+        if last_ts + step <= current:
             current += skip_ms
         else:
-            current = last_ts + tf_ms
+            current = last_ts + step
         _time.sleep(0.1)
 
+    # Keep closed bars only, as freqtrade does: a still-forming bar would set
+    # the catalog's end_date to a period that isn't over.
+    if tf_ccxt == "1M":
+        today = datetime.fromtimestamp(now_ms / 1000, tz=timezone.utc)
+        closed_before = int(datetime(today.year, today.month, 1, tzinfo=timezone.utc).timestamp() * 1000)
+    else:
+        closed_before = now_ms - tf_ms + 1
+    all_rows = [r for r in all_rows if r[0] < closed_before]
     if not all_rows:
         return empty_ohlcv_frame()
     df = pd.DataFrame(all_rows, columns=CANONICAL_COLS)
@@ -370,60 +432,74 @@ def _fetch_ohlcv_paginated(
     return df.drop_duplicates(subset=["timestamp"]).sort_values("timestamp").reset_index(drop=True)
 
 
-def download_and_merge_ccxt_futures(
+def download_and_merge_ccxt(
     exchange: str,
     pairs: list[str],
     timeframes: list[str],
     catalog: dict,
-    since: str = "2020-01-01",
+    trading_mode: str = "futures",
+    starts: dict[str, str] | None = None,
+    since: str | None = None,
     dry_run: bool = False,
     full: bool = False,
     checkpoint: Callable[[], None] | None = None,
+    ccxt_ex=None,
 ) -> list[tuple[str, str, int, int]]:
-    """Download futures OHLCV via ccxt directly (for exchanges freqtrade doesn't support in futures mode)."""
+    """Download OHLCV with ccxt directly, for the series in CCXT_ROUTES.
+
+    A series resumes from its last stored bar; one with no data starts at
+    `since`, else at its pair's listing (`starts`), else EARLIEST.
+    """
     import ccxt as _ccxt
 
-    ccxt_class_name = CCXT_FUTURES_CLASS[exchange]
-    ccxt_ex: _ccxt.Exchange = getattr(_ccxt, ccxt_class_name)()
+    is_futures = trading_mode == "futures"
+    ccxt_ex = ccxt_ex or ccxt_exchange(exchange, trading_mode)
     supported_tfs = set(ccxt_ex.timeframes.keys())
-    since_ms = int(_ccxt.Exchange.parse8601(f"{since}T00:00:00Z"))
+    limit, max_window = CCXT_PAGING.get((exchange, trading_mode), (200, None))
+    starts = starts or {}
 
     changes: list[tuple[str, str, int, int]] = []
     zero_delta: list[str] = []
 
     for pair in pairs:
-        symbol = futures_pair_to_symbol(pair)
+        symbol = futures_pair_to_symbol(pair) if is_futures else pair_to_symbol(pair)
+        first = since or starts.get(pair) or EARLIEST
+        first_ms = int(_ccxt.Exchange.parse8601(f"{first}T00:00:00Z"))
         for tf in timeframes:
             tf_ccxt = ft_timeframe(tf)
             if tf_ccxt not in supported_tfs:
-                print(f"  [skip] {symbol}/{tf}: {tf_ccxt} not supported by {ccxt_class_name}")
+                print(f"  [skip] {symbol}/{tf}: {tf_ccxt} not supported by {ccxt_ex.id}")
                 continue
 
-            tf_ms = TF_TO_MS.get(tf)
+            tf_ms = TF_TO_MS.get(tf) or (31 * DAY_MS if tf_ccxt == "1M" else None)
             if tf_ms is None:
                 print(f"  [skip] {symbol}/{tf}: variable-length timeframe not supported for ccxt pagination")
                 continue
 
-            dst = crypto_futures_file_path(exchange, symbol, tf)
+            dst = (crypto_futures_file_path if is_futures else crypto_file_path)(exchange, symbol, tf)
 
             if dry_run:
-                print(f"  [dry-run] {symbol}/{tf} → {relative_to_repo(dst)}")
+                print(f"  [dry-run] {symbol}/{tf} from {first} → {relative_to_repo(dst)}")
                 continue
 
             # Resume from what is already stored, like the freqtrade path does.
             # Using the global --since for every series meant a refresh always
             # refetched from 2020 and, combined with the short-page break above,
             # silently returned only data the file already had.
-            start_ms = since_ms
+            start_ms = first_ms
             last_stored = _last_stored_timestamp(dst)
             if last_stored is not None and not full:
-                start_ms = max(since_ms, last_stored - tf_ms)
+                start_ms = max(first_ms, last_stored - tf_ms)
 
             try:
-                df = _fetch_ohlcv_paginated(ccxt_ex, pair, tf_ccxt, start_ms, tf_ms)
+                df = _fetch_ohlcv_paginated(ccxt_ex, pair, tf_ccxt, start_ms, tf_ms,
+                                            limit=limit, max_window_ms=max_window)
             except _ccxt.BadSymbol:
-                print(f"  [skip] {symbol}: no longer listed on {ccxt_class_name}")
+                print(f"  [skip] {symbol}: no longer listed on {ccxt_ex.id}")
                 break
+            except _ccxt.BaseError as e:
+                print(f"  [warn] {symbol}/{tf}: {type(e).__name__}: {str(e)[:200]}")
+                continue
             if df.empty:
                 print(f"  [warn] {symbol}/{tf}: no data returned")
                 continue
@@ -447,8 +523,8 @@ def download_and_merge_ccxt_futures(
                 start, end, _ = result
                 update_catalog_entry(
                     catalog, exchange, symbol, tf, dst, start, end,
-                    categories=["Crypto Futures"],
-                    common_name=pair,
+                    categories=["Crypto Futures"] if is_futures else None,
+                    common_name=pair if is_futures else None,
                 )
         if checkpoint and not dry_run:
             checkpoint()
@@ -457,19 +533,172 @@ def download_and_merge_ccxt_futures(
     return changes
 
 
+def _symbol(pair: str, is_futures: bool) -> str:
+    return futures_pair_to_symbol(pair) if is_futures else pair_to_symbol(pair)
+
+
+def _year_start(date: str) -> str:
+    """Round a start down to 1 January, so freqtrade batches by year, not by day."""
+    return f"{date[:4]}-01-01"
+
+
+def listing_starts(exchange: str, trading_mode: str, pairs: list[str], timeframes: list[str],
+                   catalog: dict, markets: dict[str, dict] | None, ccxt_ex=None) -> dict[str, str]:
+    """Where each pair with a missing series should start: its listing date.
+
+    Only pairs missing at least one requested timeframe need one. A pair
+    already in the catalog starts where its earliest series does — no request;
+    a new pair asks the venue (published listing time, else first monthly bar).
+    """
+    is_futures = trading_mode == "futures"
+    starts: dict[str, str] = {}
+    to_ask: list[str] = []
+    for pair in pairs:
+        entry = catalog.get(catalog_key(_symbol(pair, is_futures), exchange)) or {}
+        have = set((entry.get("timeframe_dates") or {}))
+        if all(tf in have for tf in timeframes):
+            continue
+        if entry.get("start_date"):
+            starts[pair] = entry["start_date"]
+        else:
+            to_ask.append(pair)
+    if to_ask:
+        ccxt_ex = ccxt_ex or ccxt_exchange(exchange, trading_mode)
+        if markets is None:
+            markets = ccxt_ex.load_markets()
+        print(f"Looking up listing dates for {len(to_ask)} new pair(s)…")
+        for pair in to_ask:
+            market = markets.get(pair)
+            date = listing_date(ccxt_ex, market) if market else None
+            if date:
+                starts[pair] = max(date, EARLIEST)
+    return starts
+
+
+def select_pairs(args, catalog: dict, is_futures: bool, ccxt_ex=None) -> tuple[list[str], dict | None]:
+    """The pairs to download, and the venue's markets when they were loaded.
+
+    `--universe` also marks catalog pairs the venue no longer lists as retired
+    (and clears the mark on a relisting); `--all-pairs` skips retired pairs.
+    """
+    if args.universe:
+        ccxt_ex = ccxt_ex or ccxt_exchange(args.exchange, args.trading_mode)
+        markets = listed_markets(ccxt_ex, args.exchange, args.trading_mode)
+        names = {_symbol(p, is_futures) for p in markets}
+        known = {e.get("name") for e in catalog.values() if isinstance(e, dict)}
+        today = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
+        retired, relisted = mark_retired(catalog, names, args.exchange, today)
+        print(f"Universe: {len(markets)} listed · {len(names & known)} in the catalog · "
+              f"{len(names - known)} new · {len(retired)} newly retired · {len(relisted)} relisted")
+        if retired:
+            print(f"Retired : {', '.join(retired[:20])}{'…' if len(retired) > 20 else ''}")
+        return sorted(markets), markets
+
+    if args.all_pairs:
+        live = [(k, e) for k, e in catalog.items() if isinstance(e, dict) and not e.get("retired")]
+        if is_futures:
+            # common_name stores the full futures pair (BTC/USDT:USDT)
+            return [
+                e.get("common_name") or futures_pair_to_symbol(e.get("name", k)).replace("_", "/", 1) + ":USDT"
+                for k, e in live
+            ], None
+        return [e.get("name", k).replace("_", "/", 1) for k, e in live], None
+
+    # Futures pairs carry a settlement suffix (BTC/USDT:USDT). `--all-pairs`
+    # gets it from `common_name`; an explicit `--pairs BTC/USDT` used to be
+    # passed through verbatim and every pair came back "no longer listed",
+    # which reads like a delisting rather than a wrong symbol. Append it.
+    return [
+        f"{pair}:{pair.split('/')[-1]}" if is_futures and ":" not in pair else pair
+        for pair in args.pairs
+    ], None
+
+
+def download_with_freqtrade(args, pairs: list[str], timeframes: list[str], catalog: dict,
+                            starts: dict[str, str], checkpoint: Callable[[], None]) -> tuple[list, int]:
+    """The freqtrade path: batches by timerange, FT_BATCH_PAIRS pairs at a time,
+    each merged before the next so an interrupted backfill keeps its progress.
+
+    Returns (changes, number of batches freqtrade failed on)."""
+    is_futures = args.trading_mode == "futures"
+
+    # Auto-redirect freqtrade output to a log file for bulk runs. Logs go
+    # under TMP_ROOT (repo tmp/) like the IBKR checkpoints, not /tmp.
+    log_file: Path | None = None
+    if args.log_file:
+        log_file = Path(args.log_file)
+    elif len(pairs) > 10:
+        TMP_ROOT.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now(tz=timezone.utc).strftime("%Y%m%d_%H%M%S")
+        log_file = TMP_ROOT / f"ft_download_{args.exchange}_{stamp}.log"
+    if log_file:
+        print(f"FT log  : {log_file}  (tail -f to follow)")
+
+    from collections import defaultdict
+    tr_groups: dict[str, list[str]] = defaultdict(list)
+    for pair in pairs:
+        sym = _symbol(pair, is_futures)
+        default_start = _year_start(starts[pair]) if pair in starts else None
+        earliest: str | None = None
+        for tf in timeframes:
+            tr = build_timerange(args.exchange, sym, tf, catalog, args.full, args.since, args.prepend,
+                                 trading_mode=args.trading_mode, default_start=default_start)
+            if tr and tr != "SKIP":
+                if earliest is None or tr < earliest:
+                    earliest = tr
+        if earliest:
+            tr_groups[earliest].append(pair)
+    if not tr_groups:
+        print("Nothing to do.")
+        return [], 0
+
+    print(f"Batches: {len(tr_groups)} distinct timerange(s)\n")
+    changes: list = []
+    failed = 0
+    for tr, group in sorted(tr_groups.items()):
+        print(f"  [{tr}] {len(group)} pairs")
+        if args.dry_run:
+            for pair in group:
+                for tf in timeframes:
+                    sym = _symbol(pair, is_futures)
+                    dst = (crypto_futures_file_path if is_futures else crypto_file_path)(args.exchange, sym, tf)
+                    print(f"  [dry-run] {sym}/{tf} → {relative_to_repo(dst)}")
+            continue
+        for i in range(0, len(group), FT_BATCH_PAIRS):
+            batch = group[i:i + FT_BATCH_PAIRS]
+            with tempfile.TemporaryDirectory(prefix="ai_dm_ft_") as tmpdir:
+                tmppath = Path(tmpdir)
+                ok = run_freqtrade_download(
+                    args.exchange, batch, timeframes, tmppath, tr, prepend=args.prepend,
+                    trading_mode=args.trading_mode, log_file=log_file,
+                )
+                if not ok:
+                    failed += 1
+                    print(f"\nfreqtrade failed for batch [{tr}] {batch[0]}…; merging what it wrote.")
+                changes += process_downloads(
+                    args.exchange, batch, timeframes, tmppath, catalog,
+                    dry_run=False, trading_mode=args.trading_mode, checkpoint=checkpoint,
+                )
+    return changes, failed
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--exchange", "-e", required=True, choices=CRYPTO_EXCHANGES)
     p.add_argument("--pairs", nargs="+", metavar="PAIR",
                    help="Pairs in BTC/USDT format (space-separated)")
     p.add_argument("--all-pairs", action="store_true",
-                   help="Download all pairs already in the catalog")
+                   help="Download all pairs already in the catalog, except retired ones")
+    p.add_argument("--universe", action="store_true",
+                   help="Download every USDT pair the exchange lists (spot) or every USDT perpetual "
+                        "(futures), new ones from their listing; mark catalog pairs it no longer "
+                        "lists as retired")
     p.add_argument("--timeframes", "-t", nargs="+", default=["1d"],
                    help="Timeframes to download (default: 1d)")
     p.add_argument("--full", action="store_true",
-                   help="Ignore existing data, download from --since")
+                   help="Ignore existing data, download from --since (default: each pair's listing)")
     p.add_argument("--since", metavar="DATE",
-                   help="Start date for full downloads (YYYY-MM-DD, default: 2020-01-01)")
+                   help="Start date for new series and full downloads (YYYY-MM-DD, default: the pair's listing)")
     p.add_argument("--prepend", action="store_true",
                    help="Download older data and prepend (requires --since)")
     p.add_argument("--trading-mode", default="spot", choices=["spot", "futures"],
@@ -480,8 +709,8 @@ def main() -> None:
                    help="Write freqtrade output to this file (default: auto when >10 pairs)")
     args = p.parse_args()
 
-    if not args.pairs and not args.all_pairs:
-        p.error("Specify --pairs or --all-pairs")
+    if sum(map(bool, (args.pairs, args.all_pairs, args.universe))) != 1:
+        p.error("Specify exactly one of --pairs, --all-pairs or --universe")
 
     is_futures = args.trading_mode == "futures"
     catalog = (
@@ -490,37 +719,24 @@ def main() -> None:
         else load_crypto_catalog(args.exchange)
     )
 
-    if args.all_pairs:
-        if is_futures:
-            # common_name stores the full futures pair (BTC/USDT:USDT)
-            pairs = [
-                entry.get("common_name") or futures_pair_to_symbol(entry.get("name", k)).replace("_", "/", 1) + ":USDT"
-                for k, entry in catalog.items()
-            ]
-        else:
-            pairs = [entry.get("name", k).replace("_", "/", 1)
-                     for k, entry in catalog.items()]
-    else:
-        # Futures pairs carry a settlement suffix (BTC/USDT:USDT). `--all-pairs`
-        # gets it from `common_name`; an explicit `--pairs BTC/USDT` used to be
-        # passed through verbatim and every pair came back "no longer listed",
-        # which reads like a delisting rather than a wrong symbol. Append it.
-        pairs = [
-            f"{pair}:{pair.split('/')[-1]}" if is_futures and ":" not in pair else pair
-            for pair in args.pairs
-        ]
-
     timeframes = args.timeframes
+    ccxt_tfs = ccxt_timeframes(args.exchange, args.trading_mode, timeframes)
+    ft_tfs = [tf for tf in timeframes if tf not in ccxt_tfs]
+    needs_ccxt = args.universe or bool(ccxt_tfs) or not (args.since or args.prepend)
+    ccxt_ex = ccxt_exchange(args.exchange, args.trading_mode) if needs_ccxt else None
 
-    use_ccxt = is_futures and args.exchange in CCXT_FUTURES_CLASS
-    since_str = args.since or "2020-01-01"
+    pairs, markets = select_pairs(args, catalog, is_futures, ccxt_ex)
+    starts = {} if (args.since or args.prepend) else listing_starts(
+        args.exchange, args.trading_mode, pairs, timeframes, catalog, markets, ccxt_ex)
 
     print(f"\nDownloading {len(pairs)} pair(s) × {len(timeframes)} timeframe(s) from {args.exchange}")
     print(f"Pairs   : {', '.join(pairs[:5])}{'…' if len(pairs) > 5 else ''}")
     print(f"TFs     : {', '.join(timeframes)}")
-    print(f"Mode    : {'full from ' + since_str if args.full else 'prepend since ' + str(args.since) if args.prepend else 'append'}")
-    if use_ccxt:
-        print(f"Backend : ccxt/{CCXT_FUTURES_CLASS[args.exchange]} (freqtrade does not support {args.exchange} futures)")
+    print(f"Mode    : {'full' if args.full else 'prepend since ' + str(args.since) if args.prepend else 'append'}"
+          f"{'; new series from ' + args.since if args.since and not args.prepend else '; new series from listing' if starts else ''}")
+    if ccxt_tfs:
+        print(f"Backend : ccxt/{ccxt_ex.id} for {', '.join(ccxt_tfs)}"
+              f"{'; freqtrade for ' + ', '.join(ft_tfs) if ft_tfs else ''}")
 
     if args.dry_run:
         print("\n[dry-run mode — no files will be changed]\n")
@@ -530,99 +746,36 @@ def main() -> None:
 
     checkpoint = CatalogCheckpoint(save_catalog)
 
-    if use_ccxt:
-        changes = download_and_merge_ccxt_futures(
-            args.exchange, pairs, timeframes, catalog,
-            since=since_str, dry_run=args.dry_run, full=args.full, checkpoint=checkpoint,
-        )
-        if args.dry_run:
+    changes: list = []
+    failed = 0
+    if ft_tfs:
+        if args.prepend and args.since is None:
+            print("--prepend requires --since. Nothing to do.")
             return
-    else:
-        # Auto-redirect freqtrade output to a log file for bulk runs. Logs go
-        # under TMP_ROOT (repo tmp/) like the IBKR checkpoints, not /tmp.
-        log_file: Path | None = None
-        if args.log_file:
-            log_file = Path(args.log_file)
-        elif len(pairs) > 10:
-            TMP_ROOT.mkdir(parents=True, exist_ok=True)
-            stamp = datetime.now(tz=timezone.utc).strftime("%Y%m%d_%H%M%S")
-            log_file = TMP_ROOT / f"ft_download_{args.exchange}_{stamp}.log"
-
-        if log_file:
-            print(f"FT log  : {log_file}  (tail -f to follow)")
-
-        with tempfile.TemporaryDirectory(prefix="ai_dm_ft_") as tmpdir:
-            tmppath = Path(tmpdir)
-
-            if args.full or args.prepend:
-                sym0 = futures_pair_to_symbol(pairs[0]) if is_futures else pair_to_symbol(pairs[0])
-                tr_example = build_timerange(
-                    args.exchange, sym0, timeframes[0], catalog,
-                    args.full, args.since, args.prepend, trading_mode=args.trading_mode,
-                )
-                if tr_example == "SKIP":
-                    print("Nothing to do.")
-                    return
-                print(f"Timerange: {tr_example}\n")
-                if not args.dry_run:
-                    ok = run_freqtrade_download(
-                        args.exchange, pairs, timeframes, tmppath,
-                        tr_example, prepend=args.prepend,
-                        trading_mode=args.trading_mode, log_file=log_file,
-                    )
-                    if not ok:
-                        print(f"\nfreqtrade exited with an error. Check {log_file or 'output above'}.")
-                        sys.exit(1)
-            else:
-                from collections import defaultdict
-                tr_groups: dict[str, list[str]] = defaultdict(list)
-                for pair in pairs:
-                    sym = futures_pair_to_symbol(pair) if is_futures else pair_to_symbol(pair)
-                    earliest: str | None = None
-                    for tf in timeframes:
-                        tr = build_timerange(args.exchange, sym, tf, catalog, False, args.since, False,
-                                             trading_mode=args.trading_mode)
-                        if tr and tr != "SKIP":
-                            if earliest is None or tr < earliest:
-                                earliest = tr
-                    tr_groups[earliest or "20200101-"].append(pair)
-
-                print(f"Batches: {len(tr_groups)} distinct timerange(s)\n")
-                for tr, batch_pairs in tr_groups.items():
-                    print(f"  [{tr}] {len(batch_pairs)} pairs")
-                    if not args.dry_run:
-                        ok = run_freqtrade_download(
-                            args.exchange, batch_pairs, timeframes, tmppath,
-                            tr, trading_mode=args.trading_mode, log_file=log_file,
-                        )
-                        if not ok:
-                            print(f"\nfreqtrade failed for batch [{tr}]. Continuing with others…")
-
-            if args.dry_run:
-                for pair in pairs:
-                    sym = futures_pair_to_symbol(pair) if is_futures else pair_to_symbol(pair)
-                    for tf in timeframes:
-                        dst = (
-                            crypto_futures_file_path(args.exchange, sym, tf)
-                            if is_futures
-                            else crypto_file_path(args.exchange, sym, tf)
-                        )
-                        print(f"  [dry-run] {sym}/{tf} → {relative_to_repo(dst)}")
-                return
-
-            print("\nMerging downloaded files into price-data/…")
-            changes = process_downloads(
-                args.exchange, pairs, timeframes, tmppath, catalog,
-                dry_run=False, trading_mode=args.trading_mode, checkpoint=checkpoint,
+        ft_changes, failed = download_with_freqtrade(args, pairs, ft_tfs, catalog, starts, checkpoint)
+        changes += ft_changes
+    if ccxt_tfs:
+        if args.prepend:
+            print(f"  [warn] --prepend is not supported on the ccxt path; skipping {', '.join(ccxt_tfs)}")
+        else:
+            changes += download_and_merge_ccxt(
+                args.exchange, pairs, ccxt_tfs, catalog, trading_mode=args.trading_mode,
+                starts=starts, since=args.since, dry_run=args.dry_run, full=args.full,
+                checkpoint=checkpoint, ccxt_ex=ccxt_ex,
             )
+    if args.dry_run:
+        return
 
     catalog_name = f"crypto_futures_{args.exchange}.yaml" if is_futures else f"crypto_{args.exchange}.yaml"
-    if changes:
+    if changes or args.universe:
         print(f"\nSaving updated catalog to price-data/{catalog_name}…")
         save_catalog()
         print(f"Done. {len(changes)} file(s) updated.")
     else:
         print("\nNo changes.")
+    if failed:
+        print(f"freqtrade failed on {failed} batch(es); see {args.log_file or 'the FT log above'}.")
+        sys.exit(1)
 
 
 if __name__ == "__main__":

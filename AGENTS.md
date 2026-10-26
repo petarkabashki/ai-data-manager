@@ -339,7 +339,29 @@ uv run python tools/download_crypto.py --exchange binance --pairs SOL/USDT --tim
 
 # Prepend historical data
 uv run python tools/download_crypto.py --exchange binance --pairs BTC/USDT --timeframes 1d --prepend --since 2017-01-01
+
+# Everything the venue lists (what the nightly schedules run)
+uv run python tools/download_crypto.py --exchange bitget --trading-mode futures --universe --timeframes 1h 4h 1d
 ```
+
+- **The universe** (`--universe`) is every USDT spot pair, or every
+  USDT-settled linear perpetual, the venue lists now — minus leveraged tokens
+  and bitget's innovation zone (`areaSymbol: yes`, ~3,000 on-chain tokens
+  beside its 502 main-board pairs). Catalog pairs the venue no longer lists
+  get `retired: <date>` + `retired_reason` on their entry: files and dates
+  stay, `--all-pairs`/`--universe` stop requesting them, `status.py` counts
+  them under *Retired* instead of *Stale*, and the stale alert ignores them.
+  A relisting clears the mark.
+- **New series start at the pair's listing**, not 2020: kucoin and bitget
+  answer a window before listing with an empty page. The listing comes from the
+  catalog entry's `start_date`, else the venue's published time (`created`,
+  bitget `openTime`), else the first monthly bar; `EARLIEST` (2017-01-01) if
+  none. freqtrade batches round it down to 1 January so a backfill is a
+  handful of runs, `FT_BATCH_PAIRS` (50) pairs each, merged as they finish.
+- **ccxt instead of freqtrade** for the paths in `CCXT_ROUTES`: kucoin and
+  bitget futures, bitget spot 3d/1w/1Mo. bitget fills a since/until window
+  from the *until* end and caps futures windows at 90 days at 1d and above,
+  so `CCXT_PAGING` sizes each request to one page. Only closed bars are kept.
 
 ### download_funding.py
 
@@ -555,6 +577,7 @@ ln -s ../.agent/skills .codex/skills
 | `utils/futures.py` | `FuturesContract`, `contract_for()`, `contract_symbol()`, `parse_contract_symbol()`, `futures_file_path()`, `futures_catalog_path()`, `ROOTS`, `MONTH_CODES` — provider-neutral contract identity |
 | `utils/options.py` | `OptionContract`, `contract_for()`, `option_symbol()`, `parse_option_symbol()`, `parse_deribit_name()`, `option_file_path()`, `update_option_entry()`, `UNDERLYINGS` — provider-neutral option identity |
 | `utils/deribit.py` | `DeribitClient`, `DeribitError`, `InstrumentInfo`, `TIMEFRAME_TO_RESOLUTION` — public REST client; pages the 5001-bar cap and trims post-expiry padding |
+| `utils/crypto_universe.py` | `listed_markets()`, `in_universe()`, `listing_date()`, `mark_retired()`, `ccxt_exchange()`, `EARLIEST` — what each venue lists today and since when |
 | `utils/yf.py` | `yf_ticker()`, `yf_interval()`, `clamp_start()`, `frame_from_yahoo()`, `fetch_ohlcv()`, `YahooFetcher` |
 
 The `pdm/` package (server side of the network service) is not under `utils/`

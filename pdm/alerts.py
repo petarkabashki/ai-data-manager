@@ -127,7 +127,7 @@ class Alerter:
 
     def check_stale(self, rows: Iterable[dict]) -> list[dict]:
         """Diff series freshness against the previous check; returns the alerts raised."""
-        rows = list(rows)
+        rows = [r for r in rows if not r.get("retired")]   # delisted: not overdue, just over
         stale_rows = {series_key(r): r for r in rows
                       if (d := days_behind(r.get("end_date"), r.get("timeframe"),
                                            calendar_for(r.get("asset_class")))) is not None

@@ -48,6 +48,8 @@ scheduled run is 1, and a daily series missing its last N bars is N. The next
 bar comes from the series' own last one, so a 3-day or weekly series isn't
 stale while its next bar is still forming, whatever its venue's grid.
 `query.py`, PDM's `series` and the stale alert use the same count.
+**Retired** series (a crypto pair the venue delisted, marked by
+`download_crypto.py --universe`) are counted apart and never stale.
 
 The roll-up over the three audits. Shallow by default — a few YAML loads, no
 parquet reads — so it's cheap enough to run constantly. `--deep` opens every
@@ -248,8 +250,9 @@ in June 2025, long after the history was written.
 ## `download_crypto.py`
 
 ```
-uv run python tools/download_crypto.py --exchange EX (--all-pairs | --pairs P...)
-                                        --timeframes TF... [--full] [--prepend] [--since DATE]
+uv run python tools/download_crypto.py --exchange EX (--universe | --all-pairs | --pairs P...)
+                                        --timeframes TF... [--trading-mode {spot,futures}]
+                                        [--full] [--prepend] [--since DATE] [--dry-run]
 ```
 
 ```bash
@@ -263,7 +266,22 @@ uv run python tools/download_crypto.py --exchange binance --pairs SOL/USDT \
 # Prepend historical data
 uv run python tools/download_crypto.py --exchange binance --pairs BTC/USDT \
   --timeframes 1d --prepend --since 2017-01-01
+
+# Every USDT perpetual bitget lists, new ones from their listing
+uv run python tools/download_crypto.py --exchange bitget --trading-mode futures \
+  --universe --timeframes 1h 4h 6h 12h 1d 3d 1w 1Mo
 ```
+
+| Flag | Meaning |
+|---|---|
+| `--universe` | Every USDT spot pair (or USDT linear perpetual) the venue lists now, minus leveraged tokens and bitget's innovation zone. Catalog pairs it no longer lists get `retired: <date>` and are skipped from then on |
+| `--all-pairs` | The catalog's pairs, except retired ones |
+| `--since` | Start for series with no data (and for `--full`). Default: the pair's listing |
+| `--full` | Ignore stored data and refetch from `--since` or the listing |
+
+kucoin and bitget futures, and bitget spot 3d/1w/1Mo, go through ccxt
+(`CCXT_ROUTES`) because freqtrade can't page them; everything else through
+freqtrade, `FT_BATCH_PAIRS` pairs per run, each batch merged before the next.
 
 Wraps freqtrade's public (unauthenticated) OHLCV download, merges into
 existing parquet with `normalize_ohlcv()` + dedup-on-timestamp, and updates

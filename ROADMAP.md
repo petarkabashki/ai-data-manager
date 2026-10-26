@@ -372,6 +372,7 @@ bybit and bitget spot had fallen behind because nothing ever scheduled them.
   2026-09-16 (blocked, above); bitget `3d`/`1w`, which mostly ended in 2024
   (E12); 73 russell2000 Yahoo dailies, mostly dropped or delisted symbols; and
   crypto pairs that stopped trading, which make up most of the crypto count.
+  The `--universe` runs mark those `retired` (E15), and they leave the count.
 
 **Done when.** `status.py` reports no daily catalog more than one trading day
 old, except IBKR, without anyone running a download by hand.
@@ -444,7 +445,11 @@ deploy can restart `pdm` without waiting for the queue to drain.
   nasdaq100 all-1d/1h/4h/8h, yf sp500 1d) and SATS (yf russell2000 1d).
   **Owner decision**: catalog them or remove them.
 - 22 bitget pairs have no `1w` series, and a probe (VET/USDT) returned 0 rows.
-  **Owner decision**: drop `1w` for bitget, or find another source.
+  **Cause found 2026-10-26**: bitget serves 100 bars a page on `3d`/`1w`,
+  freqtrade assumes more and stops after one page (JST `1w` ended
+  2023-11-20), and a window that starts before a pair's listing comes back
+  empty, which the old 2020 fallback hit for every newer pair. bitget spot
+  `3d`/`1w`/`1Mo` now go through ccxt from each pair's listing (E15).
 - Yahoo adjustment differs per file: sp500 has 429 raw and 69 adjusted,
   nasdaq100 93/15, russell2000 93/1823, delisted 33/0. **Owner decision**:
   pick one convention and re-download the rest.
@@ -481,3 +486,37 @@ bitget has no funding source.
 
 **Done when.** Each of the three venues has funding on disk with a schedule
 behind it.
+
+## E15 — The full crypto universe
+
+**Scope.** Every USDT spot pair and every USDT-settled linear perpetual on
+binance, kucoin, bybit and bitget, `1h` and up, from listing, kept current
+by the nightly schedules. Approved by the owner 2026-10-26.
+
+- `download_crypto --universe` lists what the venue trades now. Leveraged
+  tokens and bitget's innovation zone are left out: ~3,000 on-chain tokens,
+  against 502 pairs on its main board. Venue counts on 2026-10-26:
+
+  | Venue | Spot listed / ours / new | Perps listed / ours / new |
+  |---|---|---|
+  | binance | 514 / 449 / 199 | 747 / 146 / 603 |
+  | kucoin | 810 / 908 / 422 | 697 / 74 / 626 |
+  | bybit | 388 / 94 / 302 | 808 / 71 / 739 |
+  | bitget | 502 / 796 / 280 | 857 / 0 / 857 |
+
+- Catalog pairs a venue no longer lists are marked `retired` with a date and a
+  reason, not deleted. That is 134 on binance spot, 520 on kucoin, 8 on
+  bybit, 575 on bitget, and 7 perps. `status` counts them apart, the stale
+  alert ignores them, and downloads skip them.
+- New series start at the pair's listing. bitget and kucoin return nothing
+  for a window that begins before then.
+- The new catalog `crypto_futures_bitget` goes through ccxt: requests at 1d
+  and above are capped at 90 days, and bitget fills a window from its end.
+  Funding for bitget remains open (E14).
+- Estimate: ~4,030 new pairs, ~105M bars, ~3 GB of parquet (29 bytes a bar
+  measured), and ~270k requests. That is roughly 15–20 h on the one crypto
+  lane, dominated by kucoin and bitget futures (200-bar pages). Nightly
+  refreshes grow to ~5,300 pairs.
+
+**Done when.** Each venue's catalog matches its listed universe, every new
+series reaches back to its listing, and `status` shows them current.

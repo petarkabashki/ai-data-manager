@@ -63,6 +63,7 @@ class CatalogStatus:
     oldest: str | None = None
     newest: str | None = None
     stale: int = 0
+    retired: int = 0
     undated: int = 0
     # --deep only
     missing_files: int = 0
@@ -86,6 +87,7 @@ class CatalogStatus:
             "oldest": self.oldest,
             "newest": self.newest,
             "stale": self.stale,
+            "retired": self.retired,
             "undated": self.undated,
             "missing_files": self.missing_files,
             "schema_mismatches": self.schema_mismatches,
@@ -144,7 +146,9 @@ def summarize(spec, stale_days: int, deep: bool) -> CatalogStatus:
                 status.newest = end
 
             stale = days_behind(end, timeframe, calendar)
-            if stale is None:
+            if entry.get("retired"):
+                status.retired += 1     # delisted: its data is complete, not overdue
+            elif stale is None:
                 status.undated += 1
             elif stale >= stale_days:
                 status.stale += 1
@@ -196,6 +200,7 @@ def main() -> None:
         "symbols": sum(s.symbols for s in statuses),
         "series": sum(s.series for s in statuses),
         "stale": sum(s.stale for s in statuses),
+        "retired": sum(s.retired for s in statuses),
         "undated": sum(s.undated for s in statuses),
         "problems": sum(s.problems for s in statuses),
     }
@@ -218,10 +223,10 @@ def main() -> None:
             sys.exit(1)
 
         headers = ["Catalog", "Class", "Symbols", "Series", "Oldest", "Newest",
-                   f"Stale≥{args.stale_days}d", "Calendar"]
+                   f"Stale≥{args.stale_days}d", "Retired", "Calendar"]
         rows = [
             [s.name, s.asset_class, s.symbols, s.series, s.oldest or "—",
-             s.newest or "—", s.stale, s.calendar]
+             s.newest or "—", s.stale, s.retired, s.calendar]
             for s in statuses
         ]
         if args.deep:
@@ -232,7 +237,7 @@ def main() -> None:
         print_table(headers, rows)
         print(
             f"\n{totals['symbols']} symbols · {totals['series']} series · "
-            f"{totals['stale']} stale · {totals['undated']} undated"
+            f"{totals['stale']} stale · {totals['retired']} retired · {totals['undated']} undated"
         )
 
         if args.deep:

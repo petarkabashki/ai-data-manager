@@ -68,6 +68,8 @@ class SeriesIndex:
                             "adjustment": node.get("adjustment"),
                             "volume_basis": node.get("volume_basis"),
                             "file_path": node.get("file_path"),
+                            "retired": entry.get("retired"),
+                            "retired_reason": entry.get("retired_reason"),
                         }
                     )
                     n_series += 1
@@ -128,7 +130,7 @@ class SeriesIndex:
             if session and (row["session"] or "all") != session:
                 continue
             stale = days_behind(row["end_date"], row["timeframe"], calendar_for(row["asset_class"]))
-            if stale_days is not None and (stale is None or stale < stale_days):
+            if stale_days is not None and (row.get("retired") or stale is None or stale < stale_days):
                 continue
             out.append({**row, "stale_days": stale})
             if limit and len(out) >= limit:

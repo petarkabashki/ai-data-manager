@@ -88,7 +88,8 @@ def collect(args, parser) -> list[dict]:
                         start, end, rows_count = actual
 
                 stale = days_behind(end, timeframe, calendar_for(spec.asset_class))
-                if args.stale_days is not None and (stale is None or stale < args.stale_days):
+                retired = entry.get("retired")
+                if args.stale_days is not None and (retired or stale is None or stale < args.stale_days):
                     continue
 
                 rows.append(
@@ -103,6 +104,8 @@ def collect(args, parser) -> list[dict]:
                         "end_date": end,
                         "rows": rows_count,
                         "stale_days": stale,
+                        "retired": retired,
+                        "retired_reason": entry.get("retired_reason"),
                         "adjustment": node.get("adjustment"),
                         "volume_basis": node.get("volume_basis"),
                         "file_path": node.get("file_path"),
@@ -145,7 +148,8 @@ def main() -> None:
     p.add_argument("--timeframe", "-t", help="Single timeframe (e.g. 1d)")
     p.add_argument("--timeframes", nargs="+", help="Multiple timeframes")
     p.add_argument("--provider", help="Filter by provider (YF, IBKR, binance…), case-insensitive")
-    p.add_argument("--stale-days", type=int, metavar="N", help="Only series N or more session days overdue")
+    p.add_argument("--stale-days", type=int, metavar="N",
+                   help="Only series N or more session days overdue (retired series never count)")
     p.add_argument("--rescan", action="store_true",
                    help="Read dates from the parquet files instead of the catalog (slow, authoritative)")
     p.add_argument("--list-catalogs", action="store_true", help="List catalogs with symbol/series counts")
@@ -189,6 +193,7 @@ def main() -> None:
                 r["catalog"], r["symbol"], r["timeframe"],
                 (r["provider"] or "—") + (f":{r['session']}" if r.get("session") else ""),
                 r["start_date"] or "—", r["end_date"] or "—",
+                "retired" if r.get("retired") else
                 f"{r['stale_days']}d" if r["stale_days"] is not None else "—",
             ]
             for r in shown
