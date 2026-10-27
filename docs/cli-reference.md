@@ -15,6 +15,7 @@ first when one is offered.
 | [`check_schema.py`](#check_schemapy) | read-only | Verify every OHLCV parquet matches the canonical schema |
 | [`check_splits.py`](#check_splitspy) | read-only | Find un-back-adjusted split seams inside stored price files |
 | [`fix_daily_stamps.py`](#fix_daily_stampspy) | write | Restamp daily+ bars to 00:00 UTC of their date; drop duplicate dates |
+| [`backup_delta.py`](#backup_deltapy) | write (`.deltas/`, a restore dir) | Row-level backup deltas: export what changed, restore any night |
 | [`download_crypto.py`](#download_cryptopy) | write | Download via freqtrade, merge parquet, update catalog |
 | [`download_funding.py`](#download_fundingpy) | write | Fetch perpetual funding-rate history next to each contract's bars |
 | [`convert_crypto.py`](#convert_cryptopy) | write | Bulk-normalize crypto parquet/JSON to canonical schema |
@@ -352,6 +353,47 @@ Files already in convention are not touched, so reruns change nothing. Dates
 don't move, so catalogs aren't rewritten. Run it through PDM: it runs in the
 provider's lane (`equity`, `crypto` or `options`), so it can't race that
 provider's downloader. Exits 1 if any file failed.
+
+---
+
+## `backup_delta.py`
+
+```
+uv run python tools/backup_delta.py export [--root DIR] [--workers N] [--keep-days 14] [--reinit] [--json]
+uv run python tools/backup_delta.py restore --backup-dir DIR --dest OUT [--until STAMP] [--base NAME] [--json]
+uv run python tools/backup_delta.py hub-plan --backup-dir DIR --base-every DAYS [--json]
+uv run python tools/backup_delta.py hub-prune --backup-dir DIR [--json]
+```
+
+```bash
+uv run python tools/pdm_client.py submit backup_delta -- export --json      # on the host, via PDM
+uv run python tools/backup_delta.py restore --backup-dir ~/backups/pdm-price-data --dest /scratch/restore
+```
+
+| Flag | Meaning |
+|---|---|
+| `export --root` | Data root to export (default: the configured one). Writes `<root>/.deltas/<stamp>/` and `.deltas/manifest.parquet` |
+| `export --workers` | Processes reading files (default: half the CPUs, at most 4) |
+| `export --keep-days` | Delete host deltas older than this; the hub keeps its own copies |
+| `export --reinit` | Start a new chain: record the manifest only. The next hub run must take a base |
+| `restore --backup-dir` | The hub's backup dir: base snapshots (with `.backup-started`) and `deltas/` |
+| `restore --dest` | An empty directory outside the live data root |
+| `restore --until` | Newest delta stamp to apply (`YYYYmmddTHHMMSSZ`); default all |
+| `restore --base` | Base snapshot to start from; default the newest begun before `--until` |
+| `hub-plan --base-every` | Print `base` if a full snapshot is due (none, too old, or the deltas don't chain), else `delta` |
+| `--json` | One JSON document on stdout. export: stamp, parent, init, scanned, read, append, full, deleted, tail_rows, bytes_written, pruned[], failures[], seconds. restore: base, base_started, deltas[], files, touched, problems[], seconds |
+
+A parquet whose older rows are intact exports only its new rows (`append`).
+The cut point is the first row that differs, found from per-row hashes of
+each file's last 64 rows, so a revised last bar is fine. Anything else that
+changed (history rewritten, no strictly increasing int64 `timestamp`, a
+catalog, a new file) is copied whole, and deletions are listed. The first
+export records the manifest only. `restore` hard-links the base into
+`--dest`, replays the deltas from two days before the base began, and checks
+every touched file against its recorded row hash and the file list against
+the last delta's. Exits 1 on a failed file or check, 2 on a broken chain or
+a bad argument. `deploy/pdm-backup.sh` drives the hub side when
+`PDM_BACKUP_BASE_EVERY` is set; see [server.md](server.md#backups).
 
 ---
 

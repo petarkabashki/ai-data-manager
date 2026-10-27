@@ -33,6 +33,11 @@ schedules: []
 #    args: [--deep, --json]
 #    at: "04:00"
 #    enabled: false                    # paused, kept
+#
+#  - name: backup-delta                # row-level backup deltas for the hub to pull
+#    tool: backup_delta
+#    args: [export, --json]
+#    at: "07:15"
 
 # Live exchange feeds — broadcast only, never written to disk. Websockets via
 # ccxt.pro where the exchange has them, REST polling otherwise.

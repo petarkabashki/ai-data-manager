@@ -2,7 +2,7 @@
 Description=Nightly PDM price-data backup
 
 [Timer]
-OnCalendar=*-*-* 04:30:00
+OnCalendar=*-*-* 09:00:00
 Persistent=true
 
 [Install]

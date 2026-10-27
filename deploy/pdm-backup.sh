@@ -7,6 +7,13 @@
 # whose forced `rrsync -ro` starts in price-data. A local dir works for testing.
 # Without it the source is the older `$PDM_SERVER:work/price-data/`.
 #
+# PDM_BACKUP_BASE_EVERY=<days> turns on row-level deltas (tools/backup_delta.py,
+# whose export runs on the host each morning): every run pulls the host's new
+# `.deltas/<stamp>/` into $dest/deltas/, and a full snapshot (a base, marked
+# with .backup-started) is taken only when `backup_delta.py hub-plan` asks for
+# one: none yet, the newest is that many days old, or the deltas don't chain.
+# Unset, every run takes a dated snapshot as before.
+#
 #   pdm-backup.sh           today's snapshot, <YYYY-MM-DD>; a no-op if it exists
 #   pdm-backup.sh --again   one more snapshot today, <YYYY-MM-DD>T<HHMM>, for a
 #                           restore point before a risky change. Names sort by
@@ -27,6 +34,8 @@ dest="${PDM_BACKUP_DIR:-$(envval PDM_BACKUP_DIR)}"
 dest="${dest:-$HOME/backups/pdm-price-data}"
 dest="${dest/#\~/$HOME}"
 keep="${PDM_BACKUP_KEEP:-$(envval PDM_BACKUP_KEEP)}"
+base_every="${PDM_BACKUP_BASE_EVERY:-$(envval PDM_BACKUP_BASE_EVERY)}"
+delta_tool=("${PDM_BACKUP_PYTHON:-$repo/.venv/bin/python}" "$repo/tools/backup_delta.py")
 src="${PDM_BACKUP_SOURCE:-$(envval PDM_BACKUP_SOURCE)}"
 if [ -z "$src" ]; then
   [ -n "$server" ] || { echo "PDM_SERVER not set" >&2; exit 2; }
@@ -37,6 +46,22 @@ src="${src%/}/"
 mkdir -p "$dest"
 exec 9>"$dest/.lock"
 flock -n 9 || { echo "another backup is running" >&2; exit 0; }
+ssh_cmd="ssh -o BatchMode=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=6"
+
+if [ -n "$base_every" ]; then
+  mkdir -p "$dest/deltas"
+  pull_rc=0
+  rsync -a --exclude='/manifest.parquet' --exclude='/.lock' --exclude='/*.tmp' \
+    -e "$ssh_cmd" "${src}.deltas/" "$dest/deltas/" || pull_rc=$?
+  [ "$pull_rc" -eq 0 ] || echo "delta pull failed (rc=$pull_rc)" >&2
+  mode="$("${delta_tool[@]}" hub-plan --backup-dir "$dest" --base-every "$base_every")"
+  if [ "$mode" = delta ]; then
+    "${delta_tool[@]}" hub-prune --backup-dir "$dest"
+    [ "$pull_rc" -eq 0 ] || exit "$pull_rc"
+    echo "deltas pulled; no base needed"
+    exit 0
+  fi
+fi
 
 date_s="$(date +"$stamp")"
 final="$dest/$date_s"
@@ -73,10 +98,12 @@ mkdir -p "$part"
 
 info=stats1
 [ -t 1 ] && info=stats1,progress2
-ssh_cmd="ssh -o BatchMode=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=6"
+# a base's start: the deltas exported before it are already in it
+[ -z "$base_every" ] || date -u +%Y%m%dT%H%M%SZ > "$part/.backup-started"
 pull() {
   local rc=0
-  rsync -a --delete --exclude='*.tmp' --partial "$@" -e "$ssh_cmd" \
+  rsync -a --delete --exclude='*.tmp' --exclude='/.deltas/' --exclude='/.backup-started' \
+    --partial "$@" -e "$ssh_cmd" \
     "${linkopt[@]}" "$src" "$part/" || rc=$?
   # 24 = source files vanished mid-transfer (live host); acceptable
   if [ "$rc" -ne 0 ] && [ "$rc" -ne 24 ]; then
@@ -113,3 +140,4 @@ if [ -n "$keep" ]; then
       echo "pruning $old"; rm -rf -- "${dest:?}/$old"
     done
 fi
+[ -z "$base_every" ] || "${delta_tool[@]}" hub-prune --backup-dir "$dest"

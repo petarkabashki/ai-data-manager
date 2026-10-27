@@ -26,7 +26,7 @@ schema. Every epic is constrained by them.
 | [E13](#e13--consumers-on-the-provider-first-layout) | Consumers on the provider-first layout | in progress |
 | [E14](#e14--funding-on-every-perpetual-venue) | Funding on every perpetual venue | done |
 | [E15](#e15--the-full-crypto-universe) | The full crypto universe | in progress |
-| [E16](#e16--row-level-backup-deltas) | Row-level backup deltas | proposed |
+| [E16](#e16--row-level-backup-deltas) | Row-level backup deltas | in progress |
 
 Anything marked done has tests that fail against the previous behaviour.
 
@@ -553,41 +553,47 @@ directly, to fix a problem that exists only in the backup. Year partitions
 were also rejected: they change the reader-facing layout, and the current
 year's file is still copied whole every night (~1 GB for crypto).
 
-**Scope.** Proposed 2026-10-27, waiting for the owner's approval.
+**Scope.** Approved by the owner 2026-10-27; built the same day.
 
-- `tools/backup_delta.py export`, run on the host as `pdm`. It runs as a PDM
-  job in the audit lane, after the crypto lane and before the hub's pull.
-  - A manifest stores, for each parquet: its rows, its last timestamp, and a
-    hash of the rows already backed up.
-  - If a file's old rows hash the same, only its new rows go to
-    `.deltas/<date>/<same relative path>`.
-  - If old rows changed (a split re-download, a stamp repair, a merge that
-    rewrote history), the whole file goes there, marked `full`.
-  - New files go there whole. Deleted files are listed in the delta's
-    `index.json`.
-  - Catalogs go there whole: they are small.
-  - The export writes to `.tmp` and renames, like every other write. It
-    updates the manifest last, so an interrupted export is redone the next
-    night.
-- `.deltas/` lives at the top of `price-data/`, so `pdm-ro` already reads
-  it. No new key or forced command is needed. The data walkers
-  (`check_catalog`, `check_schema`, `check_splits`) start below the catalog
-  roots, so they never see it. A test pins that.
-- **The hub.** `pdm-backup.sh` takes a full snapshot on base nights (weekly,
-  `PDM_BACKUP_BASE_EVERY`). On other nights it pulls only the new
-  `.deltas/<date>/` directories, which should be ~10 MB (about 250k bars at
-  29 bytes each). The host deletes deltas older than its newest base once the
-  hub has taken that base.
-- `tools/backup_delta.py restore <base> <date> <dest>`. It copies the base,
-  then applies each delta in date order: append rows, replace `full` files,
-  remove deleted ones. It checks every file against the row count and hash
-  recorded in the delta, then runs `check_catalog --fix` and `check_schema`,
-  as in E10.
-- **Tests:** appended rows; rewritten history; a new series; a deleted
-  series; an export interrupted halfway; a restore that matches the live tree
-  byte for byte after base + N deltas.
-- About 300 lines plus tests. Nothing that reads the data changes.
+- `tools/backup_delta.py export` runs on the host as the `backup-delta` PDM
+  schedule (07:15 UTC, in its own `backup` lane, so a backfill never holds it
+  back). `.deltas/manifest.parquet` stores, for each file: size and mtime (an
+  unchanged file is not read), row count, a hash of all rows but the last 64,
+  and per-row hashes of those 64.
+  - Old rows intact: only the rows from the first that differs go to
+    `.deltas/<stamp>/data/<path>` (`append`). The cut is recorded as the
+    `timestamp` of the last row kept, so a revised last bar is fine, and so is
+    a base taken between two exports.
+  - Older rows changed (split re-download, stamp repair), no strictly
+    increasing int64 `timestamp`, a new file, a catalog: whole (`full`).
+    Deletions are listed, and `paths.txt.gz` lists every file.
+  - The delta dir is written as `<stamp>.tmp` and renamed, then the manifest
+    is replaced. A crash between the two makes the next export diff against
+    the same parent again, and restoring both is harmless. The first export
+    records the manifest only. The host keeps 14 days of deltas.
+- `.deltas/` is at the top of `price-data/`, so `pdm-ro` reads it with no new
+  key. The watcher and the `check_*` tools walk the asset-class directories
+  only.
+- **The hub.** `pdm-backup.sh` with `PDM_BACKUP_BASE_EVERY` pulls the new
+  deltas every run, and takes a full snapshot (a base, stamped
+  `.backup-started`) only when `hub-plan` asks for one: none yet, the newest
+  is that old, or the deltas don't chain. `hub-prune` drops deltas no kept
+  base needs. Monthly, not weekly as first proposed: over a week nearly every
+  active file changes, so a weekly base would cost almost a full copy each
+  time. The hub timer moves to 09:00 local, after the export.
+- `backup_delta.py restore --backup-dir D --dest OUT [--until STAMP]`: it
+  hard-links the base, replays the deltas from two days before the base
+  began, and checks every touched file against its recorded row hash and the
+  file list against the last delta's. Then E10's steps apply (`check_catalog
+  --fix`, `check_schema`).
+- Tests (`tests/test_backup_delta.py`, `tests/test_pdm_backup.py`): appends
+  with a revised last bar, rewritten history, new, deleted and non-parquet
+  files, a touched-but-identical file, any of seven nights, a base between
+  exports, an export that died before its manifest, a gap in the chain, a base
+  older than the chain, both prunes, worker processes, and the script end to
+  end in delta mode.
 
-**Done when.** A restore of base + 7 deltas into a scratch tree on the host
-matches the live tree with 0 checksum differences. The hub then keeps 30 days
-of restore points in less disk than `KEEP=3` uses today.
+**Done when.** A restore of base + 7 deltas into a scratch tree matches the
+live tree row for row (restored files are rewritten, so bytes differ), and
+the hub keeps 30 days of restore points in less disk than `KEEP=3` uses
+today.

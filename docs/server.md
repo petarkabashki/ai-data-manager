@@ -248,7 +248,8 @@ snapshot's catalog is never older than its files. `PDM_BACKUP_SOURCE`,
 (unquoted or quoted values both work).
 
 Install the systemd user units (`deploy/pdm-backup.service`, idle I/O and CPU
-class, and `deploy/pdm-backup.timer`, daily 04:30 local, `Persistent=true`):
+class, and `deploy/pdm-backup.timer`, daily 09:00 local, after the host's
+07:15 UTC delta export, `Persistent=true`):
 
     cp deploy/pdm-backup.{service,timer} ~/.config/systemd/user/
     systemctl --user daemon-reload
@@ -263,11 +264,43 @@ removes older ones after a successful run. Unset (the default) keeps every
 snapshot and deletes nothing, so disk use grows with churn until the owner
 chooses a number.
 
+**Row-level deltas.** Hard links work on whole files, and a nightly update
+touches most files, so a dated snapshot costs ~8.5 GB for a few MB of new
+rows. With `PDM_BACKUP_BASE_EVERY=<days>` the hub takes a full snapshot (a
+*base*) only every that many days, and on the other nights pulls only the
+host's deltas:
+
+- On the host, the `backup-delta` schedule (07:15 UTC daily, lane `backup`)
+  runs `backup_delta.py export`. It writes the rows each parquet gained (or
+  the whole file, when older rows changed) to `price-data/.deltas/<stamp>/`,
+  and keeps 14 days of them. `pdm-ro` reads them like any other data file.
+  The data walkers (watcher, `check_*`) start below the asset-class
+  directories and never see `.deltas/`.
+- Every hub run pulls new `.deltas/<stamp>/` into `$PDM_BACKUP_DIR/deltas/`.
+  Then `backup_delta.py hub-plan` decides. It takes a base when there is
+  none, when the newest is `PDM_BACKUP_BASE_EVERY` days old, or when the
+  deltas since it don't chain (the hub was off for longer than the host keeps
+  them). A base is a normal dated snapshot with a `.backup-started` stamp, and
+  `.deltas/` is excluded from it.
+- `PDM_BACKUP_KEEP` counts snapshots (bases), and `hub-prune` drops the
+  pulled deltas that no remaining base needs. With `BASE_EVERY=30` and
+  `KEEP=2`: two bases (~40 GB the first, then whatever changed in a month),
+  ~10 MB of deltas a night, and a restore point for every night of the last
+  30–60 days.
+
 **Restoring.** A snapshot is a plain copy of `price-data`, but one taken
 while a download was merging can hold files whose catalog nodes weren't
 saved yet, and dates the catalog hadn't caught up with. Step 3 repairs both.
 
 1. On the host, stop the server so nothing writes: `systemctl --user stop pdm`.
+   With deltas, first build the night you want into an empty scratch
+   directory on the client. It hard-links the base and checks every file
+   the deltas touched against its recorded row hash:
+
+       uv run python tools/backup_delta.py restore --backup-dir ~/backups/pdm-price-data \
+           --dest ~/restore [--until 20261101T071500Z]
+
+   and use `~/restore/` instead of `latest/` in step 2.
 2. From the client, copy the snapshot back as `pdm` (`pdm-ro` can't write).
    `--delete` drops anything on the host newer than the snapshot, so to keep
    newer files, restore into a sibling directory first and compare. Keep the
@@ -402,6 +435,7 @@ Jobs run in lanes, serial within each lane:
 | `crypto` | download_crypto, download_funding, convert_crypto | crypto catalogs |
 | `options` / `marketcap` / `futures` | one tool each | disjoint catalogs |
 | `audit` | status, query, check_gaps, check_schema, check_splits | read-only, so never queued behind a download |
+| `backup` | backup_delta | writes only `.deltas/`; the nightly export runs whatever the downloads are doing |
 
 The lanes only serialize jobs that go **through the server**. A tool started
 by hand on the host while a server job writes the same catalog can still lose

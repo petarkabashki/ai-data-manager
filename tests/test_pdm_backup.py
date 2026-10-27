@@ -7,6 +7,8 @@ directory, with `date` pinned through a shim on PATH.
 import os
 import shutil
 import subprocess
+import sys
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -22,6 +24,9 @@ def backup(tmp_path):
     repo = tmp_path / "repo"
     (repo / "deploy").mkdir(parents=True)
     shutil.copy(REPO / "deploy/pdm-backup.sh", repo / "deploy/pdm-backup.sh")
+    (repo / "tools").mkdir()
+    (repo / "tools/backup_delta.py").symlink_to(REPO / "tools/backup_delta.py")
+    (repo / "utils").symlink_to(REPO / "utils")
     shim = tmp_path / "bin"
     shim.mkdir()
     real_date = shutil.which("date")
@@ -34,14 +39,17 @@ def backup(tmp_path):
     (src / "assets.yaml").write_text("catalog\n")
     dest = tmp_path / "snap"
 
-    def run(now, *args, keep=None):
+    def run(now, *args, keep=None, base_every=None):
         env = {k: v for k, v in os.environ.items() if not k.startswith("PDM_")}
-        env.update(PATH=f"{shim}:{env['PATH']}", FAKE_NOW=now,
-                   PDM_BACKUP_SOURCE=str(src), PDM_BACKUP_DIR=str(dest))
+        env.update(PATH=f"{shim}:{env['PATH']}", FAKE_NOW=now, PDM_NO_DOTENV="1",
+                   PDM_BACKUP_SOURCE=str(src), PDM_BACKUP_DIR=str(dest),
+                   PDM_BACKUP_PYTHON=sys.executable)
         if keep:
             env["PDM_BACKUP_KEEP"] = str(keep)
+        if base_every:
+            env["PDM_BACKUP_BASE_EVERY"] = str(base_every)
         return subprocess.run(["bash", str(repo / "deploy/pdm-backup.sh"), *args],
-                              env=env, capture_output=True, text=True)
+                              env=env, capture_output=True, text=True, check=False)
 
     run.src, run.dest = src, dest
     return run
@@ -95,3 +103,45 @@ def test_an_unknown_argument_is_refused(backup):
     r = backup("2026-10-27 16:40", "--now")
     assert r.returncode == 2 and "usage" in r.stderr
     assert not backup.dest.exists()
+
+
+def test_delta_mode_takes_one_base_then_pulls_only_deltas(backup, tmp_path, monkeypatch):
+    import importlib
+
+    import pandas as pd
+    monkeypatch.syspath_prepend(str(REPO / "tools"))
+    bd = importlib.import_module("backup_delta")
+    src, dest = backup.src, backup.dest
+    btc = src / "crypto/BTC_USDT-1h.parquet"
+
+    def bars(n):
+        pd.DataFrame({"timestamp": pd.Series([i * 3_600_000 for i in range(n)], dtype="int64"),
+                      "close": [float(i) for i in range(n)]}).to_parquet(btc, index=False)
+
+    def export(day):
+        _, rc = bd.export(src, 1, 14, now=datetime(2026, 10, day, 7, 15, tzinfo=UTC))
+        assert rc == 0
+
+    bars(100)
+    export(27)
+    r = backup("2026-10-27 09:00 UTC", base_every=30)
+    assert r.returncode == 0, r.stderr
+    assert "snapshot 2026-10-27 complete" in r.stdout
+    assert (dest / "2026-10-27/.backup-started").read_text().strip() == "20261027T090000Z"
+    assert not (dest / "2026-10-27/.deltas").exists()
+    assert sorted(p.name for p in (dest / "deltas").iterdir()) == ["20261027T071500Z"]
+
+    bars(124)
+    (src / "assets.yaml").write_text("catalog v2\n")
+    export(28)
+    r = backup("2026-10-28 09:00 UTC", base_every=30)
+    assert r.returncode == 0, r.stderr
+    assert "deltas pulled; no base needed" in r.stdout
+    assert not (dest / "2026-10-28").exists()
+    assert not (dest / "deltas/manifest.parquet").exists()
+
+    doc, rc = bd.restore(dest, tmp_path / "restored")
+    assert rc == 0, doc["problems"]
+    assert doc["deltas"] == ["20261027T071500Z", "20261028T071500Z"]
+    for rel in bd.scan(src):
+        assert bd.hash_file(src / rel) == bd.hash_file(tmp_path / "restored" / rel), rel

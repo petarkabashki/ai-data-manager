@@ -14,6 +14,8 @@ Jobs run in **lanes**, one worker thread per lane, serial within it:
   * `crypto`  — freqtrade spot/futures downloads and conversions.
   * `options`, `marketcap`, `futures` — disjoint catalogs, own lanes.
   * `audit`   — read-only tools; never blocked behind a multi-hour download.
+  * `backup`  — backup_delta's nightly export: it writes only `.deltas/`, and
+    must not wait for a backfill to finish.
 
 Lanes also respect provider pacing: IBKR punishes parallel connections, and
 one lane per provider is exactly one connection.
@@ -76,6 +78,7 @@ TOOL_LANES: dict[str, str] = {
     "check_gaps": "audit",
     "check_schema": "audit",
     "check_splits": "audit",
+    "backup_delta": "backup",
 }
 
 #: Tools that rewrite whichever provider's files `--provider` names run in

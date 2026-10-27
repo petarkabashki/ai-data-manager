@@ -231,6 +231,7 @@ uv run python tools/convert_crypto.py [--exchange X] [--dry-run]
 | `tools/check_catalog.py` | Verify every catalog node has valid semantics and matches its file; `--fix` backfills and adopts orphan crypto files |
 | `tools/check_splits.py` | Find un-back-adjusted split seams inside stored files — history at the old share count spliced to bars at the new one |
 | `tools/fix_daily_stamps.py` | Restamp a provider's daily/weekly/monthly bars to 00:00 UTC of their date and drop duplicate dates, with backups |
+| `tools/backup_delta.py` | Row-level backup deltas: export the rows that changed each night (host), plan, prune and restore from a base plus deltas (hub) |
 | `tools/download_crypto.py` | Download via freqtrade, merge parquet, update YAML metadata |
 | `tools/download_funding.py` | Fetch perpetual funding-rate history (Binance, Bybit, KuCoin) next to each contract's bars |
 | `tools/convert_crypto.py` | Bulk normalize all crypto parquet to canonical schema + JSON→parquet |
