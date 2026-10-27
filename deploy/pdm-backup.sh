@@ -2,7 +2,10 @@
 # Pull-based, hard-linked, dated snapshots of the PDM host's price-data.
 # Config (environment, else the repo .env): PDM_SERVER, PDM_BACKUP_DIR
 # (default ~/backups/pdm-price-data), PDM_BACKUP_KEEP (unset = never prune).
-# PDM_BACKUP_SOURCE overrides the rsync source (testing: a local dir).
+# PDM_BACKUP_SOURCE (environment or .env) overrides the rsync source: on the
+# hub it is `pdm-backup:`, an ssh alias for the host's read-only pdm-ro account,
+# whose forced `rrsync -ro` starts in price-data. A local dir works for testing.
+# Without it the source is the older `$PDM_SERVER:work/price-data/`.
 set -euo pipefail
 
 repo="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
@@ -14,7 +17,7 @@ dest="${PDM_BACKUP_DIR:-$(envval PDM_BACKUP_DIR)}"
 dest="${dest:-$HOME/backups/pdm-price-data}"
 dest="${dest/#\~/$HOME}"
 keep="${PDM_BACKUP_KEEP:-$(envval PDM_BACKUP_KEEP)}"
-src="${PDM_BACKUP_SOURCE:-}"
+src="${PDM_BACKUP_SOURCE:-$(envval PDM_BACKUP_SOURCE)}"
 if [ -z "$src" ]; then
   [ -n "$server" ] || { echo "PDM_SERVER not set" >&2; exit 2; }
   src="$server:work/price-data/"

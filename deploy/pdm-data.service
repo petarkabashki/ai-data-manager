@@ -3,14 +3,22 @@
 # `price-data -> ../price-data` symlink keeps working once the local copy is
 # retired — reading the host's live data instead of a stale copy.
 #
-#   install:  sed 's/<host-tailscale-ip>/100.x.y.z/' deploy/pdm-data.service \
-#                 > ~/.config/systemd/user/pdm-data.service
+# `pdm-mount:` is an ssh alias for the host's read-only account, whose forced
+# `sftp-server -R -d <price-data>` starts in the data directory (hence no path).
+# In ~/.ssh/config:
+#   Host pdm-mount
+#       HostName <host-tailscale-ip>
+#       User pdm-ro
+#       IdentityFile ~/.ssh/id_pdm_mount
+#       IdentitiesOnly yes
+#
+#   install:  cp deploy/pdm-data.service ~/.config/systemd/user/
 #             systemctl --user daemon-reload
 #   enable (only after ~/work/price-data has been moved aside and recreated empty):
 #             systemctl --user enable --now pdm-data
 #
 # Read-only on purpose: data changes go through PDM refreshes on the host.
-# Needs key-based ssh to the host (BatchMode: it never prompts).
+# The key is used non-interactively (BatchMode: it never prompts).
 [Unit]
 Description=Read-only sshfs mount of the PDM data host's price-data
 After=network-online.target tailscaled.service
@@ -21,7 +29,7 @@ ConditionDirectoryNotEmpty=!%h/work/price-data
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/sshfs -f -o ro,reconnect,ServerAliveInterval=15,ServerAliveCountMax=3,BatchMode=yes,kernel_cache,auto_cache <host-tailscale-ip>:work/price-data %h/work/price-data
+ExecStart=/usr/bin/sshfs -f -o ro,reconnect,ServerAliveInterval=15,ServerAliveCountMax=3,BatchMode=yes,kernel_cache,auto_cache pdm-mount: %h/work/price-data
 ExecStop=/usr/bin/fusermount3 -u %h/work/price-data
 Restart=on-failure
 RestartSec=15

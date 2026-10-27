@@ -28,8 +28,9 @@ the network. It does four jobs:
 | | |
 |---|---|
 | Host | `<host>`, Tailscale `<host-tailscale-ip>` — the real values are kept out of this public repo; set `PDM_SERVER` in your local `.env` |
-| Repo | `~/work/ai-data-manager` (git checkout) |
-| Data | `~/work/price-data` (`price-data` symlink in the repo, as everywhere) |
+| Accounts | `pdm` owns PDM (no sudo); `pdm-ro` only reads price-data (see [Accounts and keys](#accounts-and-keys)) |
+| Repo | `~pdm/work/ai-data-manager` (git checkout) |
+| Data | `~pdm/work/price-data` (`price-data` symlink in the repo, as everywhere) |
 | Service | systemd user unit `pdm.service` (`deploy/pdm.service`), lingering so it runs without a login |
 | Config | `~/work/ai-data-manager/.env` (`PDM_BIND_HOST` = the Tailscale IP) and `pdm.yaml` |
 | Logs | `journalctl --user -u pdm -f`; per-job logs in `tmp/pdm-jobs/` |
@@ -40,11 +41,34 @@ tailnet and nowhere else. Tailscale handles authentication and encryption.
 one person is on the tailnet.
 
 ```bash
-# on the data host
+# on the data host, as pdm (from the hub: ssh pdm-host)
 systemctl --user status pdm
 systemctl --user restart pdm            # after a git pull or a pdm.yaml edit; queued jobs survive
 uv run python tools/pdm_server.py --check
 ```
+
+### Accounts and keys
+
+PDM runs as its own account, so automation never logs in as the owner (who
+keeps sudo). `deploy/pdm-move-prepare.sh` and `deploy/pdm-move-switch.sh`
+moved it there from the owner's account; both refuse to copy again once the
+switch is done.
+
+| Account | Groups | Reaches | Key (on the hub) and ssh alias |
+|---|---|---|---|
+| `pdm` | pdm, pdm-data | everything of PDM's: deploys, logs, `systemctl --user` | `id_pdm_admin`, `pdm-host` |
+| `pdm-ro` | pdm-data | price-data only, read-only | `id_pdm_mount` → `pdm-mount` (forced `sftp-server -R`); `id_pdm_backup` → `pdm-backup` (forced `rrsync -ro`) |
+
+Group `pdm-data` owns nothing but price-data (directories 2750, files 640;
+the unit's `UMask=0027` keeps new files that way), so `pdm-ro` can't read the
+code, `.env` or the token. Its key lines are root-owned and limited by
+`from=`. Both forced commands start in price-data, so the aliases take no path:
+`pdm-mount:`, `pdm-backup:`. The aliases live in the hub's `~/.ssh/config` with
+`IdentitiesOnly yes`; real addresses stay out of this repo.
+
+Deploy, from the hub:
+
+    ssh pdm-host 'cd ~/work/ai-data-manager && git pull -q --ff-only && ~/.local/bin/uv sync --frozen -q && systemctl --user restart pdm'
 
 ## Clients
 
@@ -187,7 +211,7 @@ Both are managed while the server runs, and every change is written back to
 Projects that read parquet through a `price-data -> ../price-data` symlink
 keep working without code changes if a client machine mounts the host's data
 read-only at `~/work/price-data`. The template is `deploy/pdm-data.service`
-(sshfs, a systemd user unit). It is skipped, not failed, unless
+(sshfs, a systemd user unit, mounting `pdm-mount:` as `pdm-ro`). It is skipped, not failed, unless
 `~/work/price-data` exists and is empty, so it can never hide a local copy:
 
     mv ~/work/price-data ~/work/price-data.retired-<date> && mkdir ~/work/price-data
@@ -204,7 +228,8 @@ move: py-qwant's `scripts/sync_funding_rates.py`, which writes
 
 The host holds the only copy of `price-data`, so a client machine pulls
 nightly, off-host snapshots. `deploy/pdm-backup.sh` runs `rsync -a --delete`
-over ssh (BatchMode) from `$PDM_SERVER:work/price-data/` into
+over ssh (BatchMode) from `$PDM_BACKUP_SOURCE` (`pdm-backup:` on the hub:
+`pdm-ro` through `rrsync -ro`; without it, `$PDM_SERVER:work/price-data/`) into
 `$PDM_BACKUP_DIR/<YYYY-MM-DD>/` (default `~/backups/pdm-price-data`), with
 `--link-dest` on the previous snapshot, so unchanged files are hard links and
 each snapshot costs only what changed. It writes `<date>.partial` first
@@ -214,8 +239,8 @@ snapshot with under 80% of the previous one's files is never finalized: an
 empty or truncated source can't become `latest` or rotate good snapshots out.
 `*.tmp` is excluded; a second run on the same day is a no-op. The catalogs
 (top-level `*.yaml`) are copied in a second pass after the data, so a
-snapshot's catalog is never older than its files. `PDM_SERVER`
-and the variables below come from the environment or the repo `.env`
+snapshot's catalog is never older than its files. `PDM_BACKUP_SOURCE`,
+`PDM_SERVER` and the variables below come from the environment or the repo `.env`
 (unquoted or quoted values both work).
 
 Install the systemd user units (`deploy/pdm-backup.service`, idle I/O and CPU
@@ -239,12 +264,13 @@ while a download was merging can hold files whose catalog nodes weren't
 saved yet, and dates the catalog hadn't caught up with. Step 3 repairs both.
 
 1. On the host, stop the server so nothing writes: `systemctl --user stop pdm`.
-2. From the client, copy the snapshot back. `--delete` drops anything on the
-   host newer than the snapshot, so to keep newer files, restore into a
-   sibling directory first and compare:
+2. From the client, copy the snapshot back as `pdm` (`pdm-ro` can't write).
+   `--delete` drops anything on the host newer than the snapshot, so to keep
+   newer files, restore into a sibling directory first and compare. Keep the
+   group `pdm-data` and its modes, or `pdm-ro` (mount, backup) loses access:
 
-       rsync -a --delete -e "ssh -o BatchMode=yes" \
-           ~/backups/pdm-price-data/latest/ <data host>:work/price-data/
+       rsync -a --no-g --chmod=D2750,F640 --delete -e "ssh -o BatchMode=yes" \
+           ~/backups/pdm-price-data/latest/ pdm-host:work/price-data/
 
 3. On the host, repair the catalogs and check the files:
 
