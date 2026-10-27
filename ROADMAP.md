@@ -593,6 +593,16 @@ year's file is still copied whole every night (~1 GB for crypto).
   older than the chain, both prunes, worker processes, and the script end to
   end in delta mode.
 
+**Deployed 2026-10-27.** The first export read all 68,794 files in 244 s
+(4 workers, niced) and wrote a 36 MB manifest. A live rehearsal on the host
+used a hard-linked scratch base (`~pdm/work/e16-test/hub/base`, begun
+19:48:25 UTC). The second export, 90 s later and mid-backfill, read 849
+changed files in 4.7 s: all new series, so all `full`, 92 MB. Restoring base
++ both deltas took 7.6 s, and all 69,642 files matched the manifest's hashes
+(0 mismatches). PDM restarted with the `backup` lane; the `backup-delta`
+schedule runs at 07:15 UTC. The hub timer is off, at the owner's word, until
+E16 is done. The scratch base stays for the 7-night test.
+
 **Done when.** A restore of base + 7 deltas into a scratch tree matches the
 live tree row for row (restored files are rewritten, so bytes differ), and
 the hub keeps 30 days of restore points in less disk than `KEEP=3` uses
