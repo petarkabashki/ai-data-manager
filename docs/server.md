@@ -237,7 +237,11 @@ each snapshot costs only what changed. It writes `<date>.partial` first
 it and resumes), renames on success, and repoints a `latest` symlink. A
 snapshot with under 80% of the previous one's files is never finalized: an
 empty or truncated source can't become `latest` or rotate good snapshots out.
-`*.tmp` is excluded; a second run on the same day is a no-op. The catalogs
+`*.tmp` is excluded; a second run on the same day is a no-op. For one more
+restore point on such a day (before a risky change), run
+`deploy/pdm-backup.sh --again`: it writes `<YYYY-MM-DD>THHMM/`, which sorts
+after the day's snapshot, so it becomes `latest`, the next night links
+against it, and `PDM_BACKUP_KEEP` counts it like any other. The catalogs
 (top-level `*.yaml`) are copied in a second pass after the data, so a
 snapshot's catalog is never older than its files. `PDM_BACKUP_SOURCE`,
 `PDM_SERVER` and the variables below come from the environment or the repo `.env`

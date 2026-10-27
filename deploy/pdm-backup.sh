@@ -6,7 +6,17 @@
 # hub it is `pdm-backup:`, an ssh alias for the host's read-only pdm-ro account,
 # whose forced `rrsync -ro` starts in price-data. A local dir works for testing.
 # Without it the source is the older `$PDM_SERVER:work/price-data/`.
+#
+#   pdm-backup.sh           today's snapshot, <YYYY-MM-DD>; a no-op if it exists
+#   pdm-backup.sh --again   one more snapshot today, <YYYY-MM-DD>T<HHMM>, for a
+#                           restore point before a risky change. Names sort by
+#                           time, so `latest`, --link-dest and pruning just work.
 set -euo pipefail
+case "${1:-}" in
+  "") stamp=%F ;;
+  --again) stamp=%FT%H%M ;;
+  *) echo "usage: $0 [--again]" >&2; exit 2 ;;
+esac
 
 repo="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
 # one layer of surrounding quotes is stripped, as python-dotenv does
@@ -28,7 +38,7 @@ mkdir -p "$dest"
 exec 9>"$dest/.lock"
 flock -n 9 || { echo "another backup is running" >&2; exit 0; }
 
-date_s="$(date +%F)"
+date_s="$(date +"$stamp")"
 final="$dest/$date_s"
 part="$dest/$date_s.partial"
 if [ -d "$final" ]; then
@@ -36,13 +46,19 @@ if [ -d "$final" ]; then
   exit 0
 fi
 
-# newest complete snapshot (YYYY-MM-DD dirs only; .partial never matches)
-prev="$(find "$dest" -maxdepth 1 -mindepth 1 -type d -name '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]' -printf '%f\n' | sort | tail -1)"
+# complete snapshots, oldest first: YYYY-MM-DD, or YYYY-MM-DDTHHMM from --again
+snapshots() {
+  find "$dest" -maxdepth 1 -mindepth 1 -type d \
+    \( -name '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]' \
+       -o -name '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9][0-9][0-9]' \) \
+    -printf '%f\n' | sort
+}
+prev="$(snapshots | tail -1)"
 linkopt=()
 [ -n "$prev" ] && linkopt=(--link-dest="$dest/$prev")
 
-# An interrupted run leaves <day>.partial. Adopt the newest one from an
-# earlier day as today's, so rsync resumes into it instead of starting over.
+# An interrupted run leaves <name>.partial. Adopt the newest other one as
+# this run's, so rsync resumes into it instead of starting over.
 if [ ! -e "$part" ]; then
   old="$(find "$dest" -maxdepth 1 -mindepth 1 -type d -name '*.partial' -printf '%f\n' | sort | tail -1)"
   if [ -n "$old" ]; then
@@ -93,8 +109,7 @@ echo "snapshot $date_s complete"
 
 if [ -n "$keep" ]; then
   case "$keep" in *[!0-9]*|0) echo "bad PDM_BACKUP_KEEP=$keep; not pruning" >&2; exit 0;; esac
-  find "$dest" -maxdepth 1 -mindepth 1 -type d -name '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]' -printf '%f\n' \
-    | sort | head -n "-$keep" | while read -r old; do
+  snapshots | head -n "-$keep" | while read -r old; do
       echo "pruning $old"; rm -rf -- "${dest:?}/$old"
     done
 fi
