@@ -29,6 +29,10 @@ as_src() { systemctl --user -M "$src_user@" "$@"; }
 as_pdm() { systemctl --user -M pdm@ "$@"; }
 
 if [ "${1:-}" = back ]; then
+    # once the old copy is deleted there is nothing to go back to: stopping
+    # pdm's unit would just leave PDM down
+    [ -d "$src/work/price-data" ] && [ -f "$src/.config/systemd/user/pdm.service" ] ||
+        { echo "no old copy under $src: nothing to go back to, pdm left running"; exit 1; }
     as_pdm disable --now pdm.service || true
     rm -f $dst/.pdm-switched          # a later switch may copy again
     as_src enable --now pdm.service
