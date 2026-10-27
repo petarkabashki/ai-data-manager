@@ -25,6 +25,8 @@ schema. Every epic is constrained by them.
 | [E12](#e12--data-quality-backlog) | Data-quality backlog | in progress |
 | [E13](#e13--consumers-on-the-provider-first-layout) | Consumers on the provider-first layout | in progress |
 | [E14](#e14--funding-on-every-perpetual-venue) | Funding on every perpetual venue | done |
+| [E15](#e15--the-full-crypto-universe) | The full crypto universe | in progress |
+| [E16](#e16--row-level-backup-deltas) | Row-level backup deltas | proposed |
 
 Anything marked done has tests that fail against the previous behaviour.
 
@@ -395,8 +397,9 @@ a read-only mount of it, so it is not a backup.
   [docs/server.md](docs/server.md#backups). `check_catalog --fix` now adopts
   crypto files that no catalog lists, and `download_crypto` saves its catalog
   every 60s, so a snapshot taken mid-download restores cleanly. **Done.**
-- Retention (`PDM_BACKUP_KEEP`, unset = keep everything) and whether a third
-  copy goes off-site. **Owner decision.**
+- Retention: `PDM_BACKUP_KEEP=3` on the hub since 2026-10-27 (owner). Whole-file
+  hard links make each snapshot cost ~8.5 GB, so a longer history waits on
+  E16. Whether a third copy goes off-site: **owner decision.**
 
 **Done when.** Met 2026-10-26: a restore of the newest snapshot into a scratch
 tree on the host. The copy took 27 min (30 GB, 27,067 files) with 0 checksum
@@ -532,3 +535,59 @@ listing, kept current by the nightly schedules. Approved by the owner
 
 **Done when.** Each venue's catalog matches its listed universe, every new
 series reaches back to its listing, and `status` shows them current.
+
+## E16 — Row-level backup deltas
+
+**Why.** rsync's hard links work on whole files. Each nightly update adds a
+bar or so to most parquets, so most files are copied whole again. The
+2026-10-27 snapshot added 8.5 GB (5.3 GB over the network) for a few MB of
+new rows. `PDM_BACKUP_KEEP=3` holds the disk at ~60 GB, but that buys only
+three restore points. restic gains nothing: the median file is 126 KB, below
+its 512 KB minimum chunk. Measured: 0% as files are written today, ~4% with
+4096-row groups.
+
+**Off-the-shelf, rejected.** TimescaleDB, QuestDB, ClickHouse, Delta Lake and
+ArcticDB all back up row by row, or close to it. But each one replaces the
+parquet files that forthkit, py-qwant, the tools and the catalogs read
+directly, to fix a problem that exists only in the backup. Year partitions
+were also rejected: they change the reader-facing layout, and the current
+year's file is still copied whole every night (~1 GB for crypto).
+
+**Scope.** Proposed 2026-10-27, waiting for the owner's approval.
+
+- `tools/backup_delta.py export`, run on the host as `pdm`. It runs as a PDM
+  job in the audit lane, after the crypto lane and before the hub's pull.
+  - A manifest stores, for each parquet: its rows, its last timestamp, and a
+    hash of the rows already backed up.
+  - If a file's old rows hash the same, only its new rows go to
+    `.deltas/<date>/<same relative path>`.
+  - If old rows changed (a split re-download, a stamp repair, a merge that
+    rewrote history), the whole file goes there, marked `full`.
+  - New files go there whole. Deleted files are listed in the delta's
+    `index.json`.
+  - Catalogs go there whole: they are small.
+  - The export writes to `.tmp` and renames, like every other write. It
+    updates the manifest last, so an interrupted export is redone the next
+    night.
+- `.deltas/` lives at the top of `price-data/`, so `pdm-ro` already reads
+  it. No new key or forced command is needed. The data walkers
+  (`check_catalog`, `check_schema`, `check_splits`) start below the catalog
+  roots, so they never see it. A test pins that.
+- **The hub.** `pdm-backup.sh` takes a full snapshot on base nights (weekly,
+  `PDM_BACKUP_BASE_EVERY`). On other nights it pulls only the new
+  `.deltas/<date>/` directories, which should be ~10 MB (about 250k bars at
+  29 bytes each). The host deletes deltas older than its newest base once the
+  hub has taken that base.
+- `tools/backup_delta.py restore <base> <date> <dest>`. It copies the base,
+  then applies each delta in date order: append rows, replace `full` files,
+  remove deleted ones. It checks every file against the row count and hash
+  recorded in the delta, then runs `check_catalog --fix` and `check_schema`,
+  as in E10.
+- **Tests:** appended rows; rewritten history; a new series; a deleted
+  series; an export interrupted halfway; a restore that matches the live tree
+  byte for byte after base + N deltas.
+- About 300 lines plus tests. Nothing that reads the data changes.
+
+**Done when.** A restore of base + 7 deltas into a scratch tree on the host
+matches the live tree with 0 checksum differences. The hub then keeps 30 days
+of restore points in less disk than `KEEP=3` uses today.
