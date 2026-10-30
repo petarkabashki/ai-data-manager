@@ -22,6 +22,7 @@ first when one is offered.
 | [`download_market_caps.py`](#download_market_capspy) | write | Fetch CoinGecko market-cap history + snapshot/top-N exports |
 | [`download_ibkr_stock_overnight.py`](#download_ibkr_stock_overnightpy) | write | Download IBKR US-stock bars for sp500/nasdaq100 |
 | [`retry_ibkr_failed_sequentially.py`](#retry_ibkr_failed_sequentiallypy) | write | Re-run failed IBKR symbols one connection at a time |
+| [`ibkr_progress.py`](#ibkr_progresspy) | read | One-line status of a running IBKR stock download |
 | [`pdm_server.py`](#pdm_serverpy) | server | Serve price-data over ZeroMQ; run jobs; broadcast bars |
 | [`pdm_client.py`](#pdm_clientpy) | client | Query/fetch/submit/watch against a PDM server |
 | [`migrate_price_data_layout.py`](#migrate_price_data_layoutpy) | write (one-off) | 2026-07 provider-first layout migration, phases A–G |
@@ -652,6 +653,33 @@ Reads the `failures` list from `tmp/ibkr_stock_progress_<session>_<tfs>.json`
 re-invokes it as a subprocess once per timeframe, sequentially, never in
 parallel, writing to its own `tmp/ibkr_retry_<tf>_{progress.json,resume.jsonl}`.
 Stops on the first non-zero exit code.
+
+---
+
+## `ibkr_progress.py`
+
+```
+uv run python tools/ibkr_progress.py
+    [--file PATH] [--watch SECONDS] [--stall-seconds S] [--json]
+```
+
+| Flag | Meaning |
+|---|---|
+| `--file` | Progress snapshot to read (default: the newest `ibkr_stock_progress_*.json` in `TMP_ROOT`) |
+| `--watch` | Refresh every N seconds until the run is no longer `running` |
+| `--stall-seconds` | A `running` snapshot older than this counts as stalled (default 600) |
+| `--json` | Emit the summary as one JSON object |
+
+```bash
+uv run python tools/ibkr_progress.py --watch 60
+# running: 42/43 (97.7%), 42 updated, 0 failed now ALGN/1h, last update 0s ago
+```
+
+Reads the snapshot `download_ibkr_stock_overnight.py` rewrites after each
+timeframe result; its stdout is block-buffered when redirected, so the snapshot
+is the reliable way to follow a long run. `planned_items` grows as the downloader
+plans, so the percentage runs high early in a run. Exit code is 1 when failures
+are recorded or the run looks stalled, 2 when there is no snapshot.
 
 ---
 
