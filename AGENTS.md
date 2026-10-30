@@ -242,7 +242,7 @@ uv run python tools/convert_crypto.py [--exchange X] [--dry-run]
 | `tools/download_funding.py` | Fetch perpetual funding-rate history (Binance, Bybit, KuCoin) next to each contract's bars |
 | `tools/convert_crypto.py` | Bulk normalize all crypto parquet to canonical schema + JSON→parquet |
 | `tools/download_market_caps.py` | Fetch CoinGecko historical market-cap data and export snapshot/top-N universes |
-| `tools/download_ibkr_stock_overnight.py` | Download IBKR US stock bars for `sp500` / `nasdaq100`, with optional overnight-only filtering |
+| `tools/download_ibkr_stock_overnight.py` | Download IBKR US stock bars for `sp500` / `nasdaq100` / `russell2000`, with optional overnight-only filtering |
 | `tools/download_ibkr_index.py` | Download IBKR intraday index bars (e.g. 1h) for US indices, merged alongside YF's daily data |
 | `tools/retry_ibkr_failed_sequentially.py` | Re-run the symbols an IBKR stock download failed on, one timeframe at a time |
 | `tools/ibkr_progress.py` | One-line status of a running IBKR stock download, read from its progress snapshot |

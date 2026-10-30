@@ -537,7 +537,7 @@ uv run python tools/download_ibkr_stock_overnight.py --universe UNIV... [UNIV...
 
 | Flag | Meaning |
 |---|---|
-| `--universe` | `sp500` and/or `nasdaq100` — required |
+| `--universe` | `sp500`, `nasdaq100` and/or `russell2000` — required |
 | `--no-share` | Keep files under the requested universe even when an earlier one lists the symbol (default: a symbol in both `sp500` and `nasdaq100` is stored once, under `sp500`) |
 | `--symbols` | Explicit subset (must exist in the universe catalog) |
 | `--timeframes` | `1h 4h 8h 1d 1w`, default `1h 4h` |
@@ -628,7 +628,7 @@ Indices have no real trade volume. Exits non-zero if any symbol failed.
 
 ```
 uv run python tools/retry_ibkr_failed_sequentially.py
-    [--universe sp500|nasdaq100] [--timeframes TF ...] [--session all|overnight]
+    [--universe sp500|nasdaq100|russell2000] [--timeframes TF ...] [--session all|overnight]
     [--port P] [--since DATE] [--base-client-id N] [--sleep-seconds S]
     [--request-timeout S] [--max-chunk-retries N] [--dry-run]
 ```

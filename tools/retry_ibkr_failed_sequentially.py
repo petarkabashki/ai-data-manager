@@ -93,7 +93,7 @@ def run_retry(timeframe: str, symbols: list[str], args: argparse.Namespace, clie
 
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--universe", default="nasdaq100", choices=["sp500", "nasdaq100"],
+    p.add_argument("--universe", default="nasdaq100", choices=["sp500", "nasdaq100", "russell2000"],
                    help="Universe whose failures to retry (default: nasdaq100)")
     p.add_argument("--timeframes", nargs="+", default=["4h", "1h"],
                    choices=["1h", "4h", "8h", "1d", "1w"],

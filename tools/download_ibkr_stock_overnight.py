@@ -50,7 +50,7 @@ from utils.ibkr import (
     utc_now,
 )
 
-UNIVERSE_CHOICES = ["sp500", "nasdaq100"]
+UNIVERSE_CHOICES = ["sp500", "nasdaq100", "russell2000"]
 STOCK_PROVIDER = "IBKR"
 SESSION_CHOICES = ["all", "overnight"]
 
