@@ -41,13 +41,13 @@ def test_home_with_more_rows_still_drops(tmp_path, ohlcv):
 
 
 def test_rows_only_in_the_duplicate_are_merged_and_changed_values_counted(tmp_path, ohlcv):
-    src = _write(ohlcv(0, 4, HOUR, close=1.0), tmp_path / "nq" / "A-all-1h.parquet")
-    home = ohlcv(0, 3, HOUR, close=1.0)
-    home.loc[1, "close"] = 9.0
+    src = _write(ohlcv(0, 101, HOUR, close=1.0), tmp_path / "nq" / "A-all-1h.parquet")
+    home = ohlcv(0, 100, HOUR, close=1.0)
+    home.loc[1, "close"] = 9.0  # 1% of the shared bars: a revision, not a different price scale
     dst = _write(home, tmp_path / "sp" / "A-all-1h.parquet")
     plan = dd.plan_file(src, dst)
     assert plan.action == "merge"
-    assert plan.only_rows["timestamp"].tolist() == [3 * HOUR]
+    assert plan.only_rows["timestamp"].tolist() == [100 * HOUR]
     assert plan.differing == 1
 
 
