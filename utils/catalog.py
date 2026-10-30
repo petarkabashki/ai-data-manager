@@ -578,6 +578,30 @@ def stock_file_path(
     return DATA_ROOT / "stocks" / provider_dir / universe / symbol / fname
 
 
+#: A symbol listed by several stock universes is stored once, under the first of
+#: these that lists it. The later universes' catalogs point their nodes at that
+#: file, so nothing is downloaded or kept twice.
+STOCK_UNIVERSE_PRIORITY = ("sp500", "nasdaq100", "russell2000", "delisted_stocks")
+
+
+def stock_home_universe(symbol: str, universe: str, catalogs: dict[str, dict] | None = None) -> str:
+    """Universe whose directory holds `symbol`'s files for `universe`'s catalog.
+
+    The first universe in STOCK_UNIVERSE_PRIORITY, up to and including `universe`,
+    whose catalog lists the symbol; `universe` itself when none does, or when it
+    is not a ranked universe. `catalogs` caches loaded catalogs across calls.
+    """
+    if universe not in STOCK_UNIVERSE_PRIORITY:
+        return universe
+    cache = catalogs if catalogs is not None else {}
+    for candidate in STOCK_UNIVERSE_PRIORITY[: STOCK_UNIVERSE_PRIORITY.index(universe) + 1]:
+        if candidate not in cache:
+            cache[candidate] = load_stock_catalog(candidate)
+        if symbol in cache[candidate]:
+            return candidate
+    return universe
+
+
 def update_stock_timeframe_entry(
     catalog: dict,
     symbol: str,

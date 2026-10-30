@@ -80,6 +80,12 @@ directory level under the class:
   without it in the key, downloading `--session all` and then
   `--session overnight` leaves two parquet files and one catalog node. Build
   keys with `utils.catalog.provider_node_key()`, never by hand.
+- **A symbol in several stock universes is stored once.** Files live under the
+  first universe in `utils.catalog.STOCK_UNIVERSE_PRIORITY` that lists it
+  (`sp500`, then `nasdaq100`, …); the later universes' catalog nodes carry that
+  file's `file_path`. Resolve the directory with `stock_home_universe()`, never by
+  assuming the universe name — the IBKR stock tool does, and `--no-share` opts out.
+  YF is not covered: its copies can differ in adjustment (see the YF notes).
 - **Index catalogs** (`indexes.yaml`) use the same nested shape, for the same
   reason: YF owns every index's `1d`, and `download_ibkr_index.py` can request
   `1d` too. A pre-existing flat node is migrated to the nested shape on first

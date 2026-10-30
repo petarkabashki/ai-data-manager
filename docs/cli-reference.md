@@ -529,7 +529,7 @@ uv run python tools/download_ibkr_stock_overnight.py --universe UNIV... [UNIV...
     [--symbols SYM...] [--timeframes TF...] [--since DATE] [--full]
     [--host H] [--port P] [--client-id N] [--chunk-days N] [--overlap-days N]
     [--what-to-show TRADES|ADJUSTED_LAST] [--use-rth auto|always|never]
-    [--session all|overnight]
+    [--session all|overnight] [--no-share]
     [--sleep-seconds S] [--request-timeout S] [--max-chunk-retries N]
     [--limit N] [--resume-log PATH] [--progress-file PATH] [--dry-run]
 ```
@@ -537,6 +537,7 @@ uv run python tools/download_ibkr_stock_overnight.py --universe UNIV... [UNIV...
 | Flag | Meaning |
 |---|---|
 | `--universe` | `sp500` and/or `nasdaq100` — required |
+| `--no-share` | Keep files under the requested universe even when an earlier one lists the symbol (default: a symbol in both `sp500` and `nasdaq100` is stored once, under `sp500`) |
 | `--symbols` | Explicit subset (must exist in the universe catalog) |
 | `--timeframes` | `1h 4h 8h 1d 1w`, default `1h 4h` |
 | `--since` | Start date for new symbols / full refresh |

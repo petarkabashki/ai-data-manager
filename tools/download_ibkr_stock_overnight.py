@@ -32,6 +32,7 @@ from utils.catalog import (
     read_parquet_range,
     save_stock_catalog,
     stock_file_path,
+    stock_home_universe,
     update_stock_timeframe_entry,
 )
 from utils.calendars import UsEquityCalendar
@@ -192,6 +193,9 @@ def main() -> None:
     p.add_argument("--since", help="Start date for new symbols or full refreshes (YYYY-MM-DD)")
     p.add_argument("--full", action="store_true",
                    help="Ignore existing intraday files and rebuild from --since")
+    p.add_argument("--no-share", action="store_true",
+                   help="Keep files under the requested universe even when an earlier universe "
+                        "(sp500 before nasdaq100) already lists the symbol")
     p.add_argument("--host", default=IBKR_HOST, help="IBKR TWS/Gateway host (env: IBKR_HOST)")
     p.add_argument("--port", type=int, default=IBKR_PORT, help="IBKR TWS/Gateway port (env: IBKR_PORT)")
     p.add_argument("--client-id", type=int, default=IBKR_CLIENT_ID, help="IBKR API client id (env: IBKR_CLIENT_ID)")
@@ -253,9 +257,10 @@ def main() -> None:
 
     with IbkrHistoricalClient(args.host, args.port, args.client_id, timeout=args.request_timeout) as client:
         contract_cache: dict[str, object] = {}
+        catalogs: dict[str, dict] = {}
 
         for universe in args.universe:
-            catalog = load_stock_catalog(universe)
+            catalog = catalogs[universe] = load_stock_catalog(universe)
             if not catalog:
                 print(f"{universe}: catalog is empty or missing")
                 continue
@@ -269,6 +274,12 @@ def main() -> None:
                     print(f"  {symbol}: skipped (not in {universe} catalog)")
                     continue
 
+                # A symbol in several universes has one set of files, under the
+                # first universe that lists it; both catalogs point at it.
+                home = universe if args.no_share else stock_home_universe(symbol, universe, catalogs)
+                if home != universe:
+                    print(f"  {symbol}: files shared with {home}")
+
                 try:
                     contract = contract_cache.get(symbol)
                     if contract is None:
@@ -276,7 +287,7 @@ def main() -> None:
                         contract_cache[symbol] = contract
 
                     for timeframe in args.timeframes:
-                        dst = stock_file_path(STOCK_PROVIDER, universe, symbol, timeframe, args.session)
+                        dst = stock_file_path(STOCK_PROVIDER, home, symbol, timeframe, args.session)
                         ranges = _plan_ranges(
                             dst,
                             timeframe,
@@ -408,6 +419,18 @@ def main() -> None:
                             session=args.session,
                             what_to_show=args.what_to_show,
                         )
+                        if home != universe:
+                            update_stock_timeframe_entry(
+                                catalogs[home],
+                                symbol=symbol,
+                                timeframe=timeframe,
+                                provider=STOCK_PROVIDER,
+                                file_path=dst,
+                                start_date=start_date,
+                                end_date=end_date,
+                                session=args.session,
+                                what_to_show=args.what_to_show,
+                            )
                         overall_updates += 1
                         completed_items += 1
                         progress_state.update({
@@ -455,6 +478,8 @@ def main() -> None:
 
                 if not args.dry_run:
                     save_stock_catalog(universe, catalog)
+                    if home != universe:
+                        save_stock_catalog(home, catalogs[home])
 
     progress_state.update({
         "status": "complete",
