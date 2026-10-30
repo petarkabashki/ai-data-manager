@@ -1,0 +1,20 @@
+# IB Gateway for the IBKR download tools (headless: IBC + Xvfb bundled in the image).
+# Credentials come from ib-gateway.env (chmod 600, never committed); see ib-gateway.env.example.
+services:
+  ib-gateway:
+    image: ghcr.io/gnzsnz/ib-gateway:stable
+    container_name: ib-gateway
+    restart: unless-stopped
+    env_file: ib-gateway.env
+    environment:
+      TRADING_MODE: ${TRADING_MODE:-live}
+      READ_ONLY_API: "yes"              # data only; the API can never place orders
+      TIME_ZONE: Etc/UTC
+      AUTO_RESTART_TIME: "11:45 PM"     # outside the 00:00-07:00 UTC quiet window
+      TWOFA_TIMEOUT_ACTION: restart     # re-prompt instead of idling after a missed approval
+      JAVA_HEAP_SIZE: "768"
+    ports:
+      # Loopback only. 4003 is the container's live-mode API relay, 4004 paper.
+      - "127.0.0.1:4001:4003"
+      - "127.0.0.1:4002:4004"
+    mem_limit: 1536m

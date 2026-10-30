@@ -30,3 +30,6 @@ Thumbs.db
 
 # PDM server config — machine-specific; pdm.example.yaml is the template
 pdm.yaml
+
+# IB Gateway credentials (deploy/ib-gateway)
+deploy/ib-gateway/ib-gateway.env
