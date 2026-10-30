@@ -710,7 +710,9 @@ the tool compares it with the same file in the symbol's home universe
 (`stock_home_universe()`): **move** when the home has none, **merge** the rows
 the home lacks, or **drop** when the home already has everything. Where both
 carry a row for one timestamp with different values the home's row is kept and the
-count is reported. Order per symbol: back up, fold, verify the home holds every
+count is reported. A file whose two copies sit on **different price scales** (more
+than 5% of shared bars differ in `close` by over 0.5% — a split or spin-off adjusted
+in only one) is a **conflict**: both copies are left untouched and listed. Order per symbol: back up, fold, verify the home holds every
 timestamp, repoint the catalog nodes, then delete. Run it while no IBKR download is
 writing.
 

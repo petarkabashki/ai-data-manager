@@ -16,7 +16,9 @@ symbol's home universe:
   drop   the home already has every row     -> the file is deleted
 
 Where both copies carry a row for the same timestamp and the values differ, the
-home's row is kept and the count is reported. Every file is copied under
+home's row is kept and the count is reported. If the two copies sit on different
+price scales (a split or spin-off adjusted in only one) the file is a conflict:
+both copies are left untouched and reported for a human to resolve. Every file is copied under
 `--backup-dir` first, and nothing is deleted until the home is verified to hold
 every timestamp. Run it while no IBKR download is writing.
 """
@@ -49,16 +51,21 @@ from utils.config import TMP_ROOT, relative_to_repo
 
 PROVIDER = "IBKR"
 VALUE_COLUMNS = ["open", "high", "low", "close", "volume"]
+#: Two copies are on different price scales when more than LEVEL_CONFLICT_SHARE of the
+#: shared bars differ in close by more than LEVEL_TOLERANCE (relative).
+LEVEL_TOLERANCE = 0.005
+LEVEL_CONFLICT_SHARE = 0.05
 
 
 @dataclass
 class FilePlan:
     src: Path
     dst: Path
-    action: str  # move | merge | drop
+    action: str  # move | merge | drop | conflict (left untouched)
     only_rows: pd.DataFrame | None = None
     differing: int = 0
     bytes: int = 0
+    median_ratio: float | None = None
 
 
 @dataclass
@@ -67,7 +74,7 @@ class Totals:
     bytes: int = 0
     rows_merged: int = 0
     differing: int = 0
-    by_action: dict = field(default_factory=lambda: {"move": 0, "merge": 0, "drop": 0})
+    by_action: dict = field(default_factory=lambda: {"move": 0, "merge": 0, "drop": 0, "conflict": 0})
 
 
 def _read(path: Path) -> pd.DataFrame:
@@ -87,6 +94,12 @@ def plan_file(src: Path, dst: Path) -> FilePlan:
         same &= np.isclose(common[col].to_numpy(float), home.loc[common.index, col].to_numpy(float),
                            rtol=1e-6, equal_nan=True)
     differing = int((~same).sum())
+    # Same bars at a different price level means a corporate-action adjustment reached
+    # only one copy (a split, a spin-off). Folding would splice two price scales.
+    ratio = common["close"].to_numpy(float) / home.loc[common.index, "close"].to_numpy(float)
+    if len(ratio) and np.mean(np.abs(ratio - 1) > LEVEL_TOLERANCE) > LEVEL_CONFLICT_SHARE:
+        return FilePlan(src, dst, "conflict", differing=differing, bytes=size,
+                        median_ratio=float(np.nanmedian(ratio)))
     if len(extra):
         return FilePlan(src, dst, "merge", only_rows=extra, differing=differing, bytes=size)
     return FilePlan(src, dst, "drop", differing=differing, bytes=size)
@@ -163,7 +176,7 @@ def main() -> int:
     if args.symbols:
         symbols = [s for s in symbols if s in set(args.symbols)]
 
-    totals, errors, shared = Totals(), [], 0
+    totals, errors, shared, conflicts = Totals(), [], 0, []
     for symbol in symbols:
         home = stock_home_universe(symbol, args.universe, catalogs)
         if home == args.universe:
@@ -178,6 +191,11 @@ def main() -> int:
                 totals.files += 1
                 totals.bytes += plan.bytes
                 totals.by_action[plan.action] += 1
+                if plan.action == "conflict":
+                    conflicts.append((symbol, src.name, plan.median_ratio))
+                    print(f"  {symbol}/{src.name}: CONFLICT, price level differs (median ratio "
+                          f"{plan.median_ratio:.3f}); both copies left untouched")
+                    continue
                 totals.differing += plan.differing
                 totals.rows_merged += len(plan.only_rows) if plan.only_rows is not None else 0
                 if args.apply:
@@ -204,6 +222,9 @@ def main() -> int:
           f"rows differing from home: {totals.differing}")
     if args.apply:
         print(f"  originals backed up under {backup_root}")
+    if conflicts:
+        print(f"  {len(conflicts)} files left untouched because the copies disagree on price level: "
+              f"{sorted({c[0] for c in conflicts})}")
     for symbol, name, message in errors[:20]:
         print(f"  - {symbol}/{name}: {message}")
     return 1 if errors else 0

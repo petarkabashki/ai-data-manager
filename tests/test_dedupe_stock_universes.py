@@ -51,6 +51,21 @@ def test_rows_only_in_the_duplicate_are_merged_and_changed_values_counted(tmp_pa
     assert plan.differing == 1
 
 
+def test_copies_on_different_price_scales_are_a_conflict_not_folded(tmp_path, ohlcv):
+    src = _write(ohlcv(0, 6, HOUR, close=50.0), tmp_path / "nq" / "A-all-1h.parquet")
+    dst = _write(ohlcv(0, 6, HOUR, close=12.5), tmp_path / "sp" / "A-all-1h.parquet")
+    plan = dd.plan_file(src, dst)
+    assert plan.action == "conflict" and abs(plan.median_ratio - 4.0) < 1e-9
+
+
+def test_a_few_revised_volumes_do_not_make_a_conflict(tmp_path, ohlcv):
+    src = _write(ohlcv(0, 100, HOUR), tmp_path / "nq" / "A-all-1h.parquet")
+    home = ohlcv(0, 100, HOUR)
+    home.loc[:2, "close"] = 1.5  # 3% of the shared bars, under the 5% share
+    dst = _write(home, tmp_path / "sp" / "A-all-1h.parquet")
+    assert dd.plan_file(src, dst).action == "drop"
+
+
 def test_fold_backs_up_merges_verifies_and_removes(tmp_path, monkeypatch, ohlcv):
     monkeypatch.setattr(dd, "DATA_ROOT", tmp_path / "data")
     src = _write(ohlcv(0, 4, HOUR), tmp_path / "data" / "nq" / "A" / "A-all-1h.parquet")
