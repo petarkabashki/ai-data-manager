@@ -23,6 +23,7 @@ first when one is offered.
 | [`download_ibkr_stock_overnight.py`](#download_ibkr_stock_overnightpy) | write | Download IBKR US-stock bars for sp500/nasdaq100 |
 | [`retry_ibkr_failed_sequentially.py`](#retry_ibkr_failed_sequentiallypy) | write | Re-run failed IBKR symbols one connection at a time |
 | [`ibkr_progress.py`](#ibkr_progresspy) | read | One-line status of a running IBKR stock download |
+| [`dedupe_stock_universes.py`](#dedupe_stock_universespy) | write | Fold duplicate IBKR files of a later stock universe into the shared copy |
 | [`pdm_server.py`](#pdm_serverpy) | server | Serve price-data over ZeroMQ; run jobs; broadcast bars |
 | [`pdm_client.py`](#pdm_clientpy) | client | Query/fetch/submit/watch against a PDM server |
 | [`migrate_price_data_layout.py`](#migrate_price_data_layoutpy) | write (one-off) | 2026-07 provider-first layout migration, phases A–G |
@@ -681,6 +682,37 @@ timeframe result; its stdout is block-buffered when redirected, so the snapshot
 is the reliable way to follow a long run. `planned_items` grows as the downloader
 plans, so the percentage runs high early in a run. Exit code is 1 when failures
 are recorded or the run looks stalled, 2 when there is no snapshot.
+
+---
+
+## `dedupe_stock_universes.py`
+
+```
+uv run python tools/dedupe_stock_universes.py
+    [--universe nasdaq100|russell2000|delisted_stocks] [--symbols SYM...]
+    [--apply] [--backup-dir DIR]
+```
+
+| Flag | Meaning |
+|---|---|
+| `--universe` | Later universe to fold into the earlier one that lists the symbol (default `nasdaq100`) |
+| `--symbols` | Limit to these symbols |
+| `--apply` | Make the changes; without it the tool only prints the plan |
+| `--backup-dir` | Where originals are copied first (default `TMP_ROOT/dedupe_<universe>_<UTC stamp>`) |
+
+```bash
+uv run python tools/dedupe_stock_universes.py                       # plan
+uv run python tools/dedupe_stock_universes.py --apply --backup-dir /path/to/backup
+```
+
+Applies to IBKR files only. For each file under `stocks/ibkr/<universe>/<SYMBOL>/`
+the tool compares it with the same file in the symbol's home universe
+(`stock_home_universe()`): **move** when the home has none, **merge** the rows
+the home lacks, or **drop** when the home already has everything. Where both
+carry a row for one timestamp with different values the home's row is kept and the
+count is reported. Order per symbol: back up, fold, verify the home holds every
+timestamp, repoint the catalog nodes, then delete. Run it while no IBKR download is
+writing.
 
 ---
 
