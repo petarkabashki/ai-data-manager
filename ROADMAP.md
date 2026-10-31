@@ -603,6 +603,17 @@ changed files in 4.7 s: all new series, so all `full`, 92 MB. Restoring base
 schedule runs at 07:15 UTC. The hub timer is off, at the owner's word, until
 E16 is done. The scratch base stays for the 7-night test.
 
+**Four nights in (2026-10-31).** The 07:15 exports ran 10-28 to 10-31, now
+mostly appends (10-31: 49,012 append, 421 full). They took 374–650 MB a night,
+though, because each append was its own parquet: ~4 KB of footer for ~7 rows.
+Restore was slow too: one core, every delta rewriting every file it touched
+(base + 6 deltas: 25+ min). d79b8f5 packs the new rows into one Arrow IPC file
+per column layout (format 2), and restores each file once through all its
+deltas, across worker processes. On a hard-linked copy of live data, 18,182
+appends packed into 5.9 MB. Base + 7 deltas (both formats) restored 55,863
+touched files in 240 s with 4 workers, and all 77,162 files matched the
+manifest. Format 2 starts with the 11-01 export.
+
 **Done when.** A restore of base + 7 deltas into a scratch tree matches the
 live tree row for row (restored files are rewritten, so bytes differ), and
 the hub keeps 30 days of restore points in less disk than `KEEP=3` uses
