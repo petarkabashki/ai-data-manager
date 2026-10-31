@@ -285,8 +285,9 @@ host's deltas:
 - `PDM_BACKUP_KEEP` counts snapshots (bases), and `hub-prune` drops the
   pulled deltas that no remaining base needs. With `BASE_EVERY=30` and
   `KEEP=2`: two bases (~40 GB the first, then whatever changed in a month),
-  ~10 MB of deltas a night, and a restore point for every night of the last
-  30–60 days.
+  tens of MB of deltas a night (2026-10-31: ~6 MB of packed new rows for
+  18k appends, a ~5 MB index, the rest files rewritten whole), and a restore
+  point for every night of the last 30–60 days.
 
 **Restoring.** A snapshot is a plain copy of `price-data`, but one taken
 while a download was merging can hold files whose catalog nodes weren't

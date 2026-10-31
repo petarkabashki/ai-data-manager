@@ -122,9 +122,42 @@ def test_new_bars_and_a_revised_last_bar_export_as_an_append(bd, tmp_path):
     assert (doc["append"], doc["full"], doc["deleted"]) == (1, 0, 0)
     e = entry(bd, doc["stamp"], BTC)
     assert e["kind"] == "append" and e["keep_until"] == 198 * H and e["tail_rows"] == 4
-    assert len(read(bd.root / ".deltas" / doc["stamp"] / "data" / BTC)) == 4
+    assert (e["tails"], e["tail_offset"]) == ("tails-0.arrow", 0)
+    assert not (bd.root / ".deltas" / doc["stamp"] / "data").exists()
     pull(bd)
     restore_matches_live(bd, tmp_path)
+
+
+def test_tails_of_one_layout_pack_into_one_file_and_format_1_still_restores(bd, tmp_path):
+    seed(bd)
+    export(bd, 0)
+    take_base(bd, "2026-10-01", 0)
+    put(bd, BTC, bars(210))
+    put(bd, ETH, bars(103))
+    doc = export(bd, 1)
+    ddir = bd.root / ".deltas" / doc["stamp"]
+    ents = {e["path"]: e for e in index(bd, doc["stamp"])["entries"]}
+    assert {e["tails"] for e in ents.values()} == {"tails-0.arrow"}
+    assert ents[BTC]["tail_rows"] == 10 and ents[ETH]["tail_rows"] == 3
+    assert sorted(e["tail_offset"] for e in ents.values()) in ([0, 3], [0, 10])
+    assert sorted(p.name for p in ddir.iterdir()) == ["index.json", "paths.txt.gz",
+                                                      "tails-0.arrow"]
+    pull(bd)
+    restore_matches_live(bd, tmp_path, name="packed")
+
+    # rewrite the delta as format 1 wrote it: one parquet of new rows per file
+    packed = bd._tails(str(ddir / "tails-0.arrow"))
+    for rel, e in ents.items():
+        (ddir / "data" / rel).parent.mkdir(parents=True, exist_ok=True)
+        pq.write_table(packed.slice(e.pop("tail_offset"), e["tail_rows"]), ddir / "data" / rel)
+        del e["tails"]
+    (ddir / "tails-0.arrow").unlink()
+    idx = index(bd, doc["stamp"])
+    idx.update(format=1, entries=sorted(ents.values(), key=lambda e: e["path"]))
+    (ddir / "index.json").write_text(json.dumps(idx))
+    shutil.rmtree(bd.hub / "deltas")
+    pull(bd)
+    restore_matches_live(bd, tmp_path, name="format1")
 
 
 def test_changed_history_a_new_file_a_deletion_and_a_catalog_go_whole(bd, tmp_path):
@@ -179,6 +212,27 @@ def test_a_week_of_nights_restores_to_any_of_them(bd, tmp_path):
     doc, rc = bd.restore(bd.hub, tmp_path / "day4", until=stamps[3])
     assert rc == 0 and doc["deltas"][-1] == stamps[3]
     assert {rel: bd.hash_file(tmp_path / "day4" / rel) for rel in bd.scan(tmp_path / "day4")} == mid
+
+
+def test_a_file_chains_through_new_append_delete_and_recreate_in_worker_processes(bd, tmp_path):
+    seed(bd)
+    export(bd, 0)
+    take_base(bd, "2026-10-01", 0)
+    sol = "cryptos/binance/SOL_USDT/SOL_USDT-1h.parquet"
+    put(bd, sol, bars(50))                            # new: full
+    export(bd, 1)
+    put(bd, sol, bars(60))                            # append onto the delta's full copy
+    (bd.root / ETH).unlink()
+    export(bd, 2)
+    put(bd, ETH, bars(30))                            # back again: full
+    export(bd, 3)
+    put(bd, ETH, bars(31))
+    put(bd, sol, bars(61))
+    doc = export(bd, 4)
+    assert doc["append"] == 2
+    pull(bd)
+    doc = restore_matches_live(bd, tmp_path, workers=2)
+    assert doc["touched"] == 2
 
 
 def test_a_base_taken_between_exports_restores_correctly(bd, tmp_path):

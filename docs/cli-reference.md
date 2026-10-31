@@ -362,7 +362,7 @@ provider's downloader. Exits 1 if any file failed.
 
 ```
 uv run python tools/backup_delta.py export [--root DIR] [--workers N] [--keep-days 14] [--reinit] [--json]
-uv run python tools/backup_delta.py restore --backup-dir DIR --dest OUT [--until STAMP] [--base NAME] [--json]
+uv run python tools/backup_delta.py restore --backup-dir DIR --dest OUT [--until STAMP] [--base NAME] [--workers N] [--json]
 uv run python tools/backup_delta.py hub-plan --backup-dir DIR --base-every DAYS [--json]
 uv run python tools/backup_delta.py hub-prune --backup-dir DIR [--json]
 ```
@@ -382,12 +382,15 @@ uv run python tools/backup_delta.py restore --backup-dir ~/backups/pdm-price-dat
 | `restore --dest` | An empty directory outside the live data root |
 | `restore --until` | Newest delta stamp to apply (`YYYYmmddTHHMMSSZ`); default all |
 | `restore --base` | Base snapshot to start from; default the newest begun before `--until` |
+| `restore --workers` | Processes rewriting files (default: half the CPUs, at most 4). Each file goes through all its deltas in memory and is written once |
 | `hub-plan --base-every` | Print `base` if a full snapshot is due (none, too old, or the deltas don't chain), else `delta` |
 | `--json` | One JSON document on stdout. export: stamp, parent, init, scanned, read, append, full, deleted, tail_rows, bytes_written, pruned[], failures[], seconds. restore: base, base_started, deltas[], files, touched, problems[], seconds |
 
 A parquet whose older rows are intact exports only its new rows (`append`).
 The cut point is the first row that differs, found from per-row hashes of
-each file's last 64 rows, so a revised last bar is fine. Anything else that
+each file's last 64 rows, so a revised last bar is fine. The new rows of all
+files are packed into one Arrow IPC file per column layout (`tails-<n>.arrow`)
+rather than a parquet each, whose footer outweighed its few rows. Anything else that
 changed (history rewritten, no strictly increasing int64 `timestamp`, a
 catalog, a new file) is copied whole, and deletions are listed. The first
 export records the manifest only. `restore` hard-links the base into

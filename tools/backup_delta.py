@@ -18,7 +18,9 @@ what changed to `.deltas/<stamp>/`:
   last few bars may have been revised: a download restarts a day before the
   last bar. So the cut is the first row that differs, found from per-row
   hashes of each file's last 64 rows, and the delta records the `timestamp`
-  of the last row kept (`keep_until`), not a row count;
+  of the last row kept (`keep_until`), not a row count. The new rows of all
+  files are packed into one Arrow IPC file per column layout
+  (`tails-<n>.arrow`), the entry holding the file and row offset;
 - a parquet whose older rows changed (a split re-download, a stamp repair),
   or that has no strictly increasing int64 `timestamp`, is written whole
   (`full`), as is a new file. Other files (catalogs, csv) are copied whole
@@ -37,8 +39,9 @@ snapshot into `--dest`, then applies, in order, every delta from two days
 before the base began, up to `--until`. An append keeps the rows up to
 `keep_until` and adds the delta's rows, so a base taken between two exports
 restores correctly, and so does replaying a delta the base already holds.
-Each touched file is then checked against the row hash its last delta
-recorded, and the file list against `paths.txt.gz`. Files are rewritten with
+Each touched file goes through all its deltas in memory and is written once,
+across `--workers` processes, then checked against the row hash its last
+delta recorded; the file list is checked against `paths.txt.gz`. Files are rewritten with
 pyarrow, through a temp file and a rename, keeping each file's schema and
 metadata. The base is never modified.
 
@@ -60,6 +63,7 @@ import fcntl
 import gzip
 import hashlib
 import json
+import multiprocessing
 import os
 import shutil
 import sys
@@ -86,7 +90,10 @@ STAMP_FMT = "%Y%m%dT%H%M%SZ"
 TAIL_ROWS = 64
 #: a restore replays deltas from this long before its base began
 REPLAY_MARGIN = timedelta(days=2)
-FORMAT = 1
+#: rows per record batch in a packed tails file
+TAIL_BATCH = 65_536
+#: 2: appended rows packed per column layout (1: one parquet per file; still restored)
+FORMAT = 2
 
 MANIFEST_SCHEMA = pa.schema([
     ("path", pa.string()), ("size", pa.int64()), ("mtime_ns", pa.int64()),
@@ -254,13 +261,12 @@ def _diff_table(rel, size, mtime_ns, table, old, out_data: Path) -> dict:
     delta = {"path": rel, "rows": n, "hash_kind": "rows", "hash": h.hex()}
     if common and n - common <= max(n // 2, TAIL_ROWS):
         ts = table.column("timestamp").to_numpy()
-        tail = table.slice(common)
-        delta.update(kind="append", keep_until=int(ts[common - 1]), tail_rows=tail.num_rows)
-        written = 0
-        if tail.num_rows:
-            _write_table(tail, out_data / rel)
-            written = (out_data / rel).stat().st_size
-        return {"entry": entry, "delta": delta, "bytes": written}
+        delta.update(kind="append", keep_until=int(ts[common - 1]), tail_rows=n - common)
+        r = {"entry": entry, "delta": delta}
+        if n > common:
+            # take() copies the rows, so only they are pickled back, not the file
+            r["tail"] = table.take(np.arange(common, n)).replace_schema_metadata(None)
+        return r
     _write_table(table, out_data / rel)
     delta["kind"] = "full"
     return {"entry": entry, "delta": delta, "bytes": (out_data / rel).stat().st_size}
@@ -277,6 +283,67 @@ class _Inline:
 
     def map(self, fn, items, chunksize=1):
         return map(fn, items)
+
+
+class _TailPacker:
+    """Appended rows, packed into one Arrow IPC file per column layout.
+
+    A tail is a few rows: as its own parquet it was ~4 KB of footer for
+    ~100 bytes of data, 49,000 of them a night. Packed, the delta entry keeps
+    the file name and row offset, and a restore memory-maps the file.
+    """
+
+    def __init__(self, out: Path):
+        self.out = out
+        self.groups: dict[bytes, dict] = {}
+        self.bytes = 0
+
+    def add(self, tail: pa.Table) -> tuple[str, int]:
+        key = tail.schema.serialize().to_pybytes()
+        g = self.groups.get(key)
+        if g is None:
+            name = f"tails-{len(self.groups)}.arrow"
+            g = self.groups[key] = {
+                "name": name, "rows": 0, "pending": [], "pending_rows": 0,
+                "writer": pa.ipc.new_file(str(self.out / name), tail.schema)}
+        at = g["rows"]
+        g["rows"] += tail.num_rows
+        g["pending"].append(tail)
+        g["pending_rows"] += tail.num_rows
+        if g["pending_rows"] >= TAIL_BATCH:
+            self._flush(g)
+        return g["name"], at
+
+    def _flush(self, g: dict) -> None:
+        if g["pending"]:
+            g["writer"].write_table(pa.concat_tables(g["pending"]).combine_chunks())
+            g["pending"], g["pending_rows"] = [], 0
+
+    def close(self) -> None:
+        for g in self.groups.values():
+            self._flush(g)
+            g["writer"].close()
+            self.bytes += (self.out / g["name"]).stat().st_size
+
+
+_TAILS: dict[str, pa.Table] = {}
+
+
+def _tails(path: str) -> pa.Table:
+    """A packed tails file, memory-mapped once per process."""
+    t = _TAILS.get(path)
+    if t is None:
+        t = _TAILS[path] = pa.ipc.open_file(pa.memory_map(path)).read_all()
+    return t
+
+
+def _pool(workers: int):
+    """Worker processes, started by a fork server: pyarrow's threads make a
+    plain fork of this process unsafe."""
+    if workers <= 1:
+        return _Inline()
+    return ProcessPoolExecutor(max_workers=workers,
+                               mp_context=multiprocessing.get_context("forkserver"))
 
 
 def load_manifest(path: Path) -> tuple[str | None, dict[str, dict]]:
@@ -333,7 +400,8 @@ def export(root: Path, workers: int, keep_days: int, reinit: bool = False,
     log(f"export {stamp}: {len(files)} files, {len(jobs)} to read"
         + (" (first export: manifest only)" if init else f", parent {parent}"))
     nbytes = 0
-    with ProcessPoolExecutor(max_workers=workers) if workers > 1 else _Inline() as pool:
+    packer = _TailPacker(out)
+    with _pool(workers) as pool:
         for i, r in enumerate(pool.map(_process, jobs, chunksize=32), 1):
             if "gone" in r:
                 files.pop(r["gone"], None)
@@ -344,10 +412,15 @@ def export(root: Path, workers: int, keep_days: int, reinit: bool = False,
             else:
                 entries[r["entry"]["path"]] = r["entry"]
                 if not init and "delta" in r:
+                    if "tail" in r:
+                        name, at = packer.add(r["tail"])
+                        r["delta"].update(tails=name, tail_offset=at)
                     deltas.append(r["delta"])
                     nbytes += r.get("bytes", 0)
             if i % 5000 == 0:
                 log(f"  {i}/{len(jobs)} read")
+    packer.close()
+    nbytes += packer.bytes
     if not init:
         for rel in sorted(set(manifest) - set(entries)):
             deltas.append({"path": rel, "kind": "deleted"})
@@ -482,40 +555,59 @@ def _link_tree(src: Path, dst: Path) -> int:
     return n
 
 
-def apply_delta(dest: Path, delta: dict) -> dict[str, dict]:
-    """Apply one delta to the tree at dest; returns path → entry for what it touched."""
-    touched = {}
-    data = delta["dir"] / "data"
-    for e in delta["entries"]:
-        target = dest / e["path"]
+def _restore_file(job: tuple) -> dict | None:
+    """Bring one file through its deltas, in order; a problem dict, or None.
+
+    The file is read once, spliced in memory and written once, whatever the
+    number of deltas: a month of appends costs one rewrite, not thirty.
+    """
+    dest, rel, ops = job
+    target = Path(dest) / rel
+    cur: tuple = ("file", target) if target.exists() else ("gone",)
+    for ddir, stamp, e in ops:
+        src = Path(ddir) / "data" / rel
         if e["kind"] == "deleted":
-            target.unlink(missing_ok=True)
+            cur = ("gone",)
         elif e["kind"] == "full":
-            src = data / e["path"]
-            target.parent.mkdir(parents=True, exist_ok=True)
-            tmp = target.with_name(target.name + ".tmp")
-            shutil.copyfile(src, tmp)
-            tmp.replace(target)
+            cur = ("file", src)
         elif e["kind"] == "append":
-            if not target.exists():
-                raise BackupError(f"{e['path']}: delta {delta['stamp']} appends to a file "
+            if cur[0] == "gone":
+                raise BackupError(f"{rel}: delta {stamp} appends to a file "
                                   "the restore does not have")
-            table = pq.read_table(target)
+            table = pq.read_table(cur[1]) if cur[0] == "file" else cur[1]
             ts = table.column("timestamp").to_numpy()
             keep = int(np.searchsorted(ts, e["keep_until"], side="right"))
             parts = [table.slice(0, keep)]
             if e.get("tail_rows"):
-                tail = pq.read_table(data / e["path"])
-                parts.append(tail.cast(table.schema) if tail.schema != table.schema else tail)
-            _write_table(pa.concat_tables(parts) if len(parts) > 1 else parts[0], target)
+                if "tails" in e:                      # format 2: packed
+                    tail = _tails(str(Path(ddir) / e["tails"])).slice(
+                        e["tail_offset"], e["tail_rows"])
+                else:
+                    tail = pq.read_table(src)
+                parts.append(tail.cast(table.schema))
+            cur = ("table", pa.concat_tables(parts) if len(parts) > 1 else parts[0])
         else:
-            raise BackupError(f"unknown delta kind {e['kind']!r} in {delta['stamp']}")
-        touched[e["path"]] = e
-    return touched
+            raise BackupError(f"unknown delta kind {e['kind']!r} in {stamp}")
+
+    if cur[0] == "gone":
+        target.unlink(missing_ok=True)
+        return None
+    if cur[0] == "table":
+        _write_table(cur[1], target)
+    elif cur[1] != target:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        tmp = target.with_name(target.name + ".tmp")
+        shutil.copyfile(cur[1], tmp)
+        tmp.replace(target)
+    last = ops[-1][2]
+    kind, h = hash_file(target)
+    if kind != last["hash_kind"] or h.hex() != last["hash"]:
+        return {"path": rel, "issue": "hash differs from the delta's"}
+    return None
 
 
 def restore(backup_dir: Path, dest: Path, until: str | None = None,
-            base: str | None = None) -> tuple[dict, int]:
+            base: str | None = None, workers: int = 1) -> tuple[dict, int]:
     t0 = time.monotonic()
     backup_dir, dest = backup_dir.resolve(), dest.resolve()
     if dest.is_relative_to(DATA_ROOT.resolve()):
@@ -538,17 +630,14 @@ def restore(backup_dir: Path, dest: Path, until: str | None = None,
     log(f"restore: base {bdir.name} (began {start.strftime(STAMP_FMT)}), "
         f"{len(chosen)} deltas" + (f" to {chosen[-1]['stamp']}" if chosen else ""))
     n = _link_tree(bdir, dest)
-    final: dict[str, dict] = {}
+    _TAILS.clear()
+    chains: dict[str, list] = {}
     for d in chosen:
-        final.update(apply_delta(dest, d))
-
-    problems = []
-    for rel, e in sorted(final.items()):
-        if e["kind"] == "deleted":
-            continue
-        kind, h = hash_file(dest / rel)
-        if kind != e["hash_kind"] or h.hex() != e["hash"]:
-            problems.append({"path": rel, "issue": "hash differs from the delta's"})
+        for e in d["entries"]:
+            chains.setdefault(e["path"], []).append((str(d["dir"]), d["stamp"], e))
+    jobs = [(str(dest), rel, ops) for rel, ops in sorted(chains.items())]
+    with _pool(workers) as pool:
+        problems = [p for p in pool.map(_restore_file, jobs, chunksize=64) if p]
     if chosen:
         with gzip.open(chosen[-1]["dir"] / "paths.txt.gz", "rt") as f:
             want = {line.rstrip("\n") for line in f if line.strip()}
@@ -558,9 +647,9 @@ def restore(backup_dir: Path, dest: Path, until: str | None = None,
                      for p in sorted(have - want)]
     doc = {"base": bdir.name, "base_started": start.strftime(STAMP_FMT),
            "deltas": [d["stamp"] for d in chosen], "files": n,
-           "touched": len(final), "problems": problems,
+           "touched": len(chains), "problems": problems,
            "seconds": round(time.monotonic() - t0, 1)}
-    log(f"restore: {n} files from the base, {len(final)} touched by deltas, "
+    log(f"restore: {n} files from the base, {len(chains)} touched by deltas, "
         f"{len(problems)} problems, {doc['seconds']}s")
     return doc, 1 if problems else 0
 
@@ -583,6 +672,7 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--dest", type=Path, required=True)
     r.add_argument("--until", help="newest delta stamp to apply (default: all)")
     r.add_argument("--base", help="base snapshot name (default: newest before --until)")
+    r.add_argument("--workers", type=int, default=max(1, min(4, (os.cpu_count() or 2) // 2)))
     hp = sub.add_parser("hub-plan", help="print `base` or `delta` for tonight's run")
     hp.add_argument("--backup-dir", type=Path, required=True)
     hp.add_argument("--base-every", type=int, required=True)
@@ -596,7 +686,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.cmd == "export":
             doc, rc = export(args.root, args.workers, args.keep_days, args.reinit)
         elif args.cmd == "restore":
-            doc, rc = restore(args.backup_dir, args.dest, args.until, args.base)
+            doc, rc = restore(args.backup_dir, args.dest, args.until, args.base, args.workers)
         elif args.cmd == "hub-plan":
             if args.base_every < 1:
                 raise BackupError("--base-every must be at least 1")
