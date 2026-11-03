@@ -564,6 +564,28 @@ def save_stock_catalog(universe: str, data: dict) -> None:
     _dump_yaml(stock_catalog_path(universe), data)
 
 
+def save_stock_symbol(universe: str, symbol: str, node: dict) -> None:
+    """Write one symbol's node into the universe catalog, safe for parallel writers.
+
+    `save_stock_catalog` overwrites the whole file from the caller's in-memory
+    copy, so two downloaders working different symbols would silently drop each
+    other's entries. This takes an exclusive lock, re-reads the file, replaces
+    only `symbol`, and writes back.
+    """
+    import fcntl
+
+    path = stock_catalog_path(universe)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path.with_name(path.name + ".lock"), "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            disk = load_stock_catalog(universe)
+            disk[symbol] = node
+            _dump_yaml(path, disk)
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+
+
 def stock_file_path(
     provider: str,
     universe: str,

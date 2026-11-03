@@ -131,6 +131,10 @@ class IbkrHistoricalClient:
             def historicalDataEnd(self, reqId: int, start: str, end: str) -> None:  # noqa: N802
                 self._outer._set_event(reqId)
 
+            def headTimestamp(self, reqId: int, headTimestamp: str) -> None:  # noqa: N802
+                self._outer._head_timestamps[reqId] = headTimestamp
+                self._outer._set_event(reqId)
+
         self.host = host
         self.port = port
         self.client_id = client_id
@@ -141,6 +145,7 @@ class IbkrHistoricalClient:
         self._errors: dict[int, list[tuple[int, str]]] = defaultdict(list)
         self._contract_details: dict[int, list[Any]] = defaultdict(list)
         self._historical_bars: dict[int, list[Any]] = defaultdict(list)
+        self._head_timestamps: dict[int, str] = {}
         self._next_valid_id = 1
         self._counter = count(10_000)
         self._thread: threading.Thread | None = None
@@ -262,6 +267,31 @@ class IbkrHistoricalClient:
         if not details:
             raise RuntimeError(f"Could not resolve IBKR index contract for {symbol} ({ibkr_symbol}/{exchange})")
         return details[0].contract
+
+    def head_timestamp(
+        self, contract: Any, what_to_show: str = "TRADES", use_rth: bool = False
+    ) -> datetime | None:
+        """Earliest bar IBKR holds for the contract, or None if it can't say.
+
+        Lets the downloader skip windows before a symbol existed instead of
+        paying a paced, empty request for each of them.
+        """
+        req_id = self._new_req_id()
+        self._events[req_id] = threading.Event()
+        self._head_timestamps.pop(req_id, None)
+        # formatDate=2 returns epoch seconds
+        self._app.reqHeadTimeStamp(req_id, contract, what_to_show, 1 if use_rth else 0, 2)
+        try:
+            self._wait(req_id)
+        finally:
+            self._app.cancelHeadTimeStamp(req_id)
+        raw = self._head_timestamps.get(req_id)
+        if not raw:
+            return None
+        try:
+            return datetime.fromtimestamp(int(raw), tz=timezone.utc)
+        except ValueError:
+            return None
 
     def fetch_historical_bars(self, request: HistoricalRequest) -> list[Any]:
         req_id = self._new_req_id()
@@ -422,6 +452,25 @@ def is_retryable_chunk_error(exc: Exception) -> bool:
     )
 
 
+def clip_ranges_to_earliest(
+    ranges: list[DownloadRange], earliest: datetime | None
+) -> list[DownloadRange]:
+    """Drop or trim windows that end or start before IBKR's earliest bar.
+
+    One day of margin is kept so a head timestamp that lands mid-session never
+    cuts off the first bar.
+    """
+    if earliest is None:
+        return ranges
+    floor = earliest - timedelta(days=1)
+    clipped: list[DownloadRange] = []
+    for r in ranges:
+        if r.end <= floor:
+            continue
+        clipped.append(DownloadRange(max(r.start, floor), r.end, r.reason) if r.start < floor else r)
+    return clipped
+
+
 def download_ranges(
     client: IbkrHistoricalClient,
     contract: Any,
@@ -436,6 +485,7 @@ def download_ranges(
     max_chunk_retries: int = 0,
     post_filter: Callable[[pd.DataFrame], pd.DataFrame] | None = None,
     log: Callable[[str], None] = print,
+    earliest: datetime | None = None,
 ) -> pd.DataFrame:
     """Fetch every chunk of every range and return one canonical DataFrame.
 
@@ -447,6 +497,8 @@ def download_ranges(
     frames: list[pd.DataFrame] = []
     total_chunks = 0
     skipped_no_data = 0
+
+    ranges = clip_ranges_to_earliest(ranges, earliest)
 
     for planned in ranges:
         for chunk_start, chunk_end in daterange_chunks(planned.start, planned.end, chunk_days):

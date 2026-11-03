@@ -1,0 +1,19 @@
+# Batches data-management alert events, wakes the triage agent, falls back to a direct relay if it stays silent.
+# Install: cp deploy/dm-dispatch.service deploy/dm-pdm-poll.service ~/.config/systemd/user/
+#          systemctl --user daemon-reload && systemctl --user enable --now dm-dispatch.service dm-pdm-poll.service
+# Agent address (optional, empty = relay raw alerts directly): put  DM_TRIAGE_ADDRESS=ai-data-manager/Triage
+# in ~/.config/ibkr-monitor/dm.env, then `systemctl --user restart dm-dispatch.service`.
+# Edit WorkingDirectory/ExecStart if the checkout is not at ~/work/ai-data-manager.
+[Unit]
+Description=Data-management alert dispatcher
+After=network-online.target
+
+[Service]
+WorkingDirectory=%h/work/ai-data-manager
+EnvironmentFile=-%h/.config/ibkr-monitor/dm.env
+ExecStart=%h/.local/bin/uv run python -u tools/dm_triage.py dispatch
+Restart=always
+RestartSec=15
+
+[Install]
+WantedBy=default.target

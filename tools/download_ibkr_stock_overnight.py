@@ -30,7 +30,7 @@ from utils.catalog import (
     load_stock_catalog,
     merge_ohlcv_parquet,
     read_parquet_range,
-    save_stock_catalog,
+    save_stock_symbol,
     stock_file_path,
     stock_home_universe,
     update_stock_timeframe_entry,
@@ -214,6 +214,8 @@ def main() -> None:
                    help="Delay between historical requests")
     p.add_argument("--request-timeout", type=float, default=60.0,
                    help="Per-IBKR request timeout in seconds before treating the chunk as failed")
+    p.add_argument("--no-head-timestamp", action="store_true",
+                   help="Don't ask IBKR for each symbol's earliest bar; request every window from --since")
     p.add_argument("--max-chunk-retries", type=int, default=2,
                    help="Number of retries for timeout/HMDS-disconnect chunk errors before skipping to the next symbol")
     p.add_argument("--limit", type=int,
@@ -257,6 +259,7 @@ def main() -> None:
 
     with IbkrHistoricalClient(args.host, args.port, args.client_id, timeout=args.request_timeout) as client:
         contract_cache: dict[str, object] = {}
+        head_cache: dict[str, datetime | None] = {}
         catalogs: dict[str, dict] = {}
 
         for universe in args.universe:
@@ -285,6 +288,17 @@ def main() -> None:
                     if contract is None:
                         contract = client.resolve_us_stock_contract(symbol)
                         contract_cache[symbol] = contract
+
+                    earliest = head_cache.get(symbol)
+                    if earliest is None and not args.no_head_timestamp and symbol not in head_cache:
+                        try:
+                            earliest = client.head_timestamp(contract, args.what_to_show)
+                        except Exception as exc:  # head lookup is an optimisation only
+                            print(f"  {symbol}: head timestamp unavailable ({exc})")
+                            earliest = None
+                        head_cache[symbol] = earliest
+                        if earliest is not None:
+                            print(f"  {symbol}: earliest IBKR bar {earliest.date()}")
 
                     for timeframe in args.timeframes:
                         dst = stock_file_path(STOCK_PROVIDER, home, symbol, timeframe, args.session)
@@ -354,6 +368,7 @@ def main() -> None:
                             use_rth=_resolve_use_rth(args.use_rth, timeframe),
                             sleep_seconds=args.sleep_seconds,
                             max_chunk_retries=args.max_chunk_retries,
+                            earliest=earliest,
                             post_filter=(
                                 (lambda d, tf=timeframe: filter_full_bars_outside_rth(d, tf))
                                 if args.session == "overnight"
@@ -477,9 +492,11 @@ def main() -> None:
                     print(f"  {symbol}: FAILED ({exc})")
 
                 if not args.dry_run:
-                    save_stock_catalog(universe, catalog)
-                    if home != universe:
-                        save_stock_catalog(home, catalogs[home])
+                    # Per-symbol locked merge, so parallel downloaders don't drop each other's entries.
+                    if symbol in catalog:
+                        save_stock_symbol(universe, symbol, catalog[symbol])
+                    if home != universe and symbol in catalogs[home]:
+                        save_stock_symbol(home, symbol, catalogs[home][symbol])
 
     progress_state.update({
         "status": "complete",

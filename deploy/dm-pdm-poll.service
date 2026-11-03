@@ -1,0 +1,15 @@
+# Turns PDM server alerts (failed jobs, stale series, recoveries) into data-management events. Polls every 60 s.
+# Installed together with dm-dispatch.service; see the install lines there.
+# Reads PDM_SERVER from the checkout's .env like every other client; alerts need no token.
+[Unit]
+Description=PDM alerts to data-management events
+After=network-online.target
+
+[Service]
+WorkingDirectory=%h/work/ai-data-manager
+ExecStart=%h/.local/bin/uv run python -u tools/dm_triage.py pdm-poll
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=default.target

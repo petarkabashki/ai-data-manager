@@ -1,0 +1,6 @@
+# UNVALIDATED: stdio MCP syntax assumed from the http example in the Omnigent agent template.
+# Run the agent through Omnigent's validator before relying on it. `--project ../../..` is the repo root.
+name: dm
+transport: stdio
+command: uv
+args: ["run", "python", "tools/dm_triage_mcp.py"]
