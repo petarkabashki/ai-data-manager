@@ -4,5 +4,7 @@ description: Triages data-management alerts (IBKR downloads, PDM jobs, stale ser
 # In-process SDK executor, no shell and no os_env: the only actions available are the two typed tools
 # declared in tools/mcp/dm.yaml (relay a message, run one allow-listed fix).
 executor:
-  type: claude_sdk
+  type: omnigent
+  config:
+    harness: claude-sdk
 instructions: AGENTS.md
