@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import threading
+import time
 from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -95,10 +97,25 @@ def ibkr_bar_size(timeframe: str) -> str:
         raise ValueError(f"Unsupported IBKR bar size timeframe: {timeframe}") from exc
 
 
+class GatewayUnresponsive(Exception):
+    """The Gateway session is dead: the socket dropped or several requests in a row timed out.
+
+    Deliberately not a TimeoutError, so chunk retry loops let it through
+    instead of burning the full request timeout on every remaining chunk.
+    """
+
+
 class IbkrHistoricalClient:
     """Minimal synchronous wrapper over the official IBKR API."""
 
-    def __init__(self, host: str, port: int, client_id: int, timeout: float = 60.0):
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        client_id: int,
+        timeout: float = 60.0,
+        max_consecutive_timeouts: int = 3,
+    ):
         EClient, _, EWrapper = _load_ibapi()
 
         class _App(EWrapper, EClient):  # type: ignore[misc]
@@ -148,6 +165,8 @@ class IbkrHistoricalClient:
         self._head_timestamps: dict[int, str] = {}
         self._next_valid_id = 1
         self._counter = count(10_000)
+        self.max_consecutive_timeouts = max_consecutive_timeouts
+        self._consecutive_timeouts = 0
         self._thread: threading.Thread | None = None
 
     def connect(self) -> None:
@@ -165,6 +184,15 @@ class IbkrHistoricalClient:
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=2.0)
 
+    def reconnect(self) -> None:
+        """Drop the session and open a fresh one with the same client id."""
+        self.disconnect()
+        self._connected.clear()
+        self._events.clear()
+        self._consecutive_timeouts = 0
+        self._app.reset()
+        self.connect()
+
     def __enter__(self) -> "IbkrHistoricalClient":
         self.connect()
         return self
@@ -181,9 +209,18 @@ class IbkrHistoricalClient:
             event.set()
 
     def _wait(self, req_id: int) -> None:
+        if not self._app.isConnected():
+            raise GatewayUnresponsive("IBKR socket is closed")
         event = self._events[req_id]
         if not event.wait(timeout=self.timeout):
+            self._consecutive_timeouts += 1
+            if self._consecutive_timeouts >= self.max_consecutive_timeouts:
+                raise GatewayUnresponsive(
+                    f"{self._consecutive_timeouts} consecutive IBKR request timeouts"
+                )
             raise TimeoutError(f"IBKR request {req_id} timed out")
+        # Any answer, even an error, proves the session is alive.
+        self._consecutive_timeouts = 0
         errors = self._errors.get(req_id, [])
         hard_errors = [msg for code, msg in errors if code not in INFO_ERROR_CODES]
         if hard_errors:
@@ -219,6 +256,8 @@ class IbkrHistoricalClient:
             self._app.reqContractDetails(req_id, contract)
             try:
                 self._wait(req_id)
+            except GatewayUnresponsive:
+                raise
             except TimeoutError as exc:
                 reasons.append(f"{candidate}: timed out ({exc})")
                 continue
@@ -312,6 +351,86 @@ class IbkrHistoricalClient:
         )
         self._wait(req_id)
         return list(self._historical_bars.get(req_id, []))
+
+
+class SymbolHints:
+    """Per-symbol facts that never change, shared by parallel downloaders.
+
+    Holds IBKR's earliest bar (so no window before it is ever requested again)
+    and tickers IBKR has no contract for (so retry passes skip them). One JSON
+    file; every update re-reads it under a lock so workers don't drop each
+    other's entries.
+    """
+
+    def __init__(self, path: Path):
+        self.path = path
+        self.head: dict[str, datetime] = {}
+        self.unresolvable: dict[str, str] = {}
+        self.floor: dict[str, datetime] = {}
+        self.hangs: dict[str, datetime] = {}
+        self.reload()
+
+    def reload(self) -> None:
+        try:
+            raw = json.loads(self.path.read_text())
+        except (OSError, ValueError):
+            raw = {}
+        self.head = {
+            k: datetime.fromtimestamp(int(v), tz=timezone.utc) for k, v in raw.get("head", {}).items()
+        }
+        self.unresolvable = dict(raw.get("unresolvable", {}))
+        self.hangs = {
+            k: datetime.fromtimestamp(int(v), tz=timezone.utc) for k, v in raw.get("hangs", {}).items()
+        }
+        self.floor = {
+            k: datetime.fromtimestamp(int(v), tz=timezone.utc) for k, v in raw.get("floor", {}).items()
+        }
+
+    def _update(self, mutate: Callable[[dict], None]) -> None:
+        import fcntl
+
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with open(self.path.with_suffix(".lock"), "w") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            try:
+                raw = json.loads(self.path.read_text())
+            except (OSError, ValueError):
+                raw = {}
+            raw.setdefault("head", {})
+            raw.setdefault("unresolvable", {})
+            raw.setdefault("floor", {})
+            raw.setdefault("hangs", {})
+            mutate(raw)
+            tmp = self.path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(raw, sort_keys=True))
+            tmp.replace(self.path)
+        self.reload()
+
+    def set_head(self, symbol: str, when: datetime) -> None:
+        self._update(lambda raw: raw["head"].__setitem__(symbol, int(when.timestamp())))
+
+    def mark_hang(self, symbol: str) -> None:
+        """A symbol whose requests killed a fresh session twice; skipped until it ages out."""
+        self._update(lambda raw: raw["hangs"].__setitem__(symbol, int(time.time())))
+
+    def is_hanging(self, symbol: str, skip_hours: float) -> bool:
+        when = self.hangs.get(symbol)
+        return when is not None and (time.time() - when.timestamp()) < skip_hours * 3600
+
+    def set_floor(self, key: str, when: datetime) -> None:
+        """First bar a completed pass found for `SYMBOL/timeframe`: nothing earlier exists."""
+        self._update(lambda raw: raw["floor"].__setitem__(key, int(when.timestamp())))
+
+    def mark_unresolvable(self, symbol: str, message: str) -> None:
+        self._update(lambda raw: raw["unresolvable"].__setitem__(symbol, message[:200]))
+
+
+def is_pacing_violation(exc: Exception) -> bool:
+    return "pacing violation" in str(exc).lower()
+
+
+def is_no_security_definition(exc: Exception) -> bool:
+    return "no security definition" in str(exc).lower()
 
 
 def _parse_bar_timestamp_ms(raw: Any) -> int:

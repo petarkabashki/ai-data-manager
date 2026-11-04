@@ -15,6 +15,8 @@ import argparse
 import json
 import math
 import sys
+import time
+from collections import deque
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -23,7 +25,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from utils.config import IBKR_CLIENT_ID, IBKR_HOST, IBKR_PORT, TMP_ROOT, relative_to_repo
+from utils.config import DATA_ROOT, IBKR_CLIENT_ID, IBKR_HOST, IBKR_PORT, TMP_ROOT, relative_to_repo
 from utils.catalog import (
     REPO_ROOT,
     TF_TO_MS,
@@ -38,6 +40,11 @@ from utils.catalog import (
 from utils.calendars import UsEquityCalendar
 from utils.gaps import detect_gaps
 from utils.ibkr import (
+    clip_ranges_to_earliest,
+    GatewayUnresponsive,
+    SymbolHints,
+    is_no_security_definition,
+    is_pacing_violation,
     DownloadRange,
     IbkrHistoricalClient,
     chunk_days_for_timeframe,
@@ -116,6 +123,28 @@ def _gap_ranges(path: Path, timeframe: str, download_end, session: str) -> list[
             )
         )
     return ranges
+
+
+def trim_redundant_ranges(ranges, path: Path, refresh_hours: float, now_ts: float | None = None):
+    """Drop windows that cannot yield new bars.
+
+    - A `prepend` window under 3 days is the gap between the requested start
+      and a first bar that already sits on it (weekend, holiday, first print).
+    - A `tail_overlap` window is a refresh of the last few days; a file written
+      within `refresh_hours` already had one, so a restart must not repeat it.
+    """
+    out = []
+    recent = False
+    if path.exists():
+        age_h = ((now_ts if now_ts is not None else time.time()) - path.stat().st_mtime) / 3600
+        recent = age_h < refresh_hours
+    for r in ranges:
+        if r.reason == "prepend" and (r.end - r.start) < timedelta(days=3):
+            continue
+        if r.reason == "tail_overlap" and recent:
+            continue
+        out.append(r)
+    return out
 
 
 def _plan_ranges(
@@ -214,6 +243,19 @@ def main() -> None:
                    help="Delay between historical requests")
     p.add_argument("--request-timeout", type=float, default=60.0,
                    help="Per-IBKR request timeout in seconds before treating the chunk as failed")
+    p.add_argument("--max-consecutive-timeouts", type=int, default=3,
+                   help="Consecutive request timeouts that mean the Gateway session is dead; "
+                        "the client then reconnects instead of timing out chunk after chunk")
+    p.add_argument("--max-reconnects", type=int, default=3,
+                   help="Reconnect attempts in a row before exiting with code 75 (EX_TEMPFAIL) "
+                        "so a supervisor can wait for the Gateway and relaunch")
+    p.add_argument("--hints-file", type=Path, default=DATA_ROOT / "stocks" / "ibkr" / ".symbol_hints.json",
+                   help="Shared cache of IBKR earliest-bar dates and unresolvable tickers")
+    p.add_argument("--refresh-hours", type=float, default=12.0,
+                   help="Skip the last-days refresh of a file written within this many hours")
+    p.add_argument("--hang-skip-hours", type=float, default=24.0,
+                   help="Skip a symbol whose requests hung twice on fresh sessions for this long "
+                        "(0 retries every run)")
     p.add_argument("--no-head-timestamp", action="store_true",
                    help="Don't ask IBKR for each symbol's earliest bar; request every window from --since")
     p.add_argument("--max-chunk-retries", type=int, default=2,
@@ -257,9 +299,16 @@ def main() -> None:
     }
     _write_progress_file(args.progress_file, progress_state)
 
-    with IbkrHistoricalClient(args.host, args.port, args.client_id, timeout=args.request_timeout) as client:
+    hints = SymbolHints(args.hints_file)
+    reconnects = 0
+    dead_hits: dict[str, int] = {}
+    with IbkrHistoricalClient(
+        args.host, args.port, args.client_id,
+        timeout=args.request_timeout,
+        max_consecutive_timeouts=args.max_consecutive_timeouts,
+    ) as client:
         contract_cache: dict[str, object] = {}
-        head_cache: dict[str, datetime | None] = {}
+        head_cache: dict[str, datetime | None] = dict(hints.head)
         catalogs: dict[str, dict] = {}
 
         for universe in args.universe:
@@ -271,7 +320,12 @@ def main() -> None:
             symbols = _select_symbols(catalog, args.symbols, args.limit)
             print(f"\n[{universe}] {len(symbols)} symbols")
 
-            for symbol in symbols:
+            queue = deque(symbols)
+            while queue:
+                symbol = queue.popleft()
+                if symbol in hints.unresolvable:
+                    print(f"  {symbol}: skipped (IBKR has no contract: {hints.unresolvable[symbol][:60]})")
+                    continue
                 if symbol not in catalog:
                     overall_failures.append((universe, symbol, "symbol not found in catalog"))
                     print(f"  {symbol}: skipped (not in {universe} catalog)")
@@ -283,6 +337,7 @@ def main() -> None:
                 if home != universe:
                     print(f"  {symbol}: files shared with {home}")
 
+                cur_tf = None
                 try:
                     contract = contract_cache.get(symbol)
                     if contract is None:
@@ -291,16 +346,31 @@ def main() -> None:
 
                     earliest = head_cache.get(symbol)
                     if earliest is None and not args.no_head_timestamp and symbol not in head_cache:
-                        try:
-                            earliest = client.head_timestamp(contract, args.what_to_show)
-                        except Exception as exc:  # head lookup is an optimisation only
-                            print(f"  {symbol}: head timestamp unavailable ({exc})")
-                            earliest = None
-                        head_cache[symbol] = earliest
+                        for head_try in range(3):
+                            try:
+                                earliest = client.head_timestamp(contract, args.what_to_show)
+                                break
+                            except GatewayUnresponsive:
+                                raise
+                            except Exception as exc:  # head lookup is an optimisation only
+                                if is_pacing_violation(exc) and head_try < 2:
+                                    print(f"  {symbol}: head lookup paced, waiting 20s")
+                                    time.sleep(20)
+                                    continue
+                                print(f"  {symbol}: head timestamp unavailable ({exc})")
+                                earliest = None
+                                break
                         if earliest is not None:
+                            head_cache[symbol] = earliest
+                            if not args.dry_run:
+                                hints.set_head(symbol, earliest)
                             print(f"  {symbol}: earliest IBKR bar {earliest.date()}")
 
                     for timeframe in args.timeframes:
+                        cur_tf = timeframe
+                        if args.hang_skip_hours and hints.is_hanging(f"{symbol}/{timeframe}", args.hang_skip_hours):
+                            print(f"  {symbol}/{timeframe}: skipped (requests hung recently; retry after {args.hang_skip_hours:g}h)")
+                            continue
                         dst = stock_file_path(STOCK_PROVIDER, home, symbol, timeframe, args.session)
                         ranges = _plan_ranges(
                             dst,
@@ -310,6 +380,12 @@ def main() -> None:
                             args.session,
                             args.overlap_days,
                             download_end,
+                        )
+                        # The per-timeframe floor (first bar a finished pass found) is
+                        # tighter than IBKR's head timestamp, which is not per bar size.
+                        tf_earliest = hints.floor.get(f"{symbol}/{timeframe}") or earliest
+                        ranges = trim_redundant_ranges(
+                            clip_ranges_to_earliest(ranges, tf_earliest), dst, args.refresh_hours
                         )
                         chunk_days = chunk_days_for_timeframe(timeframe, args.chunk_days)
                         if not ranges:
@@ -368,7 +444,7 @@ def main() -> None:
                             use_rth=_resolve_use_rth(args.use_rth, timeframe),
                             sleep_seconds=args.sleep_seconds,
                             max_chunk_retries=args.max_chunk_retries,
-                            earliest=earliest,
+                            earliest=tf_earliest,
                             post_filter=(
                                 (lambda d, tf=timeframe: filter_full_bars_outside_rth(d, tf))
                                 if args.session == "overnight"
@@ -420,6 +496,11 @@ def main() -> None:
                         if result is None:
                             raise RuntimeError(f"Could not read back merged parquet {dst}")
                         start_date, end_date, _ = result
+                        if any(r.reason == "prepend" for r in ranges) and not args.dry_run:
+                            hints.set_floor(
+                                f"{symbol}/{timeframe}",
+                                datetime.strptime(start_date, "%Y-%m-%d").replace(tzinfo=timezone.utc),
+                            )
 
                         # timeframe_dates is keyed by (timeframe, provider), so this can
                         # never clobber another provider's registration for this timeframe.
@@ -469,7 +550,55 @@ def main() -> None:
                         _write_progress_file(args.progress_file, progress_state)
                         print(f"    wrote {relative_to_repo(dst)} ({old_rows}->{new_rows} rows)")
 
+                except GatewayUnresponsive as exc:
+                    # Not the symbol's fault: reopen the session and retry it.
+                    # A session that dies on the same symbol again after a fresh
+                    # reconnect is that symbol's problem (its request never
+                    # answers), not the Gateway's: record it and move on.
+                    dead_hits[symbol] = dead_hits.get(symbol, 0) + 1
+                    if dead_hits[symbol] >= 2:
+                        overall_failures.append((universe, symbol, f"requests hang: {exc}"))
+                        progress_state["failures"].append({
+                            "universe": universe, "symbol": symbol,
+                            "message": f"requests hang: {exc}", "updated_at": utc_now().isoformat(),
+                        })
+                        _write_resume_event(args.resume_log, {
+                            "event": "symbol_failed", "universe": universe, "symbol": symbol,
+                            "message": f"requests hang after reconnect: {exc}",
+                            "updated_at": utc_now().isoformat(),
+                        })
+                        _write_progress_file(args.progress_file, progress_state)
+                        if not args.dry_run and cur_tf:
+                            hints.mark_hang(f"{symbol}/{cur_tf}")
+                        print(f"  {symbol}: FAILED (requests hang even on a fresh session; skipping)")
+                        try:
+                            client.reconnect()
+                        except Exception as conn_exc:
+                            print(f"  reconnect failed: {conn_exc}")
+                        continue
+                    reconnects += 1
+                    print(f"  {symbol}: Gateway session dead ({exc}); reconnect {reconnects}/{args.max_reconnects}")
+                    _write_resume_event(args.resume_log, {
+                        "event": "gateway_reconnect", "symbol": symbol, "message": str(exc),
+                        "attempt": reconnects, "updated_at": utc_now().isoformat(),
+                    })
+                    if reconnects > args.max_reconnects:
+                        progress_state.update({"status": "gateway_down", "updated_at": utc_now().isoformat()})
+                        _write_progress_file(args.progress_file, progress_state)
+                        print("Gateway did not recover; exiting 75 so the supervisor can relaunch")
+                        sys.exit(75)
+                    time.sleep(10 * reconnects)
+                    try:
+                        client.reconnect()
+                    except Exception as conn_exc:
+                        print(f"  reconnect failed: {conn_exc}")
+                        # The Gateway itself is down, so this says nothing about the symbol.
+                        dead_hits[symbol] -= 1
+                    queue.appendleft(symbol)
+                    continue
                 except Exception as exc:
+                    if is_no_security_definition(exc) and not args.dry_run:
+                        hints.mark_unresolvable(symbol, str(exc))
                     overall_failures.append((universe, symbol, str(exc)))
                     progress_state["failures"].append({
                         "universe": universe,
@@ -490,6 +619,8 @@ def main() -> None:
                     })
                     _write_progress_file(args.progress_file, progress_state)
                     print(f"  {symbol}: FAILED ({exc})")
+
+                reconnects = 0
 
                 if not args.dry_run:
                     # Per-symbol locked merge, so parallel downloaders don't drop each other's entries.
