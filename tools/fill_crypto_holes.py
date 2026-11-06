@@ -85,7 +85,7 @@ class Hole:
 
     def requests(self, exchange: str, trading_mode: str) -> int:
         limit, _ = ccxt_paging(exchange, trading_mode, self.timeframe)
-        return math.ceil(self.candles / limit)
+        return math.ceil(self.candles / max(limit - 1, 1))  # history pages come one bar short
 
 
 @dataclass
@@ -158,14 +158,23 @@ def print_plan(holes: list[Hole], exchange: str, trading_mode: str, timeframes: 
 
 
 def fetch_hole(ccxt_ex, hole: Hole, exchange: str, trading_mode: str) -> pd.DataFrame:
-    """The bars the exchange holds inside one hole, closed bars only."""
+    """The bars the exchange holds inside one hole, closed bars only.
+
+    The request runs one bar past the hole. bitget's history endpoint leaves out
+    a bar that closes after `until` (its recent endpoint keeps it), so a request
+    ending on the hole's own last bar gets nothing for that bar, and an answer of
+    nothing goes on the exchange-empty record for good. Seen live 2026-11-06: 299
+    of 300 bars at 1h to 1d, and 1-candle holes empty, while a wider window held
+    the same bar.
+    """
     tf_ms = TF_TO_MS[hole.timeframe]
     limit, max_window = ccxt_paging(exchange, trading_mode, hole.timeframe)
     df = _fetch_ohlcv_paginated(
         ccxt_ex, hole.pair, ft_timeframe(hole.timeframe), hole.start_ms, tf_ms,
-        limit=limit, max_window_ms=max_window, until_ms=hole.end_ms + tf_ms - 1,
+        limit=limit, max_window_ms=max_window, until_ms=hole.end_ms + 2 * tf_ms - 1,
     )
-    return df[df["timestamp"] >= hole.start_ms].reset_index(drop=True)
+    inside = df["timestamp"].between(hole.start_ms, hole.end_ms + tf_ms - 1)
+    return df[inside].reset_index(drop=True)
 
 
 def _refresh_bounds(catalog: dict, exchange: str, hole: Hole, is_futures: bool) -> bool:

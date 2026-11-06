@@ -336,7 +336,7 @@ and the record are the only state, so a repeat run resumes.
 `--min-candles N` skips holes under N candles, after the recorded part is taken
 away. `--limit N` takes the first N holes, for a trial. `1Mo` is refused: it has
 no fixed interval, so no hole rule. Expect
-`sum(ceil(hole candles / page))` requests, more when pages come back short, with
+`sum(ceil(hole candles / (page - 1)))` requests (history pages come one bar short), more when pages come back shorter, with
 a page of 200 up to 1d and 100 at 3d/1w; the plan prints that figure.
 
 ---

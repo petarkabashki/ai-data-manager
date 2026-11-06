@@ -424,7 +424,9 @@ def _fetch_ohlcv_paginated(
 
     while current < stop_ms:
         # bitget's until is inclusive: a window one page wide plus its end bar
-        # holds limit + 1 bars, and the first is the one dropped.
+        # holds limit + 1 bars, and the first is the one dropped. Its history
+        # endpoint also leaves out a bar closing after until; the cursor resumes
+        # at that bar, but a caller bounding the walk must ask one bar further.
         params = {"until": min(current + window, stop_ms) - 1} if window else {}
         rows = ccxt_ex.fetch_ohlcv(pair, tf_ccxt, since=current, limit=limit, params=params)
         if not rows:

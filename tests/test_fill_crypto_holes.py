@@ -2,7 +2,8 @@
 
 The fake exchange behaves as bitget was seen to: a page is capped (200 bars, 100
 at 3d/1w/1Mo), a larger limit is refused with code 40020, and a window is filled
-from its `until` end, inclusive. So a window wider than a page, or a cursor that
+from its `until` end, and a bar closing after `until` is left out, as the history
+endpoint does. So a window wider than a page, or a cursor that
 steps wrongly, leaves real holes in the result and fails these tests.
 """
 
@@ -25,6 +26,7 @@ sys.path.insert(0, str(REPO_ROOT / "tools"))
 H = 3_600_000
 DAY = 86_400_000
 BAR = {"1h": H, "4h": 4 * H, "6h": 6 * H, "12h": 12 * H, "1d": DAY, "3d": 3 * DAY, "1w": 7 * DAY}
+BARS_MS = {**BAR, "1M": 31 * DAY}
 PAGE = {"3d": 100, "1w": 100, "1M": 100}
 
 
@@ -39,6 +41,8 @@ class CappedBitget:
         self.bars, self.now_ms, self.calls = bars, now_ms, []
         self.timeframes = dict.fromkeys(["1h", "4h", "6h", "12h", "1d", "3d", "1w", "1M"], "x")
         self.fail_on_call: int | None = None
+        #: bitget's history endpoint: a bar that closes after `until` isn't served.
+        self.drops_unclosed = False
         self.error: Exception = ccxt.NetworkError("connection reset")
 
     def fetch_ohlcv(self, pair, tf, since=None, limit=100, params=None):
@@ -48,7 +52,8 @@ class CappedBitget:
         if limit > PAGE.get(tf, 200):
             raise ccxt.BadRequest('bitget {"code":"40020","msg":"Parameter limit error"}')
         until = min((params or {}).get("until", self.now_ms), self.now_ms)
-        served = [t for t in self.bars.get(tf, []) if t <= until][-limit:]
+        last = until - BARS_MS[tf] if self.drops_unclosed else until
+        served = [t for t in self.bars.get(tf, []) if t <= last][-limit:]
         return [[t, 1.0, 2.0, 0.5, 1.5, 10.0] for t in served if t >= since]
 
 
@@ -275,6 +280,21 @@ def test_a_fill_fills_at_every_page_size(env, monkeypatch, tf, kept, missing):
     page = PAGE.get(tf, 200)
     assert all((until - since + 1) // BAR[tf] <= page for *_, since, until in venue.calls)
     assert len(venue.calls) == 3 * -(-missing // page)
+
+
+@pytest.mark.parametrize("drops_unclosed", [True, False], ids=["history", "recent"])
+@pytest.mark.parametrize("missing", [1, 2, 199, 200, 201, 300])
+def test_the_last_bar_of_a_hole_is_filled_and_never_recorded_empty(env, monkeypatch, drops_unclosed, missing):
+    """bitget's two endpoints disagree on a bar that closes after `until`."""
+    now = freeze(monkeypatch, ms("2026-01-01"))
+    start = ms("2024-01-01")
+    every = [start + i * H for i in range(missing + 10)]
+    path = store(env, "AAA_USDT", "1h", every[:5] + every[5 + missing:])
+    venue = CappedBitget({"1h": every}, now)
+    venue.drops_unclosed = drops_unclosed
+    assert run(env, monkeypatch, venue, "--exchange", "bitget", "--timeframes", "1h", "--apply") == 0
+    assert stored_bars(path) == every
+    assert not env.ExchangeEmptyRecord().series
 
 
 def test_exchange_empty_is_recorded_and_not_retried(env, monkeypatch, capsys):
