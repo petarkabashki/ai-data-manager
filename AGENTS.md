@@ -133,6 +133,16 @@ directory level under the class:
   `tools/download_funding.py` owns them (they were py-qwant's
   `scripts/sync_funding_rates.py` until 2026-10).
 
+- **Exchange-empty record** — `price-data/exchange_empty.yaml`, beside the
+  catalogs so the host backup copies it with them (never inside `cryptos/`,
+  where every file is a parquet series). Under `series`, keyed by the path below
+  the data root, it lists the windows an exchange answered with nothing:
+  `start_ms`/`end_ms` (open times, inclusive), `candles`, readable `start`/`end`,
+  `checked`. `fill_crypto_holes.py` writes it, `check_gaps.py` reports those
+  windows apart from gaps, and a window on record is not requested again; delete
+  its entry to retry. Only an answer from the exchange belongs here, never an
+  error. See `utils/exchange_empty.py`.
+
 ## Trading calendars (RULE — never judge a gap by the 24/7 clock)
 
 Crypto trades continuously, so any missing bar is a gap. Nothing else does.
@@ -249,6 +259,7 @@ uv run python tools/convert_crypto.py [--exchange X] [--dry-run]
 | `tools/fix_daily_stamps.py` | Restamp a provider's daily/weekly/monthly bars to 00:00 UTC of their date and drop duplicate dates, with backups |
 | `tools/backup_delta.py` | Row-level backup deltas: export the rows that changed each night (host), plan, prune and restore from a base plus deltas (hub) |
 | `tools/download_crypto.py` | Download via freqtrade, merge parquet, update YAML metadata |
+| `tools/fill_crypto_holes.py` | Fill the internal holes of stored crypto series; plan-only until `--apply`; records what the exchange doesn't hold |
 | `tools/download_funding.py` | Fetch perpetual funding-rate history (Binance, Bybit, KuCoin) next to each contract's bars |
 | `tools/convert_crypto.py` | Bulk normalize all crypto parquet to canonical schema + JSON→parquet |
 | `tools/download_market_caps.py` | Fetch CoinGecko historical market-cap data and export snapshot/top-N universes |
@@ -307,6 +318,10 @@ uv run python tools/check_gaps.py --catalog indexes --internal
 uv run python tools/check_gaps.py --all-catalogs --json
 uv run python tools/check_gaps.py --catalog sp500 --calendar us_equity_extended
 ```
+
+Windows on the exchange-empty record are reported apart (`Exchange-empty` in the
+summary, `exchange_empty` per series in `--json`) and don't fail a series. Part
+of a gap on record leaves the rest as a gap.
 
 `--exchange`/`--all` keep the crypto-shaped path (and `--trading-mode
 futures`); `--catalog`/`--all-catalogs` audit any catalog in the registry. The
@@ -382,10 +397,41 @@ uv run python tools/download_crypto.py --exchange bitget --trading-mode futures 
   none. freqtrade batches round it down to 1 January so a backfill is a
   handful of runs, `FT_BATCH_PAIRS` (50) pairs each, merged as they finish.
 - **ccxt instead of freqtrade** for the paths in `CCXT_ROUTES` (kucoin and
-  bitget futures, bitget spot 3d/1w/1Mo) and for every perpetual not settled
+  bitget futures, all of bitget spot) and for every perpetual not settled
   in USDT, which freqtrade's futures mode can't take. bitget fills a since/until window
   from the *until* end and caps futures windows at 90 days at 1d and above,
-  so `CCXT_PAGING` sizes each request to one page. Only closed bars are kept.
+  so `CCXT_PAGING` sizes each request to one page, per timeframe where the page
+  differs (`ccxt_paging()`; bitget spot 200, 100 at 3d/1w/1Mo). Only closed bars
+  are kept. `--prepend` doesn't run on this path; use `--full`.
+
+### fill_crypto_holes.py
+
+```bash
+uv run python tools/fill_crypto_holes.py --exchange bitget --timeframes 1h 4h 6h 12h 1d 3d 1w
+uv run python tools/fill_crypto_holes.py --exchange bitget --timeframes 1h --min-candles 50 --limit 10 --apply
+```
+
+Fills the internal holes of stored crypto series and nothing else. Holes are
+read from each parquet file, never from catalog dates, and retired pairs are
+left out. Without `--apply` it prints series, holes, candles and requests per
+timeframe, and touches neither disk nor network. With `--apply` it fetches only
+the hole windows through the paged ccxt path (`CCXT_PAGING`), keeps closed bars,
+merges with `merge_ohlcv_parquet`, and moves catalog dates only if a file's
+bounds differ from them.
+
+What the exchange answers with nothing goes into `exchange_empty.yaml` at the
+data root (`utils/exchange_empty.py`) and isn't requested again; a partly filled
+hole records only what stayed empty. An error is not an answer: the hole stays
+as it was, isn't recorded, and the run exits 1, stopping after
+`MAX_CONSECUTIVE_ERRORS` (20) in a row. Bars that don't line up with the stored
+grid count as a failed hole too, neither merged nor recorded. The parquet files
+and the record are the only state, so a repeat run resumes.
+
+`--min-candles N` skips holes under N candles, after the recorded part is taken
+away. `--limit N` takes the first N holes, for a trial. `1Mo` is refused: it has
+no fixed interval, so no hole rule. Expect
+`sum(ceil(hole candles / (page - 1)))` requests (history pages come one bar short), more when pages come back shorter, with
+a page of 200 up to 1d and 100 at 3d/1w; the plan prints that figure.
 
 ### download_funding.py
 
@@ -603,6 +649,7 @@ ln -s ../.agent/skills .codex/skills
 | `utils/report.py` | `render_table()`, `print_table()`, `allow_broken_pipe()` |
 | `utils/market_caps.py` | `CoinGeckoClient`, `resolve_coin_ids()`, `fetch_or_load_history()`, `rank_top_n()` |
 | `utils/semantics.py` | `Semantics`, `semantics_for()`, `validate_node_semantics()`, `apply_semantics()` |
+| `utils/exchange_empty.py` | `ExchangeEmptyRecord` (`windows()`, `add()`, `save()`), `record_path()`, `split_bars()`, `bar_runs()` — the record of windows an exchange answered with nothing |
 | `utils/calendars.py` | `CONTINUOUS`, `CME_FUTURES`, `UsEquityCalendar`, `CmeFuturesCalendar`, `calendar_for()`, `calendar_by_name()`, `us_market_holidays()` |
 | `utils/planning.py` | `DownloadRange`, `plan_download_ranges()`, `merge_ranges()`, `daterange_chunks()` — provider-neutral |
 | `utils/futures.py` | `FuturesContract`, `contract_for()`, `contract_symbol()`, `parse_contract_symbol()`, `futures_file_path()`, `futures_catalog_path()`, `ROOTS`, `MONTH_CODES` — provider-neutral contract identity |

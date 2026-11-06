@@ -26,6 +26,7 @@ from utils.catalog import (
     read_parquet_range,
     resolve_from_repo,
 )
+from utils.exchange_empty import ExchangeEmptyRecord, split_bars
 
 
 @dataclass
@@ -58,6 +59,9 @@ class SymbolAudit:
     trailing_candles: int = 0       # candles missing from end to now
     trailing_days: float = 0.0      # approx days behind
     internal_gaps: list[Gap] = field(default_factory=list)
+    #: Missing bars the exchange answered with nothing, from the exchange-empty
+    #: record. Reported apart; they don't fail the series.
+    exchange_empty: list[Gap] = field(default_factory=list)
     error: str | None = None
     provider: str | None = None
     #: Name of the calendar the gaps were judged against, so a surprising
@@ -111,7 +115,13 @@ def detect_gaps(
 
     gaps: list[Gap] = []
     for i in gap_indices:
-        expected = calendar.expected_starts(int(ts[i]), int(ts[i + 1]), interval_ms)
+        if calendar is CONTINUOUS:
+            # Counted from the stored bars, not the epoch: bitget's weekly bars
+            # open on Monday, the epoch's weeks on Thursday, and that grid named
+            # bars that can't exist and counted every weekly hole one too many.
+            expected = list(range(int(ts[i]) + interval_ms, int(ts[i + 1]), interval_ms))
+        else:
+            expected = calendar.expected_starts(int(ts[i]), int(ts[i + 1]), interval_ms)
         if not expected:
             continue  # entirely explained by a closure
         gaps.append(Gap(expected[0], expected[-1], len(expected)))
@@ -123,6 +133,25 @@ def detect_gaps(
     trailing = len(calendar.expected_starts(last_ms, now_ms - interval_ms + 1, interval_ms))
 
     return gaps, trailing
+
+
+def honour_exchange_empty(audits: list[SymbolAudit], record: ExchangeEmptyRecord | None = None) -> None:
+    """Move recorded bars out of `internal_gaps` into `exchange_empty`.
+
+    A gap only partly on record keeps the rest as a real gap.
+    """
+    record = record if record is not None else ExchangeEmptyRecord()
+    for audit in audits:
+        interval_ms = TF_TO_MS.get(audit.timeframe)
+        windows = record.windows(audit.file_path)
+        if not (interval_ms and windows and audit.internal_gaps):
+            continue
+        real: list[Gap] = []
+        for gap in audit.internal_gaps:
+            outside, inside = split_bars(gap.start_ms, gap.end_ms, interval_ms, windows)
+            real += [Gap(*run) for run in outside]
+            audit.exchange_empty += [Gap(*run) for run in inside]
+        audit.internal_gaps = real
 
 
 def audit_symbol(

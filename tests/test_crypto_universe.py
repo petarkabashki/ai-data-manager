@@ -164,7 +164,7 @@ def test_delisted_pairs_are_retired_not_deleted_and_come_back_on_relisting():
 
 def test_routing_sends_only_the_broken_paths_to_ccxt():
     tfs = ["1h", "4h", "1d", "3d", "1w", "1Mo"]
-    assert dc.ccxt_timeframes("bitget", "spot", tfs) == ["3d", "1w", "1Mo"]
+    assert dc.ccxt_timeframes("bitget", "spot", tfs) == tfs
     assert dc.ccxt_timeframes("bitget", "futures", tfs) == tfs
     assert dc.ccxt_timeframes("kucoin", "futures", tfs) == tfs
     assert dc.ccxt_timeframes("binance", "spot", tfs) == []
