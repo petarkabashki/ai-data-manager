@@ -17,6 +17,8 @@ import threading
 from pathlib import Path
 
 import pandas as pd
+from dataclasses import replace
+
 import pytest
 import yaml
 
@@ -549,6 +551,18 @@ def test_dedupe_merges_with_a_worker_and_is_in_the_equity_lane(env, monkeypatch,
 
 # --- orphan adoption -----------------------------------------------------------
 
+def _yf_sibling(env, ohlcv, universe, symbol, adjustment="raw", tf="1h"):
+    """A registered YF node for the symbol, what an orphan's adjustment is read from."""
+    path = _bars(env, ohlcv, universe, symbol, "YF", tf)
+    with env.catalog.stock_catalog_txn(universe) as fresh:
+        env.catalog.update_stock_timeframe_entry(
+            fresh, symbol, tf, "YF", path, "1970-01-01", "1970-01-03",
+            semantics=replace(importlib.import_module("utils.semantics").semantics_for("Stock", "YF"),
+                              adjustment=adjustment),
+        )
+    return path
+
+
 def _adopt(env):
     checker = env.tool("check_catalog")
     specs = env.catalog.catalog_registry()
@@ -561,6 +575,7 @@ def _adopt(env):
 
 def test_stock_orphans_are_adopted_from_their_paths(env, ohlcv):
     env.seed("sp500", "AAPL", "BRK-B")
+    siblings = [_yf_sibling(env, ohlcv, "sp500", s) for s in ("AAPL", "BRK-B")]
     yf = _bars(env, ohlcv, "sp500", "AAPL", "YF")
     ibkr = _bars(env, ohlcv, "sp500", "AAPL", tf="1h", session="all")
     overnight = _bars(env, ohlcv, "sp500", "AAPL", tf="1h", session="overnight")
@@ -569,7 +584,7 @@ def test_stock_orphans_are_adopted_from_their_paths(env, ohlcv):
     adopted, written, left = _adopt(env)
 
     assert sorted(adopted) == sorted([yf, ibkr, overnight, dashed])
-    assert written == ["sp500"] and left == []
+    assert written == ["sp500"] and sorted(left) == sorted(siblings)
     node = env.node("sp500", "AAPL", "1d", "YF")
     assert (node["provider"], node["start_date"], node["end_date"]) == ("YF", "1970-01-01", "1970-01-03")
     assert node["schema"] == "ohlcv" and "session" not in node
@@ -618,12 +633,49 @@ def test_yf_copies_stay_in_their_own_universe(env, ohlcv):
     """YF is not shared: its copies can differ in adjustment."""
     env.seed("sp500", "AAPL")
     env.seed("nasdaq100", "AAPL")
+    _yf_sibling(env, ohlcv, "nasdaq100", "AAPL")
     path = _bars(env, ohlcv, "nasdaq100", "AAPL", "YF")
 
     adopted, written, _ = _adopt(env)
 
     assert adopted == [path] and written == ["nasdaq100"]
     assert env.catalog.load_stock_catalog("sp500")["AAPL"]["timeframe_dates"] == {}
+
+
+def test_an_adopted_yf_file_takes_the_adjustment_of_its_symbols_other_nodes(env, ohlcv):
+    env.seed("sp500", "AAPL")
+    _yf_sibling(env, ohlcv, "sp500", "AAPL", adjustment="adjusted")
+    path = _bars(env, ohlcv, "sp500", "AAPL", "YF")
+
+    adopted, _, _ = _adopt(env)
+
+    assert adopted == [path]
+    assert env.node("sp500", "AAPL", "1d", "YF")["adjustment"] == "adjusted"
+
+
+def test_a_yf_file_nothing_can_label_stays_reported(env, ohlcv):
+    """Adopting it would state an adjustment nobody knows."""
+    env.seed("sp500", "AAPL", "MSFT")
+    _bars(env, ohlcv, "sp500", "AAPL", "YF")                 # no other node
+    _yf_sibling(env, ohlcv, "sp500", "MSFT", "adjusted", "1h")
+    _yf_sibling(env, ohlcv, "sp500", "MSFT", "raw", "1w")    # other nodes disagree
+    _bars(env, ohlcv, "sp500", "MSFT", "YF")
+
+    adopted, written, _ = _adopt(env)
+
+    assert adopted == [] and written == []
+    catalog = env.catalog.load_stock_catalog("sp500")
+    assert catalog["AAPL"]["timeframe_dates"] == {} and "1d" not in catalog["MSFT"]["timeframe_dates"]
+
+
+def test_an_ibkr_file_with_no_other_node_gets_the_workers_default(env, ohlcv):
+    env.seed("sp500", "AAPL")
+    path = _bars(env, ohlcv, "sp500", "AAPL")
+
+    adopted, _, _ = _adopt(env)
+
+    assert adopted == [path]
+    assert env.node("sp500", "AAPL", "1d", "IBKR")["adjustment"] == "raw"
 
 
 def test_a_universe_that_does_not_list_a_symbol_others_list_gets_no_entry(env, ohlcv):

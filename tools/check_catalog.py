@@ -49,7 +49,7 @@ import json
 import sys
 from collections import Counter
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import partial
 from pathlib import Path
 
@@ -64,6 +64,7 @@ from utils.catalog import (
     DateFix,
     apply_date_fixes,
     catalog_registry,
+    iter_timeframe_nodes,
     load_stock_catalog,
     node_at,
     provider_node_key,
@@ -79,7 +80,7 @@ from utils.catalog import (
 )
 from utils.config import DATA_ROOT, relative_to_repo
 from utils.report import allow_broken_pipe, print_table
-from utils.semantics import apply_semantics, semantics_for, validate_node_semantics
+from utils.semantics import Semantics, apply_semantics, semantics_for, validate_node_semantics
 
 #: Roots scanned for parquet files with no catalog entry.
 OHLCV_ROOTS = [
@@ -331,13 +332,35 @@ def parse_stock_orphan(path: Path) -> StockOrphan | None:
     return StockOrphan(path, provider, universe, symbol, session, timeframe)
 
 
+def orphan_semantics(catalog: dict, orphan: StockOrphan) -> Semantics | None:
+    """What an adopted node may claim, or None if nothing says, and it stays reported.
+
+    The path can't tell adjusted bars from as-traded ones, so the adjustment comes
+    from the provider's other nodes for this symbol. YF copies are mixed per symbol,
+    so a YF file with nothing to go by isn't labelled by default. IBKR falls back to
+    the default the workers request.
+    """
+    default = semantics_for("Stock", orphan.provider)
+    seen = {
+        node["adjustment"]
+        for _, _, node in iter_timeframe_nodes(catalog.get(orphan.symbol) or {})
+        if node.get("provider") == orphan.provider and node.get("adjustment")
+    }
+    if len(seen) > 1:
+        return None
+    if seen:
+        return replace(default, adjustment=seen.pop())
+    return default if orphan.provider == "IBKR" else None
+
+
 def adopt_stock_orphans(orphans: list[Path], names: set[str]) -> tuple[list[Path], list[str]]:
     """Re-register stock files no node references, in catalogs named in `names`.
 
     Returns (adopted files, catalogs written). A file is adopted into its path's
     universe, and a catalog's existing node is never replaced: a node at that
     address pointing at another file is a decision somebody made (a dedupe
-    repoint, a price-scale conflict), so the orphan stays reported.
+    repoint, a price-scale conflict), so the orphan stays reported. So does a
+    file `orphan_semantics` can't label.
 
     Which catalogs get a node depends on the symbol's listings:
 
@@ -354,15 +377,14 @@ def adopt_stock_orphans(orphans: list[Path], names: set[str]) -> tuple[list[Path
         the home's for `dedupe_stock_universes` (or a `--no-share` copy), not
         something to point the catalog at.
 
-    Semantics are the provider's defaults, because the path can't say. A file
-    downloaded `--adjusted` or with `ADJUSTED_LAST` needs its node corrected.
+    Semantics follow `orphan_semantics`; a file it can't label stays reported.
     """
     parsed = [o for o in map(parse_stock_orphan, orphans) if o and o.universe in names]
     if not parsed:
         return [], []
     catalogs = {u: load_stock_catalog(u) for u in STOCK_UNIVERSE_PRIORITY}
 
-    queue: dict[str, list[tuple[StockOrphan, str, str]]] = {}
+    queue: dict[str, list[tuple[StockOrphan, str, str, Semantics]]] = {}
     for orphan in parsed:
         listing = [u for u in STOCK_UNIVERSE_PRIORITY if orphan.symbol in catalogs[u]]
         if listing and orphan.universe not in listing:
@@ -372,13 +394,16 @@ def adopt_stock_orphans(orphans: list[Path], names: set[str]) -> tuple[list[Path
             continue
         if node_at(catalogs[orphan.universe], orphan.symbol, orphan.timeframe, orphan.node_key):
             continue
+        semantics = orphan_semantics(catalogs[orphan.universe], orphan)
+        if semantics is None:
+            continue
         bounds = read_parquet_range(orphan.path)
         if not bounds:
             continue                     # empty: a failed download, not a series
         for universe in listing if shared else [orphan.universe]:
             if universe in names and not node_at(catalogs[universe], orphan.symbol,
                                                  orphan.timeframe, orphan.node_key):
-                queue.setdefault(universe, []).append((orphan, bounds[0], bounds[1]))
+                queue.setdefault(universe, []).append((orphan, bounds[0], bounds[1], semantics))
 
     adopted: set[Path] = set()
     written: list[str] = []
@@ -386,7 +411,7 @@ def adopt_stock_orphans(orphans: list[Path], names: set[str]) -> tuple[list[Path
         if universe not in queue:
             continue
         with stock_catalog_txn(universe) as fresh:
-            for orphan, start, end in queue[universe]:
+            for orphan, start, end, semantics in queue[universe]:
                 is_home = universe == orphan.universe
                 if not is_home and orphan.path not in adopted:
                     continue
@@ -396,7 +421,8 @@ def adopt_stock_orphans(orphans: list[Path], names: set[str]) -> tuple[list[Path
                         adopted.add(orphan.path)
                     continue
                 update_stock_timeframe_entry(fresh, orphan.symbol, orphan.timeframe, orphan.provider,
-                                             orphan.path, start, end, session=orphan.session)
+                                             orphan.path, start, end, session=orphan.session,
+                                             semantics=semantics)
                 if is_home:
                     adopted.add(orphan.path)
         written.append(universe)

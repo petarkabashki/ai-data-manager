@@ -199,7 +199,7 @@ Issue kinds:
 | `file_missing` | `file_path` points at nothing | No — investigate |
 | `no_file_path` | The node records no path at all | No |
 | `no_provider` | Provider can't be determined from node, key or entry | No |
-| `orphan_file` | A parquet under an OHLCV root that no catalog references | Crypto, crypto-futures and stocks: adopted (the path names the catalog, symbol and timeframe; JSON `orphans_adopted`). A stock file is left reported if its universe doesn't list a symbol others do, if a node there points elsewhere, or if it is an IBKR copy outside the symbol's home. Adopted stock nodes get the provider's default semantics. Others: no |
+| `orphan_file` | A parquet under an OHLCV root that no catalog references | Crypto, crypto-futures and stocks: adopted (the path names the catalog, symbol and timeframe; JSON `orphans_adopted`). A stock file is left reported if its universe doesn't list a symbol others do, if a node there points elsewhere, if it is an IBKR copy outside the symbol's home, or if nothing settles its `adjustment`. Adopted stock nodes take `adjustment` from the same symbol's other nodes for that provider; if those disagree, or a YF file has none, it stays reported (IBKR falls back to its default). Others: no |
 
 ```bash
 uv run python tools/check_catalog.py --json
