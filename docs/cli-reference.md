@@ -17,6 +17,7 @@ first when one is offered.
 | [`fix_daily_stamps.py`](#fix_daily_stampspy) | write | Restamp daily+ bars to 00:00 UTC of their date; drop duplicate dates |
 | [`backup_delta.py`](#backup_deltapy) | write (`.deltas/`, a restore dir) | Row-level backup deltas: export what changed, restore any night |
 | [`download_crypto.py`](#download_cryptopy) | write | Download via freqtrade, merge parquet, update catalog |
+| [`fill_crypto_holes.py`](#fill_crypto_holespy) | write (with `--apply`) | Fill the internal holes of stored crypto series; records what the exchange doesn't hold |
 | [`download_funding.py`](#download_fundingpy) | write | Fetch perpetual funding-rate history next to each contract's bars |
 | [`convert_crypto.py`](#convert_cryptopy) | write | Bulk-normalize crypto parquet/JSON to canonical schema |
 | [`download_market_caps.py`](#download_market_capspy) | write | Fetch CoinGecko market-cap history + snapshot/top-N exports |
@@ -136,6 +137,10 @@ uv run python tools/check_gaps.py --catalog sp500 --timeframe 1d --internal
 uv run python tools/check_gaps.py --all-catalogs --json
 uv run python tools/check_gaps.py --catalog sp500 --calendar us_equity_extended
 ```
+
+Windows in `price-data/exchange_empty.yaml` (see
+[`fill_crypto_holes.py`](#fill_crypto_holespy)) are reported apart from gaps
+and don't fail a series.
 
 Intraday expectation is an overlap test against the session window rather than
 a reconstruction of the provider's bar grid, so intraday candle counts are
@@ -282,7 +287,7 @@ uv run python tools/download_crypto.py --exchange bitget --trading-mode futures 
 | `--since` | Start for series with no data (and for `--full`). Default: the pair's listing |
 | `--full` | Ignore stored data and refetch from `--since` or the listing |
 
-kucoin and bitget futures, bitget spot 3d/1w/1Mo, and every perpetual not
+kucoin and bitget futures, all of bitget spot, and every perpetual not
 settled in USDT go through ccxt (`CCXT_ROUTES`, `freqtrade_can`) because
 freqtrade can't page or trade them; everything else through
 freqtrade, `FT_BATCH_PAIRS` pairs per run, each batch merged before the next.
@@ -292,6 +297,47 @@ existing parquet with `normalize_ohlcv()` + dedup-on-timestamp, and updates
 the exchange's YAML catalog. See [`docs/workflows.md`](workflows.md#crypto-refresh)
 for the full refresh workflow and [`.agent/skills/crypto_download/SKILL.md`](../.agent/skills/crypto_download/SKILL.md)
 for the agent-skill version.
+
+`--prepend` doesn't run on the ccxt path; use `--full` there.
+
+---
+
+## `fill_crypto_holes.py`
+
+```
+uv run python tools/fill_crypto_holes.py --exchange {binance,bitget,bybit,kucoin}
+                                         --timeframes TF [TF ...]
+                                         [--trading-mode {spot,futures}]
+                                         [--symbols SYMBOL [SYMBOL ...]]
+                                         [--min-candles N] [--limit N] [--apply]
+```
+
+```bash
+uv run python tools/fill_crypto_holes.py --exchange bitget --timeframes 1h 4h 6h 12h 1d 3d 1w
+uv run python tools/fill_crypto_holes.py --exchange bitget --timeframes 1h --min-candles 50 --limit 10 --apply
+```
+
+Fills the internal holes of stored crypto series and nothing else. Holes are
+read from each parquet file, never from catalog dates, and retired pairs are
+left out. Without `--apply` it prints series, holes, candles and requests per
+timeframe, and touches neither disk nor network. With `--apply` it fetches only
+the hole windows through the paged ccxt path (`CCXT_PAGING`), keeps closed bars,
+merges with `merge_ohlcv_parquet`, and moves catalog dates only if a file's
+bounds differ from them.
+
+What the exchange answers with nothing goes into `exchange_empty.yaml` at the
+data root (`utils/exchange_empty.py`) and isn't requested again; a partly filled
+hole records only what stayed empty. An error is not an answer: the hole stays
+as it was, isn't recorded, and the run exits 1, stopping after
+`MAX_CONSECUTIVE_ERRORS` (20) in a row. Bars that don't line up with the stored
+grid count as a failed hole too, neither merged nor recorded. The parquet files
+and the record are the only state, so a repeat run resumes.
+
+`--min-candles N` skips holes under N candles, after the recorded part is taken
+away. `--limit N` takes the first N holes, for a trial. `1Mo` is refused: it has
+no fixed interval, so no hole rule. Expect
+`sum(ceil(hole candles / page))` requests, more when pages come back short, with
+a page of 200 up to 1d and 100 at 3d/1w; the plan prints that figure.
 
 ---
 

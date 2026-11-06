@@ -71,21 +71,28 @@ DAY_MS = 86_400_000
 # "*" for every timeframe, else the set. Each needs paging freqtrade doesn't do:
 #   kucoin futures — freqtrade doesn't support them at all;
 #   bitget futures — requests at 1d and above are capped at a 90-day window;
-#   bitget spot 3d/1w/1Mo — bitget serves 100 bars a page there, freqtrade
-#     assumes more and stops after the first page (JST 1w ended 2023-11-20).
+#   bitget spot — every timeframe. Series stored through freqtrade at 1h to 1d
+#     hold repeating holes (DOGE 1h: 200 candles kept, 300 missing) that bitget
+#     still serves; its history endpoint takes limit=200 and rejects 500 and
+#     1000 with code 40020. Why freqtrade left them is not established. At
+#     3d/1w/1Mo bitget serves 100 bars a page and freqtrade stopped after the
+#     first (JST 1w ended 2023-11-20). The route is no guarantee of clean data:
+#     3d/1w, on it before the rest, have some holes too. What is already stored
+#     is repaired by tools/fill_crypto_holes.py.
 CCXT_ROUTES: dict[tuple[str, str], str | frozenset[str]] = {
     ("kucoin", "futures"): "*",
     ("bitget", "futures"): "*",
-    ("bitget", "spot"): frozenset({"3d", "1w", "1Mo"}),
+    ("bitget", "spot"): "*",
 }
 
-# (page limit, max request window in ms or None) for the ccxt path. bitget
-# answers a since/until window with the bars *nearest until*, so its windows
-# are sized to one page and the cursor walks forward window by window.
-CCXT_PAGING: dict[tuple[str, str], tuple[int, int | None]] = {
+# (page limit, max request window in ms or None) for the ccxt path, read through
+# ccxt_paging(); the limit may differ by timeframe ({timeframe: limit, "*": the
+# rest}). bitget answers a since/until window with the bars *nearest until*, so
+# its windows are sized to one page and the cursor walks forward window by window.
+CCXT_PAGING: dict[tuple[str, str], tuple[int | dict[str, int], int | None]] = {
     ("kucoin", "futures"): (200, None),
     ("bitget", "futures"): (200, 90 * DAY_MS),
-    ("bitget", "spot"): (100, 365 * 10 * DAY_MS),
+    ("bitget", "spot"): ({"3d": 100, "1w": 100, "1Mo": 100, "*": 200}, 365 * 10 * DAY_MS),
     ("binance", "futures"): (1000, None),
     ("bybit", "futures"): (1000, None),
 }
@@ -107,6 +114,14 @@ def ccxt_timeframes(exchange: str, trading_mode: str, timeframes: list[str]) -> 
     if route is None:
         return []
     return list(timeframes) if route == "*" else [tf for tf in timeframes if tf in route]
+
+
+def ccxt_paging(exchange: str, trading_mode: str, timeframe: str) -> tuple[int, int | None]:
+    """(page limit, max request window in ms or None) for one series."""
+    limit, max_window = CCXT_PAGING.get((exchange, trading_mode), (200, None))
+    if isinstance(limit, dict):
+        limit = limit.get(timeframe, limit["*"])
+    return limit, max_window
 
 
 def _date_to_yyyymmdd(date_str: str) -> str:
@@ -374,9 +389,10 @@ def _last_stored_timestamp(path) -> int | None:
 
 def _fetch_ohlcv_paginated(
     ccxt_ex, pair: str, tf_ccxt: str, since_ms: int, tf_ms: int, limit: int = 200,
-    max_window_ms: int | None = None,
+    max_window_ms: int | None = None, until_ms: int | None = None,
 ) -> pd.DataFrame:
-    """Paginate ccxt fetch_ohlcv from since_ms to now. Skips forward when API returns empty.
+    """Paginate ccxt fetch_ohlcv from since_ms to now, or to `until_ms` (inclusive).
+    Skips forward when API returns empty.
 
     A short page does *not* mean the end of the data. KuCoin returns fewer than
     `limit` candles mid-history for illiquid pairs, and treating that as the end
@@ -391,21 +407,25 @@ def _fetch_ohlcv_paginated(
     end, so a window wider than a page skips the bars at its start.
 
     `tf_ms` for a monthly series is an upper bound (31 days); the cursor then
-    advances by one millisecond past the last bar instead of by a bar length.
+    advances by one millisecond past the last bar instead of by a bar length,
+    and a window is sized by the shortest month: 100 × 31 days spans 102 months,
+    more than a page.
     """
     import time as _time
 
     all_rows: list = []
     current = since_ms
     now_ms = int(_time.time() * 1000)
-    window = min(limit * tf_ms, max_window_ms) if max_window_ms else None
+    shortest_bar = 28 * DAY_MS if tf_ccxt == "1M" else tf_ms
+    window = min(limit * shortest_bar, max_window_ms) if max_window_ms else None
     skip_ms = window or max(limit * tf_ms, 30 * DAY_MS)
     step = 1 if tf_ccxt == "1M" else tf_ms
+    stop_ms = now_ms if until_ms is None else min(now_ms, until_ms + 1)
 
-    while current < now_ms:
+    while current < stop_ms:
         # bitget's until is inclusive: a window one page wide plus its end bar
         # holds limit + 1 bars, and the first is the one dropped.
-        params = {"until": current + window - 1} if window else {}
+        params = {"until": min(current + window, stop_ms) - 1} if window else {}
         rows = ccxt_ex.fetch_ohlcv(pair, tf_ccxt, since=current, limit=limit, params=params)
         if not rows:
             current += skip_ms
@@ -413,7 +433,7 @@ def _fetch_ohlcv_paginated(
             continue
         all_rows.extend(rows)
         last_ts = rows[-1][0]
-        if last_ts >= now_ms - tf_ms:
+        if last_ts >= now_ms - tf_ms or last_ts + step >= stop_ms:
             break
         # Guard against an exchange that keeps returning the same page: without
         # this a non-advancing cursor would spin forever.
@@ -430,7 +450,7 @@ def _fetch_ohlcv_paginated(
         closed_before = int(datetime(today.year, today.month, 1, tzinfo=timezone.utc).timestamp() * 1000)
     else:
         closed_before = now_ms - tf_ms + 1
-    all_rows = [r for r in all_rows if r[0] < closed_before]
+    all_rows = [r for r in all_rows if r[0] < min(closed_before, stop_ms)]
     if not all_rows:
         return empty_ohlcv_frame()
     df = pd.DataFrame(all_rows, columns=CANONICAL_COLS)
@@ -463,7 +483,6 @@ def download_and_merge_ccxt(
     is_futures = trading_mode == "futures"
     ccxt_ex = ccxt_ex or ccxt_exchange(exchange, trading_mode)
     supported_tfs = set(ccxt_ex.timeframes.keys())
-    limit, max_window = CCXT_PAGING.get((exchange, trading_mode), (200, None))
     starts = starts or {}
 
     changes: list[tuple[str, str, int, int]] = []
@@ -489,6 +508,8 @@ def download_and_merge_ccxt(
             if dry_run:
                 print(f"  [dry-run] {symbol}/{tf} from {first} → {relative_to_repo(dst)}")
                 continue
+
+            limit, max_window = ccxt_paging(exchange, trading_mode, tf)
 
             # Resume from what is already stored, like the freqtrade path does.
             # Using the global --since for every series meant a refresh always

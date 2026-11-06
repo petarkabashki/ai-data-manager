@@ -68,6 +68,7 @@ TOOL_LANES: dict[str, str] = {
     "check_catalog": "equity",          # --fix writes catalogs
     "fix_daily_stamps": "equity",       # per provider, see PROVIDER_LANES
     "download_crypto": "crypto",
+    "fill_crypto_holes": "crypto",
     "download_funding": "crypto",       # writes the crypto_futures catalogs too
     "convert_crypto": "crypto",
     "download_deribit_options": "options",

@@ -433,7 +433,7 @@ Jobs run in lanes, serial within each lane:
 | Lane | Tools | Why together |
 |---|---|---|
 | `equity` | download_yf, download_ibkr_*, retry_ibkr_failed_sequentially, check_catalog, fix_daily_stamps | They load, edit and save the same stock/index catalogs |
-| `crypto` | download_crypto, download_funding, convert_crypto | crypto catalogs |
+| `crypto` | download_crypto, fill_crypto_holes, download_funding, convert_crypto | crypto catalogs |
 | `options` / `marketcap` / `futures` | one tool each | disjoint catalogs |
 | `audit` | status, query, check_gaps, check_schema, check_splits | read-only, so never queued behind a download |
 | `backup` | backup_delta | writes only `.deltas/`; the nightly export runs whatever the downloads are doing |

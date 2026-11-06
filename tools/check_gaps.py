@@ -26,7 +26,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from utils.calendars import CALENDAR_NAMES, calendar_by_name
 from utils.catalog import CRYPTO_EXCHANGES, catalog_registry
-from utils.gaps import SymbolAudit, audit_catalog_series, audit_exchange
+from utils.gaps import SymbolAudit, audit_catalog_series, audit_exchange, honour_exchange_empty
 from utils.report import allow_broken_pipe, print_table
 
 
@@ -39,6 +39,7 @@ def report(
     stale = [a for a in audits if not a.error and a.trailing_days >= min_stale_days]
     with_internal = [a for a in audits if not a.error and a.internal_gaps]
     ok = [a for a in audits if a.ok]
+    exchange_empty = [a for a in audits if a.exchange_empty]
     calendars = sorted({a.calendar for a in audits})
 
     print(f"\n{'─'*60}")
@@ -46,6 +47,9 @@ def report(
     print(f"  OK            : {len(ok)}")
     print(f"  Stale (≥{min_stale_days}d)  : {len(stale)}")
     print(f"  Internal gaps : {len(with_internal)}")
+    if exchange_empty:
+        candles = sum(g.missing_candles for a in exchange_empty for g in a.exchange_empty)
+        print(f"  Exchange-empty: {len(exchange_empty)} ({candles} candles on record, not gaps)")
     print(f"  Errors        : {len(errors)}")
     print(f"  Calendar(s)   : {', '.join(calendars) or '—'}")
     print(f"{'─'*60}\n")
@@ -82,6 +86,14 @@ def report(
     elif with_internal and not show_internal:
         print(f"INTERNAL GAPS: {len(with_internal)} series affected (use --internal for details)\n")
 
+    if show_internal and exchange_empty:
+        print("EXCHANGE-EMPTY (the exchange returned nothing; not failures):")
+        for a in exchange_empty:
+            print(f"  {a.exchange}/{a.symbol}/{a.timeframe} — {len(a.exchange_empty)} window(s)")
+            for g in a.exchange_empty:
+                print(f"    {g}")
+        print()
+
 
 def emit_json(audits: list[SymbolAudit], min_stale_days: int) -> None:
     json.dump(
@@ -103,6 +115,10 @@ def emit_json(audits: list[SymbolAudit], min_stale_days: int) -> None:
                     "internal_gaps": [
                         {"start": g.start, "end": g.end, "missing_candles": g.missing_candles}
                         for g in a.internal_gaps
+                    ],
+                    "exchange_empty": [
+                        {"start": g.start, "end": g.end, "missing_candles": g.missing_candles}
+                        for g in a.exchange_empty
                     ],
                     "error": a.error,
                     "ok": a.ok,
@@ -188,6 +204,8 @@ def main() -> None:
         if not args.json:
             print(f"{len(audits)} series")
         all_audits.extend(audits)
+
+    honour_exchange_empty(all_audits)
 
     if args.json:
         emit_json(all_audits, args.stale_days)
