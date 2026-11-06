@@ -74,6 +74,16 @@ directory level under the class:
   ```
   Use `utils.catalog.update_stock_timeframe_entry()` to write these — it
   cannot clobber another provider's node because they're different dict keys.
+  **Every stock catalog writer must do so inside `stock_catalog_txn()`** (a
+  `catalog_txn()` on the universe): an exclusive lock on `<catalog>.yaml.lock`,
+  a fresh load, your edits, the dump. Re-apply a mutator to the copy it yields;
+  never save a catalog or a node from memory, because `tools/ibkr_worker.sh` runs
+  IBKR workers outside the PDM lanes and a whole-file save erases their nodes.
+  No downloads or parquet scans inside the txn: buffer the edits
+  (`PendingStockWrites`, or collect during the scan) and apply them afterwards.
+  Never nest two txns. `migrate_price_data_layout.py` is the one exception, an
+  offline migration. Index, commodity and macro catalogs still rely on the
+  `equity` lane for one writer at a time.
   Never manually flatten this back to a single node per timeframe.
   The node key is `PROVIDER` for the default session and `PROVIDER:session`
   otherwise (`IBKR:overnight`), because `session` is part of the *filename* —
@@ -234,7 +244,7 @@ uv run python tools/convert_crypto.py [--exchange X] [--dry-run]
 | `tools/query.py` | Query available series — any asset class, any provider — with date ranges and staleness |
 | `tools/check_gaps.py` | Audit any catalog for internal gaps and staleness, against its trading calendar |
 | `tools/check_schema.py` | Verify every OHLCV-classed parquet file matches the canonical schema, and daily/weekly/monthly files the 00:00 UTC stamp rule |
-| `tools/check_catalog.py` | Verify every catalog node has valid semantics and matches its file; `--fix` backfills and adopts orphan crypto files |
+| `tools/check_catalog.py` | Verify every catalog node has valid semantics and matches its file; `--fix` backfills and adopts orphan crypto and stock files |
 | `tools/check_splits.py` | Find un-back-adjusted split seams inside stored files — history at the old share count spliced to bars at the new one |
 | `tools/fix_daily_stamps.py` | Restamp a provider's daily/weekly/monthly bars to 00:00 UTC of their date and drop duplicate dates, with backups |
 | `tools/backup_delta.py` | Row-level backup deltas: export the rows that changed each night (host), plan, prune and restore from a base plus deltas (hub) |
@@ -246,7 +256,7 @@ uv run python tools/convert_crypto.py [--exchange X] [--dry-run]
 | `tools/download_ibkr_index.py` | Download IBKR intraday index bars (e.g. 1h) for US indices, merged alongside YF's daily data |
 | `tools/retry_ibkr_failed_sequentially.py` | Re-run the symbols an IBKR stock download failed on, one timeframe at a time |
 | `tools/ibkr_progress.py` | One-line status of a running IBKR stock download, read from its progress snapshot |
-| `tools/dedupe_stock_universes.py` | Fold a later stock universe's IBKR files into the universe that already holds the symbol; backs up first, repoints the catalog |
+| `tools/dedupe_stock_universes.py` | Fold a later stock universe's IBKR files into the universe that already holds the symbol; backs up first, repoints the catalog. Not while workers are on that universe: the catalog lock doesn't cover the files it moves |
 | `tools/download_yf.py` | Download Yahoo bars for stock universes, indexes and commodities |
 | `tools/import_futures.py` | Import a bulk per-contract futures archive from any vendor into `futures/<provider>/` |
 | `tools/download_deribit_options.py` | Download Deribit crypto option history (the only venue serving expired options) into `options/<provider>/` |
@@ -427,7 +437,12 @@ Notes:
 - `--adjusted` sets `auto_adjust`, and the choice is written to the node's
   `adjustment` field either way. The default is as-traded, matching what is
   already on disk.
-- The catalog is saved after each series, so a long run stays resumable.
+- Index, commodity and macro catalogs are saved after each series, so a long
+  run stays resumable. Stock catalogs are written in a `stock_catalog_txn()`
+  about every 60s and on any exit, including an exception or SIGTERM: a load and
+  dump takes seconds on a big universe, under a lock IBKR workers also need. A
+  SIGKILL loses up to that much of the catalog; `check_catalog.py --fix`
+  re-registers the files.
 - Macro (`WTB3MS`): `--asset-class Macro --timeframes 1d`. It is a rate series, not OHLCV.
   The file is stored from Yahoo `^IRX` (`utils/yf.MACRO_TICKERS`), the close becomes `Value`,
   and `merge_rate_series()` keeps the `Value`-on-`Date` layout. Daily only; `--adjusted` is refused.
@@ -552,7 +567,9 @@ agents, strategies — never mount `price-data/`; they ask the server.
 - **Python**: `from pdm.client import PriceDataClient`.
 - The server only ever runs tools from the whitelist in `pdm/jobs.py`, as an
   argv list, never a shell string. Tools that write the same catalog share a
-  lane and run one at a time (YF and IBKR both write `sp500.yaml`).
+  lane and run one at a time (YF and IBKR both write `sp500.yaml`). IBKR workers
+  from `tools/ibkr_worker.sh` run outside the lanes, which is why stock catalog
+  writers also take `stock_catalog_txn()`; see the data conventions.
 - Live bars and quotes (`live/...`, `quote/...`, py-qwant's `prices`) are
   broadcast only, never written to disk. Stored history is still the product
   of the download tools.

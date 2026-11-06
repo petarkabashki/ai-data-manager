@@ -10,7 +10,14 @@ This module owns three things nothing else may re-implement:
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import fcntl
+import os
+import secrets
+import signal
+import threading
+import time
+from collections.abc import Callable, Iterator
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -288,16 +295,48 @@ def _dump_yaml(path: Path, data: dict) -> None:
 
     Every catalog saver routes through here so durability is one decision
     rather than four near-identical copies.
+
+    The temp name is unique, so a writer outside any lock cannot rename another's
+    temp away. That alone does not make such a writer safe: it still overwrites
+    whatever landed since it loaded. See `catalog_txn`.
+
+    The catalog keeps its mode (other users read these); a new one gets the
+    umask default. `os.open` is used rather than mkstemp, which would give 0600.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp")
     try:
-        with open(tmp, "w") as f:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
+        with os.fdopen(fd, "w") as f:
+            if path.exists():
+                os.fchmod(fd, path.stat().st_mode & 0o7777)
             yaml.dump(data, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
         tmp.replace(path)
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise
+
+
+@contextmanager
+def catalog_txn(path: Path, load: Callable[[], dict]) -> Iterator[dict]:
+    """Read-modify-write one catalog under an exclusive lock.
+
+    Takes `flock` on `<catalog>.yaml.lock`, yields a fresh copy from `load`, and
+    writes it back when the body returns. A body that raises writes nothing.
+
+    The body re-applies a mutator (`update_stock_timeframe_entry`, say) to the
+    yielded copy rather than storing anything from memory, so whatever another
+    writer put there survives. Keep it to dict edits: no downloads and no parquet
+    scans under the lock. Never open a second txn inside one: another catalog's
+    risks deadlock against a writer taking them in the other order, and the same
+    catalog's blocks forever.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path.with_name(path.name + ".lock"), "a") as lock:  # closing it unlocks
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        data = load()
+        yield data
+        _dump_yaml(path, data)
 
 
 def catalog_path(exchange: str) -> Path:
@@ -564,26 +603,14 @@ def save_stock_catalog(universe: str, data: dict) -> None:
     _dump_yaml(stock_catalog_path(universe), data)
 
 
-def save_stock_symbol(universe: str, symbol: str, node: dict) -> None:
-    """Write one symbol's node into the universe catalog, safe for parallel writers.
+def stock_catalog_txn(universe: str) -> AbstractContextManager[dict]:
+    """`catalog_txn` for a stock universe. Every stock catalog writer goes through
+    this: IBKR workers run outside the PDM lanes, so a lane does not exclude them."""
+    return catalog_txn(stock_catalog_path(universe), lambda: load_stock_catalog(universe))
 
-    `save_stock_catalog` overwrites the whole file from the caller's in-memory
-    copy, so two downloaders working different symbols would silently drop each
-    other's entries. This takes an exclusive lock, re-reads the file, replaces
-    only `symbol`, and writes back.
-    """
-    import fcntl
 
-    path = stock_catalog_path(universe)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path.with_name(path.name + ".lock"), "w") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        try:
-            disk = load_stock_catalog(universe)
-            disk[symbol] = node
-            _dump_yaml(path, disk)
-        finally:
-            fcntl.flock(lock, fcntl.LOCK_UN)
+#: IBKR intraday session filters, part of the filename. See `provider_node_key`.
+IBKR_SESSIONS = ("all", "overnight")
 
 
 def stock_file_path(
@@ -674,6 +701,58 @@ def update_stock_timeframe_entry(
 
     _set_provider_node(entry, timeframe, provider_node_key(provider, session), node)
     recompute_entry_bounds(entry)
+
+
+class PendingStockWrites:
+    """Buffer stock catalog mutators and apply them in a `stock_catalog_txn`.
+
+    A load and dump of a big catalog takes seconds (3.2s on russell2000), so a
+    download buffers its mutators, holds no lock while it fetches, and writes on
+    a timer. Used as a context manager it flushes on every exit, exception and
+    `sys.exit` included. SIGTERM, which is how PDM cancels a job, would otherwise
+    kill the process without unwinding, so while inside it raises SystemExit.
+
+    Each universe is flushed in its own txn, one after the other, so two catalogs'
+    locks are never held together.
+    """
+
+    def __init__(self, every_s: float = 0.0):
+        self.every_s = every_s
+        self.pending: dict[str, list[Callable[[dict], None]]] = {}
+        self.last = time.monotonic()
+        self._sigterm = None
+
+    def add(self, universe: str, mutate: Callable[[dict], None]) -> None:
+        self.pending.setdefault(universe, []).append(mutate)
+
+    def checkpoint(self) -> None:
+        """Flush if `every_s` has passed since the last flush."""
+        if time.monotonic() - self.last >= self.every_s:
+            self.flush()
+
+    def flush(self) -> None:
+        for universe in list(self.pending):
+            with stock_catalog_txn(universe) as fresh:
+                for mutate in self.pending[universe]:
+                    mutate(fresh)
+            del self.pending[universe]  # only now: a failed flush is retried on exit
+        self.last = time.monotonic()
+
+    def __enter__(self) -> PendingStockWrites:
+        self.last = time.monotonic()
+        if threading.current_thread() is threading.main_thread():
+            def _exit(signum, _frame):
+                raise SystemExit(128 + signum)
+            self._sigterm = signal.signal(signal.SIGTERM, _exit)
+        return self
+
+    def __exit__(self, *_exc) -> None:
+        try:
+            self.flush()
+        finally:
+            if self._sigterm is not None:
+                signal.signal(signal.SIGTERM, self._sigterm)
+                self._sigterm = None
 
 
 def index_catalog_path() -> Path:
@@ -965,6 +1044,9 @@ class CatalogSpec:
     save: Callable[[dict], None]
     #: Canonical path builder, for checking the provider-first rule.
     path_for: Callable[..., Path] | None = None
+    #: Locked read-modify-write. Set for catalogs with writers outside the PDM
+    #: lanes, and then writers use this rather than `load` + `save`.
+    txn: Callable[[], AbstractContextManager[dict]] | None = None
 
 
 STOCK_UNIVERSES = ["sp500", "nasdaq100", "russell2000", "delisted_stocks"]
@@ -1009,6 +1091,7 @@ def catalog_registry() -> list[CatalogSpec]:
                 nested=True,
                 load=lambda u=universe: load_stock_catalog(u),
                 save=lambda data, u=universe: save_stock_catalog(u, data),
+                txn=lambda u=universe: stock_catalog_txn(u),
             )
         )
 
@@ -1071,6 +1154,71 @@ def refresh_entry_dates(entry: dict) -> bool:
     return changed
 
 
+@dataclass(frozen=True, slots=True)
+class DateFix:
+    """A node whose recorded dates disagree with its file, found by a scan."""
+
+    symbol: str
+    timeframe: str
+    node_key: str
+    file_path: str
+    seen: tuple[str | None, str | None]
+    dates: tuple[str, str]
+
+
+def node_at(catalog: dict, symbol: str, timeframe: str, node_key: str) -> dict | None:
+    """The node at this address, or None. `node_key` "" is a flat timeframe."""
+    entry = catalog.get(symbol)
+    tf_node = entry.get("timeframe_dates", {}).get(timeframe) if isinstance(entry, dict) else None
+    if not isinstance(tf_node, dict):
+        return None
+    return tf_node if not node_key else tf_node.get(node_key)
+
+
+def scan_date_fixes(catalog: dict, wanted: set[Path] | None = None) -> list[DateFix]:
+    """Read the parquet files behind `catalog` (only `wanted`, if given, resolved
+    paths) and list the nodes whose dates differ. Writes nothing, takes no lock."""
+    fixes: list[DateFix] = []
+    for symbol, entry in catalog.items():
+        if not isinstance(entry, dict):
+            continue
+        for timeframe, node_key, node in iter_timeframe_nodes(entry):
+            fp_str = node.get("file_path", "")
+            if not fp_str:
+                continue
+            path = resolve_from_repo(fp_str)
+            if wanted is not None:
+                path = path.resolve()
+                if path not in wanted:
+                    continue
+            result = read_parquet_range(path)
+            if not result:
+                continue
+            seen = (node.get("start_date"), node.get("end_date"))
+            if seen != result[:2]:
+                fixes.append(DateFix(symbol, timeframe, node_key, fp_str, seen, result[:2]))
+    return fixes
+
+
+def apply_date_fixes(catalog: dict, fixes: list[DateFix]) -> int:
+    """Apply a scan's fixes to `catalog`. Returns how many entries changed.
+
+    A node that changed since the scan is left alone: a writer got there first
+    with newer dates, and the scan's would move them back.
+    """
+    touched: set[str] = set()
+    for fix in fixes:
+        node = node_at(catalog, fix.symbol, fix.timeframe, fix.node_key)
+        if (node is None or node.get("file_path") != fix.file_path
+                or (node.get("start_date"), node.get("end_date")) != fix.seen):
+            continue
+        node["start_date"], node["end_date"] = fix.dates
+        touched.add(fix.symbol)
+    for symbol in touched:
+        recompute_entry_bounds(catalog[symbol])
+    return len(touched)
+
+
 def refresh_dates_for_files(paths: list[Path] | set[Path]) -> list[str]:
     """Refresh the dates of every catalog node that points at one of `paths`.
 
@@ -1083,37 +1231,27 @@ def refresh_dates_for_files(paths: list[Path] | set[Path]) -> list[str]:
         return written
     for spec in catalog_registry():
         catalog = spec.load()
-        changed = False
-        for entry in catalog.values():
-            if not isinstance(entry, dict):
-                continue
-            touched = False
-            for node in _iter_provider_nodes(entry.get("timeframe_dates", {})):
-                fp_str = node.get("file_path", "")
-                path = resolve_from_repo(fp_str).resolve() if fp_str else None
-                if path not in wanted:
-                    continue
-                result = read_parquet_range(path)
-                if result and (node.get("start_date"), node.get("end_date")) != result[:2]:
-                    node["start_date"], node["end_date"] = result[0], result[1]
-                    touched = True
-            if touched:
-                recompute_entry_bounds(entry)
-                changed = True
-        if changed:
+        fixes = scan_date_fixes(catalog, wanted)
+        if not fixes:
+            continue
+        if spec.txn:
+            with spec.txn() as fresh:
+                apply_date_fixes(fresh, fixes)
+        else:
+            apply_date_fixes(catalog, fixes)
             spec.save(catalog)
-            written.append(spec.name)
+        written.append(spec.name)
     return written
 
 
 def refresh_stock_catalog_dates(universe: str) -> int:
     """Scan parquet files and update start/end dates in a stock catalog.
     Returns count of entries updated."""
-    catalog = load_stock_catalog(universe)
-    updated = sum(1 for entry in catalog.values() if refresh_entry_dates(entry))
-    if updated:
-        save_stock_catalog(universe, catalog)
-    return updated
+    fixes = scan_date_fixes(load_stock_catalog(universe))
+    if not fixes:
+        return 0
+    with stock_catalog_txn(universe) as fresh:
+        return apply_date_fixes(fresh, fixes)
 
 
 def refresh_index_catalog_dates() -> int:

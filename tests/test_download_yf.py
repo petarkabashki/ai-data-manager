@@ -313,7 +313,7 @@ def test_dry_run_is_safe_in_a_read_only_sandbox(yf_env, monkeypatch, capsys):
         raise AssertionError("dry-run must not construct a fetcher or save a catalog")
 
     monkeypatch.setattr(tool, "YahooFetcher", forbidden)
-    monkeypatch.setattr(tool, "save_stock_catalog", forbidden)
+    monkeypatch.setattr(tool.PendingStockWrites, "add", forbidden)
     before = {p: p.stat().st_mtime_ns for p in root.rglob("*")}
     os.chmod(root, stat.S_IRUSR | stat.S_IXUSR)
     try:

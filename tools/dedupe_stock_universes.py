@@ -20,7 +20,12 @@ home's row is kept and the count is reported. If the two copies sit on different
 price scales (a split or spin-off adjusted in only one) the file is a conflict:
 both copies are left untouched and reported for a human to resolve. Every file is copied under
 `--backup-dir` first, and nothing is deleted until the home is verified to hold
-every timestamp. Run it while no IBKR download is writing.
+every timestamp.
+
+Do not run it while workers are on that universe. Catalog writes go through
+`stock_catalog_txn`, but the lock does not protect the files this moves and
+deletes. PDM keeps it in the equity lane; `tools/ibkr_worker.sh` runs outside
+the lanes, so stop those workers by hand first.
 """
 
 from __future__ import annotations
@@ -44,7 +49,7 @@ from utils.catalog import (
     merge_ohlcv_parquet,
     provider_node_key,
     read_parquet_range,
-    save_stock_catalog,
+    stock_catalog_txn,
     stock_home_universe,
 )
 from utils.config import TMP_ROOT, relative_to_repo
@@ -131,10 +136,18 @@ def remove_source(plan: FilePlan) -> None:
         pass  # other files remain in the symbol directory
 
 
-def repoint_node(catalog: dict, symbol: str, timeframe: str, session: str | None, dst: Path) -> bool:
+def repoint_node(
+    catalog: dict,
+    symbol: str,
+    timeframe: str,
+    session: str | None,
+    dst: Path,
+    span: tuple[str, str, int] | None,
+) -> bool:
     """Point an existing catalog node at the shared file, refreshing its dates.
 
-    Edits the node in place so its other fields survive. Returns False when the
+    `span` is `read_parquet_range(dst)`, read by the caller before taking the
+    catalog lock. Edits the node in place so its other fields survive. Returns False when the
     catalog has no such node (nothing to repoint).
     """
     nodes = catalog.get(symbol, {}).get("timeframe_dates", {}).get(timeframe)
@@ -142,7 +155,6 @@ def repoint_node(catalog: dict, symbol: str, timeframe: str, session: str | None
     if not node:
         return False
     node["file_path"] = relative_to_repo(dst)
-    span = read_parquet_range(dst)
     if span:
         node["start_date"], node["end_date"], _ = span
     return True
@@ -209,10 +221,11 @@ def main() -> int:
                 errors.append((symbol, src.name, str(exc)))
                 print(f"  {symbol}/{src.name}: FAILED ({exc})")
         if folded:
-            for plan in folded:
-                session, timeframe = _split_name(plan.src, symbol)
-                repoint_node(catalog, symbol, timeframe, session, plan.dst)
-            save_stock_catalog(args.universe, catalog)
+            spans = [read_parquet_range(plan.dst) for plan in folded]
+            with stock_catalog_txn(args.universe) as fresh:
+                for plan, span in zip(folded, spans):
+                    session, timeframe = _split_name(plan.src, symbol)
+                    repoint_node(fresh, symbol, timeframe, session, plan.dst, span)
             for plan in folded:
                 remove_source(plan)
 

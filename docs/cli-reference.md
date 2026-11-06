@@ -184,7 +184,7 @@ uv run python tools/check_catalog.py
 | Flag | Meaning |
 |---|---|
 | `--catalog` | Limit to named catalogs (`indexes`, `sp500`, `crypto_binance`, `macro`, …). Suppresses the orphan scan |
-| `--fix` | Backfill missing semantics, migrate flat nodes, refresh drifted dates, adopt orphan crypto files |
+| `--fix` | Backfill missing semantics, migrate flat nodes, refresh drifted dates, adopt orphan crypto and stock files |
 | `--skip-dates` | Don't open parquet files to verify dates — much faster on 5,000 symbols |
 | `--skip-orphans` | Don't walk the data tree looking for unreferenced files |
 | `--json` | Machine-readable output |
@@ -199,7 +199,7 @@ Issue kinds:
 | `file_missing` | `file_path` points at nothing | No — investigate |
 | `no_file_path` | The node records no path at all | No |
 | `no_provider` | Provider can't be determined from node, key or entry | No |
-| `orphan_file` | A parquet under an OHLCV root that no catalog references | Crypto and crypto-futures: adopted (the path names the catalog, symbol and timeframe; JSON `orphans_adopted`). Others: no |
+| `orphan_file` | A parquet under an OHLCV root that no catalog references | Crypto, crypto-futures and stocks: adopted (the path names the catalog, symbol and timeframe; JSON `orphans_adopted`). A stock file is left reported if its universe doesn't list a symbol others do, if a node there points elsewhere, or if it is an IBKR copy outside the symbol's home. Adopted stock nodes get the provider's default semantics. Others: no |
 
 ```bash
 uv run python tools/check_catalog.py --json
@@ -707,6 +707,9 @@ uv run python tools/dedupe_stock_universes.py
 uv run python tools/dedupe_stock_universes.py                       # plan
 uv run python tools/dedupe_stock_universes.py --apply --backup-dir /path/to/backup
 ```
+
+Do not run it while workers are on that universe: the catalog lock does not cover
+the files it moves, and `tools/ibkr_worker.sh` runs outside the PDM lanes.
 
 Applies to IBKR files only. For each file under `stocks/ibkr/<universe>/<SYMBOL>/`
 the tool compares it with the same file in the symbol's home universe

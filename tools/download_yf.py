@@ -41,6 +41,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from functools import partial
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -51,6 +52,7 @@ from utils.catalog import (
     DATE_LABELLED_TIMEFRAMES,
     REPO_ROOT,
     STOCK_UNIVERSES,
+    PendingStockWrites,
     commodity_file_path,
     index_file_path,
     load_index_catalog,
@@ -63,7 +65,6 @@ from utils.catalog import (
     read_parquet_range,
     save_index_catalog,
     save_simple_catalog,
-    save_stock_catalog,
     stock_file_path,
     update_index_timeframe_entry,
     update_simple_timeframe_entry,
@@ -76,12 +77,23 @@ from utils.yf import UnsupportedTimeframe, YahooFetcher, fetch_ohlcv
 
 PROVIDER = "YF"
 
+#: Stock catalogs are written this often rather than per series. A load and dump
+#: of russell2000 takes ~3.2s under the lock the IBKR workers also need, which
+#: per series would cost ~1.7h on a full run. A kill loses at most this much of
+#: the catalog; `check_catalog.py --fix` re-registers the files.
+STOCK_FLUSH_SECONDS = 60.0
+
 
 def _stock_target(universe: str):
-    """(loader, saver, path builder, writer) for one stock universe."""
+    """(loader, saver, path builder, writer) for one stock universe.
+
+    No saver: IBKR workers write the same catalog outside the PDM lanes, so a
+    whole-file save would erase their nodes. Stock writes go through
+    `PendingStockWrites` in `main`.
+    """
     return (
         lambda: load_stock_catalog(universe),
-        lambda catalog: save_stock_catalog(universe, catalog),
+        None,
         lambda symbol, tf: stock_file_path(PROVIDER, universe, symbol, tf),
         lambda catalog, symbol, tf, path, start, end, semantics: update_stock_timeframe_entry(
             catalog, symbol, tf, PROVIDER, path, start, end, semantics=semantics
@@ -136,6 +148,11 @@ def merge_macro(frame, dst: Path) -> tuple[int, int, str, str]:
     old_rows, new_rows = merge_rate_series(values, dst)
     stored = read_rate_series(dst)
     return old_rows, new_rows, stored.index[0].strftime("%Y-%m-%d"), stored.index[-1].strftime("%Y-%m-%d")
+
+
+def _apply_entry(write_entry, symbol, timeframe, dst, start, end, semantics, catalog: dict) -> None:
+    """`write_entry` with the catalog last, so it can be bound and replayed on a fresh copy."""
+    write_entry(catalog, symbol, timeframe, dst, start, end, semantics)
 
 
 def resolve_target(universe: str | None, asset_class: str | None):
@@ -266,71 +283,77 @@ def main() -> None:
         say(f"Closes  : {'adjusted' if args.adjusted else 'as-traded (raw)'}")
     say(f"Calendar: {calendar_name}\n")
 
-    for symbol in symbols:
-        for timeframe in args.timeframes:
-            dst = path_for(symbol, timeframe)
-            try:
-                ranges = plan_download_ranges(
-                    dst,
-                    since=args.since,
-                    full=args.full,
-                    download_end=download_end,
-                    overlap_days=args.overlap_days,
-                    timeframe=timeframe,
-                )
-            except ValueError as exc:
-                p.error(str(exc))
+    with PendingStockWrites(STOCK_FLUSH_SECONDS) as pending:
+        for symbol in symbols:
+            for timeframe in args.timeframes:
+                dst = path_for(symbol, timeframe)
+                try:
+                    ranges = plan_download_ranges(
+                        dst,
+                        since=args.since,
+                        full=args.full,
+                        download_end=download_end,
+                        overlap_days=args.overlap_days,
+                        timeframe=timeframe,
+                    )
+                except ValueError as exc:
+                    p.error(str(exc))
 
-            plan.append({
-                "symbol": symbol,
-                "timeframe": timeframe,
-                "file": relative_to_repo(dst),
-                "current": not ranges,
-                "ranges": [
-                    {"start": r.start.strftime("%Y-%m-%d"), "end": r.end.strftime("%Y-%m-%d"),
-                     "reason": r.reason}
-                    for r in ranges
-                ],
-            })
-            if not ranges:
-                say(f"  {symbol}/{timeframe}: already current")
-                continue
-
-            say(f"  {symbol}/{timeframe}: {format_ranges(ranges)}")
-            if args.dry_run:
-                continue
-
-            try:
-                frame = download_symbol_timeframe(
-                    fetcher, symbol, asset_class, timeframe, ranges,
-                    auto_adjust=args.adjusted, sleep_seconds=args.sleep_seconds,
-                )
-            except UnsupportedTimeframe as exc:
-                p.error(str(exc))
-            except Exception as exc:
-                failures.append((symbol, timeframe, str(exc)))
-                say(f"  {symbol}/{timeframe}: FAILED ({exc})")
-                continue
-
-            if frame.empty:
-                continue
-
-            if asset_class == "Macro":
-                old_rows, new_rows, start_date, end_date = merge_macro(frame, dst)
-            else:
-                old_rows, new_rows = merge_ohlcv_parquet(
-                    frame, dst, daily=timeframe in DATE_LABELLED_TIMEFRAMES)
-                result = read_parquet_range(dst)
-                if result is None:
-                    failures.append((symbol, timeframe, "merged file unreadable"))
+                plan.append({
+                    "symbol": symbol,
+                    "timeframe": timeframe,
+                    "file": relative_to_repo(dst),
+                    "current": not ranges,
+                    "ranges": [
+                        {"start": r.start.strftime("%Y-%m-%d"), "end": r.end.strftime("%Y-%m-%d"),
+                         "reason": r.reason}
+                        for r in ranges
+                    ],
+                })
+                if not ranges:
+                    say(f"  {symbol}/{timeframe}: already current")
                     continue
-                start_date, end_date, _ = result
 
-            write_entry(catalog, symbol, timeframe, dst, start_date, end_date, semantics)
-            save(catalog)  # checkpoint per series: a long run stays resumable
-            updated += 1
-            rows.append([symbol, timeframe, old_rows, new_rows, new_rows - old_rows, end_date])
-            say(f"    wrote {relative_to_repo(dst)} ({old_rows}->{new_rows} rows)")
+                say(f"  {symbol}/{timeframe}: {format_ranges(ranges)}")
+                if args.dry_run:
+                    continue
+
+                try:
+                    frame = download_symbol_timeframe(
+                        fetcher, symbol, asset_class, timeframe, ranges,
+                        auto_adjust=args.adjusted, sleep_seconds=args.sleep_seconds,
+                    )
+                except UnsupportedTimeframe as exc:
+                    p.error(str(exc))
+                except Exception as exc:
+                    failures.append((symbol, timeframe, str(exc)))
+                    say(f"  {symbol}/{timeframe}: FAILED ({exc})")
+                    continue
+
+                if frame.empty:
+                    continue
+
+                if asset_class == "Macro":
+                    old_rows, new_rows, start_date, end_date = merge_macro(frame, dst)
+                else:
+                    old_rows, new_rows = merge_ohlcv_parquet(
+                        frame, dst, daily=timeframe in DATE_LABELLED_TIMEFRAMES)
+                    result = read_parquet_range(dst)
+                    if result is None:
+                        failures.append((symbol, timeframe, "merged file unreadable"))
+                        continue
+                    start_date, end_date, _ = result
+
+                if args.universe:
+                    pending.add(args.universe, partial(
+                        _apply_entry, write_entry, symbol, timeframe, dst, start_date, end_date, semantics))
+                    pending.checkpoint()
+                else:
+                    write_entry(catalog, symbol, timeframe, dst, start_date, end_date, semantics)
+                    save(catalog)  # checkpoint per series: a long run stays resumable
+                updated += 1
+                rows.append([symbol, timeframe, old_rows, new_rows, new_rows - old_rows, end_date])
+                say(f"    wrote {relative_to_repo(dst)} ({old_rows}->{new_rows} rows)")
 
     if rows and not args.json:
         print()

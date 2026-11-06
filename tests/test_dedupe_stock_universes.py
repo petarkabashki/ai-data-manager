@@ -89,13 +89,13 @@ def test_repoint_edits_the_node_in_place(tmp_path, monkeypatch, ohlcv):
         "file_path": "price-data/nq/A-all-1h.parquet", "start_date": "x", "end_date": "y",
         "session": "all", "what_to_show": "TRADES"}}}}}
 
-    assert dd.repoint_node(catalog, "A", "1h", "all", dst)
+    assert dd.repoint_node(catalog, "A", "1h", "all", dst, dd.read_parquet_range(dst))
     node = catalog["A"]["timeframe_dates"]["1h"]["IBKR"]
     assert node["file_path"] == "price-data/sp/A-all-1h.parquet"
     assert node["what_to_show"] == "TRADES" and node["session"] == "all"
     assert node["start_date"] != "x"
-    assert not dd.repoint_node(catalog, "A", "4h", "all", dst)
-    assert not dd.repoint_node(catalog, "B", "1h", "all", dst)
+    assert not dd.repoint_node(catalog, "A", "4h", "all", dst, None)
+    assert not dd.repoint_node(catalog, "B", "1h", "all", dst, None)
 
 
 def test_split_name_handles_sessions():

@@ -19,6 +19,7 @@ import time
 from collections import deque
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
+from functools import partial
 from pathlib import Path
 
 import pandas as pd
@@ -27,12 +28,13 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from utils.config import DATA_ROOT, IBKR_CLIENT_ID, IBKR_HOST, IBKR_PORT, TMP_ROOT, relative_to_repo
 from utils.catalog import (
+    IBKR_SESSIONS,
     REPO_ROOT,
     TF_TO_MS,
+    PendingStockWrites,
     load_stock_catalog,
     merge_ohlcv_parquet,
     read_parquet_range,
-    save_stock_symbol,
     stock_file_path,
     stock_home_universe,
     update_stock_timeframe_entry,
@@ -59,7 +61,7 @@ from utils.ibkr import (
 
 UNIVERSE_CHOICES = ["sp500", "nasdaq100", "russell2000"]
 STOCK_PROVIDER = "IBKR"
-SESSION_CHOICES = ["all", "overnight"]
+SESSION_CHOICES = list(IBKR_SESSIONS)
 
 #: Progress artifacts are per (session, timeframe-set) so concurrent or
 #: sequential runs don't overwrite each other's checkpoints — and so
@@ -306,7 +308,7 @@ def main() -> None:
         args.host, args.port, args.client_id,
         timeout=args.request_timeout,
         max_consecutive_timeouts=args.max_consecutive_timeouts,
-    ) as client:
+    ) as client, PendingStockWrites() as pending:
         contract_cache: dict[str, object] = {}
         head_cache: dict[str, datetime | None] = dict(hints.head)
         catalogs: dict[str, dict] = {}
@@ -504,8 +506,8 @@ def main() -> None:
 
                         # timeframe_dates is keyed by (timeframe, provider), so this can
                         # never clobber another provider's registration for this timeframe.
-                        update_stock_timeframe_entry(
-                            catalog,
+                        register = partial(
+                            update_stock_timeframe_entry,
                             symbol=symbol,
                             timeframe=timeframe,
                             provider=STOCK_PROVIDER,
@@ -515,18 +517,11 @@ def main() -> None:
                             session=args.session,
                             what_to_show=args.what_to_show,
                         )
+                        register(catalog)
+                        pending.add(universe, register)
                         if home != universe:
-                            update_stock_timeframe_entry(
-                                catalogs[home],
-                                symbol=symbol,
-                                timeframe=timeframe,
-                                provider=STOCK_PROVIDER,
-                                file_path=dst,
-                                start_date=start_date,
-                                end_date=end_date,
-                                session=args.session,
-                                what_to_show=args.what_to_show,
-                            )
+                            register(catalogs[home])
+                            pending.add(home, register)
                         overall_updates += 1
                         completed_items += 1
                         progress_state.update({
@@ -622,12 +617,11 @@ def main() -> None:
 
                 reconnects = 0
 
-                if not args.dry_run:
-                    # Per-symbol locked merge, so parallel downloaders don't drop each other's entries.
-                    if symbol in catalog:
-                        save_stock_symbol(universe, symbol, catalog[symbol])
-                    if home != universe and symbol in catalogs[home]:
-                        save_stock_symbol(home, symbol, catalogs[home][symbol])
+                # Per-symbol, each catalog in its own txn. The mutators are re-applied
+                # to the file, never the in-memory node, so a YF node written since
+                # this run loaded survives. `continue` above leaves them queued, and
+                # leaving the `with` flushes whatever is still queued.
+                pending.flush()
 
     progress_state.update({
         "status": "complete",

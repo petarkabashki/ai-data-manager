@@ -34,15 +34,3 @@ def test_range_after_earliest_is_untouched():
     earliest = datetime(2005, 1, 1, tzinfo=UTC)
     r = _r((2010, 1, 1), (2011, 1, 1))
     assert clip_ranges_to_earliest([r], earliest) == [r]
-
-
-def test_save_stock_symbol_merges_instead_of_overwriting(tmp_path, monkeypatch):
-    from utils import catalog
-
-    path = tmp_path / "russell2000.yaml"
-    monkeypatch.setattr(catalog, "stock_catalog_path", lambda universe: path)
-    catalog.save_stock_catalog("russell2000", {"AAA": {"x": 1}, "BBB": {"x": 1}})
-    # a second downloader already added BBB data; this one only knows AAA
-    catalog.save_stock_symbol("russell2000", "BBB", {"x": 2})
-    catalog.save_stock_symbol("russell2000", "AAA", {"x": 3})
-    assert catalog.load_stock_catalog("russell2000") == {"AAA": {"x": 3}, "BBB": {"x": 2}}

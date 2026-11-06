@@ -7,10 +7,15 @@ and a crashing download cannot take the server down with it.
 
 Jobs run in **lanes**, one worker thread per lane, serial within it:
 
-  * `equity`  — YF and IBKR both write `sp500.yaml`, `indexes.yaml` …; each
-    tool loads a catalog, edits it and saves it, so two concurrent writers to
-    one catalog lose updates. Every tool that writes an equity catalog shares
-    this lane.
+  * `equity`  — YF and IBKR both write `sp500.yaml`, `indexes.yaml` …. Index
+    and commodity catalogs are loaded, edited and saved whole, so two concurrent
+    writers lose updates: this lane is their only protection. Stock catalogs
+    are not protected by it, because `tools/ibkr_worker.sh` runs IBKR workers
+    outside the lanes: their writers take `utils.catalog.catalog_txn` instead,
+    and may overlap. The lane still holds tools that move stock files
+    (`dedupe_stock_universes`), which that lock doesn't cover; those must not
+    run alongside workers on the same universe, and only a person can see to
+    that.
   * `crypto`  — freqtrade spot/futures downloads and conversions.
   * `options`, `marketcap`, `futures` — disjoint catalogs, own lanes.
   * `audit`   — read-only tools; never blocked behind a multi-hour download.
@@ -67,6 +72,7 @@ TOOL_LANES: dict[str, str] = {
     "retry_ibkr_failed_sequentially": "equity",
     "check_catalog": "equity",          # --fix writes catalogs
     "fix_daily_stamps": "equity",       # per provider, see PROVIDER_LANES
+    "dedupe_stock_universes": "equity",  # moves files; not while workers run that universe
     "download_crypto": "crypto",
     "download_funding": "crypto",       # writes the crypto_futures catalogs too
     "convert_crypto": "crypto",
