@@ -27,6 +27,7 @@ schema. Every epic is constrained by them.
 | [E14](#e14--funding-on-every-perpetual-venue) | Funding on every perpetual venue | done |
 | [E15](#e15--the-full-crypto-universe) | The full crypto universe | in progress |
 | [E16](#e16--row-level-backup-deltas) | Row-level backup deltas | in progress |
+| [E17](#e17--trustworthy-breadth) | Trustworthy breadth | proposed |
 
 Anything marked done has tests that fail against the previous behaviour.
 
@@ -456,6 +457,17 @@ deploy can restart `pdm` without waiting for the queue to drain.
 - Yahoo adjustment differs per file: sp500 has 429 raw and 69 adjusted,
   nasdaq100 93/15, russell2000 93/1823, delisted 33/0. **Owner decision**:
   pick one convention and re-download the rest.
+- Kucoin spot may hold reused tickers spliced into one series. Across the
+  hole starting 2024-08-15/16 the exchange has no bars, but the close jumps
+  about 316× on ARX (0.000927 to 0.29304) and about 233× on AI (0.0002209 to
+  0.05151); LIT moves about 3×. A different token on the same ticker would
+  fit, and so would a redenomination: token identity is unchecked (found
+  2026-11-06). If so, returns across the join are wrong and no fill can fix
+  them. The other 11 of kucoin's holes of 100+ candles need the same check.
+  **Owner decision**: whether to split these series.
+- Kucoin BRISE/USDT is a live pair we aren't updating: kucoin serves bars to
+  2026-11-01, and our file stops 2024-08-15. Cause unknown. The other 2
+  stopped kucoin symbols are unchecked; don't mark any of them `retired`.
 - Not gaps: two expired options series (expected), and `Adj Close`, which
   the canonical schema drops anyway.
 
@@ -532,9 +544,232 @@ listing, kept current by the nightly schedules. Approved by the owner
   cancelled first; it would have taken ~15 h. That cancel left freqtrade
   running as an orphan: jobs now lead their own process group, and cancel,
   stop and timeout signal the whole group.
+- Bitget spot has about 1.18M missing candles across 1d/12h/6h/4h/1h (found
+  2026-11-06), mostly 300-candle holes. The bars are still on the exchange.
+  Merged, not deployed: spot moves to the ccxt route, and
+  `tools/fill_crypto_holes.py` fills holes only, checking each window at the
+  exchange and recording real absences in `exchange_empty.yaml`. Bitget's
+  history endpoint omits a bar that closes after `until`, so a bounded walk
+  asks for one bar past the hole. 3d files hold two interleaved grids from
+  2024-05-17.
+- Trial 2026-11-07 (`--limit 20` each on 1h-1d and 3d/1w): 28 holes filled,
+  1,025 candles, 0 failed. A8's refilled 1d matches its 1h across 842 days
+  (median difference 0; largest open 2%, volume 25%, not traced). All 12 holes recorded empty are
+  10SET (8 of them) and AVA or 10SET at 3d/1w. Recorded empty doesn't always
+  mean nothing traded: bitget no longer serves 10SET before about 2026-03 or
+  AVA 3d at 2024-02, including bars we already hold, while AAVE's same window
+  is served. So 10SET's four 300-candle holes are our paging loss and can't be
+  refilled from bitget. After the full fill, separate these from true absences
+  in the record (`first served bar` per series), and check 10SET for ticker
+  reuse: 0.8463 before its 2024-05 to 2026-03 hole, 0.01 after (E12, unproven).
+- 26 bitget spot pairs have other timeframes but no 1d file (ZEC, KITE, MON
+  and others), 24 active and 2 retired (SAUCE, PACK). The fill reads holes
+  in existing files, so it won't create them. The first `--universe` run on
+  the ccxt route did (2026-11-07, job 578fc925cdab, 4,393 files updated, no
+  errors in its log): 1d count 1,133 of 1,135, only SAUCE and PACK absent.
+  All 24 start the same day as their 1h, and why the freqtrade route skipped
+  them is unknown.
+- Some series start late. From the catalogs (2026-11-07), series at 1h to 1d
+  starting more than 2 days after the earliest such series of their pair,
+  retired pairs included. 3d, 1w and 1Mo are left out: they're stamped at a
+  period start, which makes a comparison with them meaningless.
+  Bitget spot, 407 pairs: 1d 254/1133, 1h 176, 4h 175, 6h 61, 12h 52. Kucoin
+  perps, 250 pairs: 1h 250/719, 2h 216, 4h 141. Binance spot, 66 pairs: about
+  63 each at 1h, 2h, 4h, 8h and 1d, starting 2020-01-01 where 6h and 12h go
+  earlier. Kucoin spot, 21 pairs: 18 at 1d, fewer below. Bybit spot and
+  binance, bitget and bybit perps: none.
+  Kucoin perps probed live 2026-11-07 (24 active series): the venue appears to
+  stop serving at a date per timeframe, about 2024-08-05 at 1h, 2024-04-07 at
+  2h and 2023-08-11 at 4h. Series starting there got nothing before their
+  first bar: 4h 8 of 8, 2h 5 of 5. By catalog start, 532 of the 607 late series
+  sit at those dates and 75 start after them (1h 35, 2h 40). The sample's
+  newer-listed pairs, ALLO, AAOI, LIGHT and VRT, are still served before their
+  first bar, so those look fillable. Some 1h series starting up to 11 days past
+  the date (ARB, MANTA, SOL, FIL) also had bars before their first bar.
+  Binance spot's 2020-01-01 starts are the first backfill's `--since`, carried
+  in the catalog entry's `start_date` and copied to every later timeframe (the
+  step 3 fix stops the copying; it reaches no existing file). The front repair
+  can reach these 48 active spot pairs: ANKR, ARPA, ATOM, BAND, BAT, BCH, BNB,
+  BTC, CELR, CHZ, CVC, DASH, DOGE, DUSK, ENJ, ETC, FET, FTT, HBAR, HOT, IOST,
+  IOTA, IOTX, KAVA, LINK, LTC, MTL, NEO, ONE, ONG, ONT, QTUM, RLC, RVN, STX,
+  TFUEL, THETA, TRX, TUSD, USDC, VET, WIN, XLM, XRP, XTZ, ZEC, ZIL, ZRX; and
+  3 binance perps: BCH, BTC, ETH (USDT perps listed 2019-09).
+  Bitget 1d clusters on 2023-07-24, 2022-03-11 and 2026-09-27. None of the
+  24 new files are among them, so these are older files: nightlies resume from
+  the last stored bar, and neither the nightly nor the hole fill looks before
+  the first bar. `--prepend` doesn't help on the ccxt route, which ignores it.
+  Only GRASS 1d is confirmed served at the exchange. Candidate repair:
+  `fill_crypto_holes` treats the span from the pair's earliest series to a
+  file's first bar as a hole, so answers land on the same record. Not built.
+- Full bitget spot fill ran 2026-11-11 13:32-15:03 UTC (job 8bf641537916,
+  rc 0): 4,531 holes filled, 950,379 candles added, 162 windows of 155,076
+  candles recorded empty, 0 failed. Two shapes dominated: a shared 1d gap
+  2024-10-28 to 2026-09-26 (699 bars; OP_USDC, ZKL, ZRO and others, their
+  old counts match a front plus the 45 bars since 2026-09-27 exactly), and
+  single interior bars at venue-wide instants (1h 2024-03-21 16:00 and
+  2026-09-02 16:00, 4h 2023-11-17 16:00, 6h and 12h 2023-09-10 00:00, 6h
+  2025-12-10 00:00: each added to 5 of the 6 sample pairs), so not the tail
+  bar a nightly would have fetched. The 28 series that start 2026-09-27 had
+  no bars before that gap and stay late starts: the fill doesn't reach fronts.
+  Record split by the sibling rule (a window counts as traded when another
+  timeframe of the pair holds a bar inside it), whole record incl. the trial:
+  174 windows, 177,163 candles, 11 pairs; 169 windows and 177,158 candles
+  traded, 5 single 4h bars nothing traded. Of the traded candles, 1h 138,817,
+  4h 31,404, 1d 4,688, 3d 1,573, 1w 681. The rule overstates "no longer
+  served" for single bars at the venue-wide instants above (1h 2024-03-21
+  16:00 on 7 pairs, 3d 2024-02-08 on 7, 4h 2023-11-17 16:00 on 5): a day bar
+  exists but the venue has no 1h bar, which is an outage, not lost history.
+  The split isn't built; this is a one-off read.
+- Shared-gap scan 2026-11-11 (host files, gaps over 30 days at 1h to 1w, all
+  seven non-bitget-spot venues; bitget perps have none): no venue-wide gap on the freqtrade
+  route. Binance, bybit spot and binance, bybit perps: 0 shared; what exists
+  is per-pair trading halts on every timeframe at once (binance 15 USDC pairs
+  2022-09 to 2023-03, 12 kucoin spot pairs from 2024-08 incl. the E12 ARX, AI
+  and LIT suspects, single pairs otherwise). Kucoin perps (ccxt route): 217
+  gaps in 66 pairs, about 535,000 bars, mostly 4h (66 gaps, 223k), 8h (67,
+  162k), 1d (59, 22k) and 1h (16, 125k), on scattered dates, some multi-year
+  (BTC 8h from 2021-09, SHIB 8h from 2021-06). A kucoin perps hole fill
+  (`fill_crypto_holes --exchange kucoin --trading-mode futures`, untried on
+  that venue) goes before its 15m backfill; 1h windows before 2024-08 are
+  past the venue's cutoff and will land on the record. Plan 2026-11-11:
+  172,090 holes, 790,022 candles, 174,573 requests, of which 171,793 holes
+  are under 24 candles (mostly 1h, 1 to 3 bars: kucoin writes no candle for
+  a period with no trades, so most are expected to be nothing-traded). With
+  `--min-candles 24`: 297 holes, 519,276 candles, 2,780 requests. Order: the
+  big holes first (trial `--limit 20`, then full), then a `--limit 200`
+  sample of the small ones to measure the empty ratio before deciding
+  whether 172k requests for 270k candles are worth it.
+  Trial 2026-11-11 16:26 UTC (job f51793492984, `--limit 20`): 20 holes
+  filled, 47,108 candles, 0 empty, 0 failed, 247 requests in 158 s. AAVE and
+  ADA 4h after it: no duplicate, gap or off-grid bar; 1d against 4h closes
+  and highs agree (median 0, p99 0.2%). Found while checking: kucoin perps
+  1d volume disagrees with the 4h sum on 2023-08-11 to 2025-03-15 (ADA 334
+  of 1,188 days, median ratio 230; AAVE 327 days, median 0.6), all
+  pre-existing bars, prices unaffected. Settled the same day: not a basis
+  mix but the wrong venue. Kucoin perps files hold blocks of bars identical
+  to binance perps in close and volume, 1,500 bars a block (binance's page
+  size), and the binance venue confirms them as its own (ADA 2024-06-03:
+  binance 362,292,555, kucoin 1,187,886 contracts). Host scan of the 4,619
+  kucoin perps files with a binance twin, bars equal in close and volume:
+  4h 29 of 724 series (43,500 bars, 28 of them 2023-08-26 to 2024-05-02), 8h
+  29 (43,500, 2020-11 to 2022-08 in three blocks), 12h 26 (38,644, 2020-10 to
+  2023-06), 1d 29 (41,156; 12 pairs 2021-02-05 to 2025-03-15, 7 to
+  2025-10-01, 3 to 2026-04-30), 1w 28 of 719 (3,640, all 2023-11-06 to
+  2026-04-27), 2h 26 (9,733; 24 pairs 2026-07-02 to 2026-07-26), 1h 5
+  (6,237). About 186,000 bars on the 29 majors both venues list (AAVE, ADA,
+  ALGO, ATOM, AVAX, BCH, BTC, DOGE, SOL and others). No copy after
+  2026-07-26, so the route since 2026-10-26 writes kucoin bars; how the
+  blocks got in is not established. Prices differ from kucoin's by well
+  under 1%, volume by 10 to 300 times, so price features barely notice and
+  volume features are wrong. The trial's filled bars are kucoin's own (4h
+  after 2023-08-11, where kucoin serves them). Remedy, owner's call since
+  it deletes bars: drop the copied blocks, then one hole fill refetches from
+  kucoin what it serves (1d and 1w far back; 4h from 2023-08, 8h and 12h
+  from where the probe shows) and the rest becomes honest holes. Until then
+  the trust record marks these ranges as another venue's bars. The full
+  kucoin perps fill waits for that decision, so it runs once.
+  Twin scan of every venue pair 2026-11-11 (host, 44,867 files, 28,791
+  symbol-timeframe groups, blocks of 24+ bars equal in close and volume):
+  binance perps is the source of every large block, and three venue probes
+  confirm the direction (binance perps files equal the binance venue; bybit's
+  own ADA 1h bar for 2026-07-12 12:00 differs from the stored one, which is
+  binance's; bitget spot's stored ADA 1d 2025-06-03 and 6h 2025-01-10 are
+  binance's to the digit). Series and bars holding binance perps blocks:
+  - kucoin perps: as above, ~186,000 bars.
+  - bitget spot: 6h 22 series 32,846 bars and 12h 22 series 16,434 bars
+    (both 2024-08-23 to 2025-08-31), 1d 23 series 11,394 (2025-03-16 to
+    2026-07-25), 3d 26 series 6,757 (2024-05-18 to 2026-07-22), 1w 23
+    series 1,089 (2025-10-27 to 2026-07-06). About 68,500 bars.
+  - bybit perps: one event, 2026-07-02 to 07-24: 2h 28 series 7,532 bars,
+    6h 28 series 2,520, 12h 28 series 1,260, and 2026-07-11 to 07-18 at 1h
+    29 series 5,452 and 4h 29 series 1,363. About 18,100 bars.
+  - kucoin spot: 1w FET, FIL, STG (302 bars), STG 8h 1,494 and 1h 360.
+  - binance spot: WBTC 3d 266 and 1w 113, STG 12h 88. Small.
+  - STG_USDT carries binance perps bars in every venue's file for 2026-07-11
+    to 07-26, and WBTC, FET and FIL at 1w on spot venues.
+  Two events stand out: 2024-08-23 to 2025-08-31 (bitget spot 6h and 12h,
+  kucoin perps 12h for ICP and QNT) and 2026-07-02 to 07-26 (bybit perps at
+  every timeframe, kucoin perps 2h, bitget spot 1d/3d/1w ends, STG
+  everywhere). The second is after the data moved to the host and before
+  the ccxt route; the job that did it is not identified. Binance perps and
+  binance spot files are clean as targets. Deleting all of it is the same
+  owner decision as the kucoin blocks; then each venue's hole fill refetches
+  what its venue serves. The 15m backfill on a venue starts only after its
+  copied blocks are gone, binance first since it's clean.
+  Root cause, looked for 2026-11-11 and not found: PDM job logs on the host
+  start 2026-10-24, so July has none; the only commit between 2026-06-12 and
+  2026-10-24 is 1ca8f6b "wip" (2026-07-06), whose downloader used a fresh
+  temp dir per run and `crypto_futures_file_path(exchange, ...)` for every
+  write, with kucoin the only ccxt futures venue; the layout migration of
+  that commit touches no crypto; the laptop shell history holds no crypto
+  download in July (an external `ai-quant` script in April-May wrote binance
+  spot only). So the writer of the 2026-07-02 to 07-26 blocks is unknown and
+  could recur; the twin check below is the guard.
+  Delete tool requirements (py-qwant via Product, 2026-11-11): the dry run
+  prints exact ranges per venue, series and timeframe; the real run writes
+  every deleted and later refetched row to the revision record with old and
+  new values and a content hash per row, beside the catalogs if the step 2
+  log isn't built yet. Their exposure is bybit perps.
+  Delete tool, built 2026-11-12 (uncommitted): `tools/delete_twin_bars.py`,
+  crypto lane, dry run by default; `--apply` backs up outside the data root,
+  writes `revisions/<run id>.parquet` (old OHLCV + sha256 per deleted bar)
+  and `.yaml`; `--log-refill` adds `refetched`/`not_served` rows. Per venue:
+  dry run, apply, `fill_crypto_holes --apply`, `--log-refill`,
+  `check_twins --record`, run id to py-qwant. bybit perps dry run: 142
+  spans, 18,127 rows, 29 symbols, all equal; py-qwant no objection
+  (2026-11-12). Order: bybit perps first. Other dry runs (2026-11-12):
+  kucoin perps 172 spans, 186,407 rows, 29 symbols (1h 6,234, 2h 9,733,
+  4h 43,500, 8h 43,500, 12h 38,644, 1d 41,156, 1w 3,640); bitget spot 118
+  spans, 68,970 rows, 26 symbols; kucoin spot 5 spans, 2,156 rows (FET,
+  FIL, STG 1w; STG 1h, 8h); binance spot and bybit spot none; bitget perps
+  not run (stopped for laptop memory). Every row to delete equals binance
+  perps. Inside a span only rows at the source's timestamps go: kucoin
+  weekly bars open Thursday and bitget 3d bars sit between binance's, and
+  both are interleaved with the copies (199 and 1,100 native rows kept).
+  kucoin perps copies reach back to 2020-07, before kucoin serves 1h-4h
+  history (from 2023-08 to 2024-08), so most become `not_served` and those
+  files will start later.
+  A second source: binance *spot* bars copied into bitget spot (WBTC 1w
+  113, 3d 266) and kucoin spot (WBTC 1w 101, STG 12h 88), the host scan's
+  "binance-spot vs" rows (pairs are listed alphabetically, so binance comes
+  first; binance's own files are clean). Run those venues twice, once per
+  source: `--source binance-perps` and `--source binance-spot`. Before
+  `check_twins --record`, the remaining list must be empty or each block
+  explained; never record an unexplained block.
+  **Rule (product, 2026-11-12):** bars a venue doesn't serve stay recorded
+  gaps (`not_served`, exchange-empty), never filled from another venue. No
+  fill, fallback or merge may write one venue's bars into another's file.
+  Twin check, built 2026-11-11 (uncommitted): `tools/check_twins.py`, audit
+  lane, read-only. It groups spot and perps files by symbol and timeframe,
+  joins every venue pair on timestamp and reports blocks of 24+ bars equal
+  in close and volume (volume 0 never counts). Blocks in `twin_blocks.yaml`
+  at the data root are known; the job exits 1, so alerts, only when a block
+  is new or has grown past its recorded bar count. `--record` rewrites that
+  file from a whole scan. Six tests in `tests/test_check_twins.py`. Deploy
+  steps: pull, restart pdm, run `check_twins --record` once on the host to
+  acknowledge the backlog above, then add the schedule `check-twins-daily`
+  (`check_twins --json`, 09:45 UTC daily: the crypto lane ran until ~08:00
+  UTC on 2026-11-11 and the audit lane runs in parallel, so an earlier scan
+  reads files mid-write; move it later if 15m lengthens the window). The
+  scheduler has no "after job X" chaining. The host refused the schedule
+  before deploy because its PDM does not know the tool yet. After a venue's
+  copied blocks are deleted and refilled, `--record` again so the known list
+  shrinks to what remains; otherwise a block reappearing in a deleted range
+  would read as known and not alert.
+- 16 binance holes matched the exchange and belong on the exchange-empty
+  record, as do kucoin's ARX, AI and LIT windows (see E12).
+- Candidate, not chosen and outside the done-when below: retired contracts lose
+  their tail. `mark_retired` retires a pair the night it leaves TRADING with no
+  final fetch, so `status` calling retired data complete is false (TON, STG and
+  VELODROME end days before the exchange's last bars). `download_funding` skips
+  retired contracts too. Possible work: a final fetch on retirement, a one-off
+  tail refill, and a truer meaning for retired. Why kucoin's retired series end
+  2023-02 to 2025-06 is unexplained.
 
 **Done when.** Each venue's catalog matches its listed universe, every new
-series reaches back to its listing, and `status` shows them current.
+series reaches back to its listing, `status` shows them current, and
+`check_gaps` finds no internal gaps except recorded exchange-empty windows,
+with history the venue no longer serves counted separately.
 
 ## E16 — Row-level backup deltas
 
@@ -618,3 +853,251 @@ manifest. Format 2 starts with the 11-01 export.
 live tree row for row (restored files are rewritten, so bytes differ), and
 the hub keeps 30 days of restore points in less disk than `KEEP=3` uses
 today.
+
+## E17 — Trustworthy breadth
+
+Owner goal, 2026-11-07: "as much trustworthy data across providers and asset
+classes as possible". Nothing here is built or downloaded. Trust comes first:
+a new source is only worth holding if we can say how far it can be believed.
+
+**Gate.** Steps 3 to 5 wait for steps 1 and 2, with one exception: Yahoo chain
+snapshots (step 3) start once the layout in step 4 is agreed, because every
+missed day is lost for good.
+
+**1. Trust debts.** The open items, not new work:
+- bitget spot fill (E15) and the 24 pairs with no 1d file;
+- final fetch on retirement, then a one-off tail refill (E15 candidate). First
+  confirm how long each venue keeps serving bars after a delisting;
+- `status` stops calling retired series complete;
+- PDM stalls: find the cause. The fill and every later step run through PDM;
+- E16 restore check and the hub timer. Until that passes, step 4 has no backup
+  to lean on;
+- the russell2000 nightly's rc 1: decide whether per-symbol failures fail a job.
+
+**2. One trust record per series.** Consumers ask how far a series can be
+trusted. `status` can't answer: it reads catalogs, not parquet, so it doesn't
+see holes.
+- A derived file written by a new audit-lane tool, not catalog fields. Catalogs
+  have writers enough, and this can always be rebuilt.
+- Facts, not a single score: provenance (provider, route, last fetched),
+  coverage (start against listing, end against now or delisting), holes less
+  windows where nothing traded (history the venue no longer serves still counts
+  as a hole), and cross-provider agreement where a second
+  source exists. A verdict can sit on top, but the facts stay visible.
+- Cross-provider agreement respects the schema: compare like with like
+  (`adjustment`, `bar_label`, `volume_basis`), or it reports false conflicts.
+- Known trading halts are a fact of their own, not holes: a gap on every
+  timeframe of a pair at once (binance's 15 USDC pairs 2022-09 to 2023-03,
+  12 kucoin spot pairs from 2024-08, single pairs such as LUNA_TRY) is a halt
+  the record names with its dates, so a consumer can tell a halt from a loss,
+  and no fill asks the venue for it.
+- Revisions: every merge that changes a stored bar's value logs it (series,
+  bar, old and new values, run). Nightly resumes overwrite their overlap
+  silently today (ccxt route the last 2 bars, freqtrade about a day), so how
+  often venues revise bars, and past what margin history is stable, is
+  unknown. Each entry counts rows added, changed and deleted, so repairs that
+  drop rows (the YF stale-row cleanup) show too. Writers that change stored
+  values, all new-wins:
+  - `merge_ohlcv_parquet`, every OHLCV download: per bar.
+  - `merge_funding` (funding, mark) and `merge_rate_series` (rates): per row,
+    the same hook.
+  - Whole-file rewrites (`fix_daily_stamps`, `convert_crypto`, the layout
+    migration, market caps in `utils/market_caps.py` and
+    `download_market_caps`): one row per file per run, with the counts.
+  Adjusted series (YF, IBKR adjusted) are rewritten on every split or dividend
+  by design, so they log one row per series and event: date range touched,
+  bars changed, and the min and max of old/new. A constant ratio is an
+  adjustment; a ratio that varies is logged per bar and flagged, because the
+  YF split-seam bug was a rewrite that looked like an adjustment.
+  Append-only, beside the catalogs so the backup carries it. Build this first
+  in step 2, because its value is the history it accumulates.
+
+**3. Free additions, cheapest first.** Size each one with a trial month before
+its full run, and put the measured size in this section.
+- 15m crypto on all 8 catalogs (owner, 2026-11-11: "1h and 15min crypto
+  historical data across the exchanges on spot and futures"; the 1h half is
+  step 1's late-start repair). Held today: binance spot 436 files (1.4 GB,
+  one-off backfill to 2026-10-25), bybit spot 16; no schedule has 15m, so the
+  "sub-1h stall" was never a stall. Sized from the 1h starts of the 7,764
+  active pairs at 39 bytes a bar (BTC 15m, 238,877 rows in 9.4 MB): about
+  522M bars, 20 GB. Per venue, bars and requests at the route's page size:
+  binance spot 129M/129k, kucoin spot 105M/70k, binance perps 56M/56k, bybit
+  perps 55M/55k, bybit spot 49M/49k, bitget spot 49M/245k, bitget perps
+  46M/230k, kucoin perps at most 33M/165k. The three ccxt venues page 200 bars
+  and cost 5 times their size; at the bitget nightly's ~4 requests/s each is
+  ~16 h, so they run as daytime chunks over several days. The freqtrade
+  venues run 2-7 h each.
+  How far back BTC 15m is served (probed 2026-11-11, one pair, one day per
+  year): binance spot 2018, binance and bitget spot and perps from 2019-09,
+  bybit spot and perps between 2020 and 2022, kucoin spot 2018, kucoin perps
+  between 2024 and 2025. Each venue's cutoff is measured on more pairs before
+  its run and written here.
+  Order: binance perps, binance spot, bybit spot and perps, bitget spot and
+  perps, kucoin spot and perps. Each venue is one `--universe --timeframes
+  15m` run in the crypto lane, cancelled at 23:30 if still running and
+  resumed the next day (both routes keep finished series, freqtrade in
+  batches of 50 pairs). Nightly: 15m is added to each venue's schedule after
+  its backfill; if the window then passes 09:30 UTC, 15m moves to a second
+  lane with the venues offset so none runs in both lanes at once.
+  Blocker found by Product: a new series for an existing pair starts at the
+  catalog entry's `start_date`, which for pairs from the first backfill is
+  its `--since 2020-01-01` (BTC binance perps listed 2019-09; the 63 binance
+  spot late starts in step 1 are the same floor). `listing_starts` asks the
+  venue only for pairs not in the catalog. Fix before the first run: for a
+  pair missing a timeframe, take the earlier of the entry's start and the
+  venue's listing (published in the market, else the first monthly bar, one
+  request a pair).
+- Deribit trades through `history.deribit.com`, with its expired listing. This
+  replaces the name guessing in `utils/deribit.py`. `options` lane.
+- Daily Yahoo chain snapshots for sp500 + nasdaq100, in a new `chains` lane.
+  Delayed and unofficial, and the trust record says so. Runs on the US market
+  clock, not a fixed UTC time, or daylight saving moves it off the close.
+- Binance `bookDepth`, BTCUSDT, 2023-01-01 on.
+- Hyperliquid perps by ccxt and funding from 2023-05. REST candles stop near
+  5,000 bars, so history only builds up if the nightly runs from day one.
+
+**4. Tick and book storage.** The parquet schema and `merge_ohlcv_parquet` are
+OHLCV only, and stay that way.
+- Layout: a new `ticks/<provider>/<symbol>/<kind>/` root, provider first, one
+  immutable file per UTC day. `kind` is `trades`, `book_snapshot`, `book_delta`
+  or `chain_snapshot`, each with its own checked schema. Files are written once
+  and never merged; a correction replaces a whole day.
+- Timestamps: integer microseconds, exchange time and receive time apart, so
+  capture lag can be measured.
+- Catalog: one `ticks_<provider>` entry per symbol and kind, with a per-day
+  manifest (rows, hash, first and last timestamp, known gaps).
+- Capture runs on Optiplex as its own systemd unit, outside PDM. A PDM restart
+  already interrupts the live feed, which capture can't afford. It keeps raw
+  payloads until the day's parquet is verified, and records every sequence gap
+  and reconnect, because captured gaps can't be refilled.
+- Cold store: hpz4 `/mnt/storage`, a single 1.8TB rotational SATA disk, NTFS
+  through ntfs-3g, mounted `nofail` (checked 2026-11-07). SMART passes with 0 bad sectors, but no
+  self-test has ever run and 64 old command aborts are logged.
+  If it fails to mount the path is an empty directory on the 238 GB system SSD,
+  so writers must check a sentinel file, not just the path. Reformatting to
+  ext4 is an owner decision: 565 MB of `qwant-evidence` is on it.
+- What may live only on hpz4: history a provider can serve again. What may not:
+  captured books, chain snapshots, catalogs and manifests. Those keep a second
+  copy, so that copy's disk, not the 1.9 TB, sets how much capture we can run.
+- PDM reads only the manifests. It doesn't serve ticks from hpz4 until a
+  consumer needs that.
+
+**5. Paid sources.** Owner decision after trials, at confirmed prices: ThetaData
+or Massive for option quotes, Databento for stock depth, Tardis for crypto book
+history. A trial is judged against step 2: agreement with what we hold.
+
+**Capacity.**
+- The crypto lane isn't overloaded, it's stacked: 11-06's eight nightlies took
+  about 9 h end to end (00:15 to 09:20), and the 03:57 funding run started at
+  09:22. The rest of the day is free. Catalogs are per venue, so splitting the
+  lane by venue is the fix if the delay matters; check that each venue's writers
+  share no file first. Don't add Hyperliquid to it until then.
+- IBKR: no option work on the account while the Russell 2000 workers run. They
+  share one pacing limit and a Gateway on the laptop. Whether the account has
+  OPRA, and what IBKR serves for expired options, are untested.
+
+**Open with the owner.** OPRA subscription; full book updates or snapshots; AWS
+account for the Hyperliquid archive; a disk for the second copy; reformatting
+hpz4.
+
+**Acceptance by step (Product).** Judged on the held data and what a consumer
+sees, never on a job's exit code alone.
+
+Step 1:
+- Bitget spot: a plan-only run after the fill finds no holes outside recorded
+  exchange-empty windows. `1d` holds 1,133 of 1,135 symbols, and the other two
+  are named with the reason. Exchange-empty is split into nothing traded and
+  history the venue no longer serves, because the second is our loss: those
+  windows stay visible as holes in the trust record, and the count is written
+  here.
+- Crypto history start: each series at 1h to 1d starts within 2 days of the
+  earliest 1h-to-1d series of its pair, and each 3d, 1w and 1Mo series starts
+  within one of its own bars of that date, or has a named reason such as a
+  relisting or history no longer served. Weekly and monthly bars are stamped at
+  a period start, so they can't set the reference. Late counts on 2026-11-07
+  are in E15, per venue.
+- How long each of the four venues serves bars after a delisting is measured
+  and written here, before the final fetch is built.
+- Tails: on Binance, TON reaches 2026-06-23 08:00, STG 2026-09-24 08:00 and
+  VELODROME 2026-10-28 08:00 at 8h, and every other held timeframe ends at the
+  same point to within one of its bars. Across all venues, no retired perp has
+  funding past its klines without a named reason.
+- Final fetch: the next real delisting on each venue ends within one bar of the
+  last bar the exchange serves, with no manual step.
+- `status` shows retired series apart from complete ones, and a retired series
+  still missing its tail is visible there.
+- PDM stalls: the cause is named, and for 7 days, nightlies included, a probe
+  every 5 minutes never fails twice in a row. The probe is a ping plus one
+  `status` and one `pdm_job` read, because ping answered at 06:35 on 11-06
+  while `pdm_job` and `pdm_alerts` did not.
+- Backups: a restore of a named file set matches by row count and hash, the
+  result is recorded, and the owner has turned the hub timer back on.
+- Russell 2000 nightly: each of the 47 failures is classed as delisted or other,
+  and the job result and alert follow the decision. A nightly can't stay red
+  every day and still mean something.
+
+Step 2:
+- Records and catalog series match one to one, difference 0, checked per run.
+- A consumer gets one series' facts and the record's age in a single PDM call,
+  and a record older than its data says so.
+- Known cases come out right: bitget spot holes (30 pre-fill files with 474
+  holes and 131,349 candles are kept in `tmp/e17-prefill-sample`, on the laptop
+  only, with `holes.json`), the STG 1h end before its 8h end, the 16 Binance exchange-empty
+  holes not counted as holes, and the kucoin ARX and AI suspects flagged.
+- No second source reads "no second source", never as agreement. Each comparison
+  names what it compared. YF adjusted against raw on the same stock is not a
+  conflict.
+- Any verdict links to its facts, and no verdict is shown without them.
+- Revisions: a test merges an overlap with one changed bar and finds exactly
+  that bar logged with both values, and an unchanged overlap logs nothing. An
+  adjusted rewrite with a constant factor logs one row with its range and
+  ratio; one with a varying factor logs per bar and is flagged. A repair that
+  drops rows logs the count deleted. Funding, rate and whole-file writers each
+  have a test that a change is logged. After 30 nights the record states, per venue,
+  how many bars were revised and the oldest bar age revised.
+
+Step 3 (all sources: size, rows, requests and run time from the trial month are
+written here before the full run):
+- 15m crypto: every non-retired pair in the 8 catalogs has a 15m series from
+  the earliest bar the venue serves; where that is later than the pair's 1h
+  start, the venue's cutoff is measured once and written here. 15m is
+  refreshed nightly like 1h: after the window its last bar is at most 1 day
+  old, and the window ends by 09:30 UTC. The series pass `check_gaps` and
+  `check_schema` and count in `status`; windows the venue doesn't serve go on
+  the exchange-empty record with step 1's split. A backfill day delays no
+  nightly by more than an hour. Retired pairs only if the venue still serves
+  them cheaply. No new 15m series starts at the 2020-01-01 floor when the
+  venue serves earlier bars (BTC binance perps 15m starts 2019-09).
+- Deribit: bars built from trades match the 4 held 1h and 1d files for the
+  BTC 2024-12-27 60000 call and put, with any difference explained. First trade
+  dates are recorded for BTC, ETH and the USDC contracts, which are untested.
+- Yahoo chains: every trading day stores a snapshot for each universe symbol
+  with listed options. Misses are named and alert within one day. The capture
+  stays after the close across a clock change and on half days.
+- Binance `bookDepth`: every day since 2023-01-01 is held or named as missing.
+- Hyperliquid: funding reaches 2023-05-12 and the nightly bars have no gap since
+  day one. Daily bars from before the venue traded are dropped or labelled.
+
+Step 4:
+- Restart test: stop capture, restart it, and the gap appears in the manifest
+  with its start and end. No gap goes unrecorded.
+- A book rebuilt from snapshots and deltas matches a live snapshot at sampled
+  checkpoints.
+- Capture lag per day is readable from exchange and receive time.
+- Unmount test: with hpz4 absent, writers refuse, nothing lands on the system
+  SSD, and an alert fires.
+- A captured day's raw payload is deleted only after its hash matches on both
+  copies.
+- A consumer can list days and gaps through PDM with hpz4 offline.
+
+Step 5:
+- Before any trial: written price, storage and use terms, including whether the
+  use counts as professional. OPRA's non-professional rate covers personal,
+  non-business use only.
+- The trial reports agreement with held data per step 2, on the same symbols
+  and days, and the owner's decision is recorded here.
+
+**Done when.** Every series has a trust record that consumers can read through
+PDM, `status` no longer counts retired series as complete, each step 3 source
+is on a schedule with its measured size recorded here, and a capture restart
+leaves a recorded gap, not a silent one.

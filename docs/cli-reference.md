@@ -14,6 +14,8 @@ first when one is offered.
 | [`check_gaps.py`](#check_gapspy) | read-only | Audit crypto data for internal gaps + trailing staleness |
 | [`check_schema.py`](#check_schemapy) | read-only | Verify every OHLCV parquet matches the canonical schema |
 | [`check_splits.py`](#check_splitspy) | read-only | Find un-back-adjusted split seams inside stored price files |
+| [`delete_twin_bars.py`](#delete_twin_barspy) | writes (with `--apply`) | Delete spans of crypto bars copied from another venue, logged row by row |
+| [`check_twins.py`](#check_twinspy) | read-only | Find blocks of crypto bars identical to another venue's (bars from the wrong venue) |
 | [`fix_daily_stamps.py`](#fix_daily_stampspy) | write | Restamp daily+ bars to 00:00 UTC of their date; drop duplicate dates |
 | [`backup_delta.py`](#backup_deltapy) | write (`.deltas/`, a restore dir) | Row-level backup deltas: export what changed, restore any night |
 | [`download_crypto.py`](#download_cryptopy) | write | Download via freqtrade, merge parquet, update catalog |
@@ -255,6 +257,66 @@ break by anywhere from 0.038x to 0.48x — `nasdaq100/ORLY` sits at exactly 15x
 the provider's price before it and 1.0x after, its 15:1 split having happened
 in June 2025, long after the history was written.
 
+## `delete_twin_bars.py`
+
+```
+uv run python tools/delete_twin_bars.py --exchange EX [--trading-mode spot|futures] [--source VENUE-CLASS]
+    [--timeframes TF ...] [--symbols S ...] [--min-bars N] [--max-gap ROWS] [--apply] [--backup-dir DIR] [--json]
+uv run python tools/delete_twin_bars.py --log-refill RUN_ID
+```
+
+| Flag | Meaning |
+|---|---|
+| `--exchange`, `--trading-mode` | The venue whose files hold the copies |
+| `--source` | The venue they were copied from (default `binance-perps`) |
+| `--min-bars` | Bars equal in close and volume that make a span (default `24`) |
+| `--max-gap` | Rows between equal bars still counted as one span (default `24`) |
+| `--apply` | Back up, delete, write the revision record; without it nothing is written |
+| `--backup-dir` | Where originals go (default `<data root>.twin-backup-<today>`, never inside the data root) |
+| `--log-refill` | After the refill, add `refetched`/`not_served` rows for every deleted bar of that run |
+
+The remedy for blocks `check_twins.py` finds. Each span runs from its first
+equal bar to its last and is deleted whole, so a bar the source revised inside
+a copied page goes too. The dry run lists every span with its first and last
+bar (UTC, inclusive). `--apply` writes `revisions/<run id>.parquet` at the data
+root, one row per deleted bar with its old OHLCV and a sha256 content hash,
+and `revisions/<run id>.yaml` with the spans, then refreshes the catalog dates.
+Procedure per venue: dry run, `--apply`, `fill_crypto_holes --apply`,
+`--log-refill`, `check_twins --record`. Runs in the crypto lane under PDM.
+
+## `check_twins.py`
+
+```
+uv run python tools/check_twins.py [--timeframes TF ...] [--symbol S | --symbols S ...] [--min-bars N] [--record] [--json]
+```
+
+| Flag | Meaning |
+|---|---|
+| `--timeframes` | Timeframes to compare (default `1h 2h 4h 6h 8h 12h 1d 3d 1w`) |
+| `--symbol` / `--symbols` | Limit to these symbols |
+| `--min-bars` | Identical bars that make a twin block (default `24`) |
+| `--record` | Rewrite `twin_blocks.yaml` at the data root from this scan, acknowledging every block found |
+| `--json` | Emit `{"files", "min_bars", "new": [...], "known": [...]}` instead of tables |
+
+```bash
+uv run python tools/check_twins.py
+uv run python tools/check_twins.py --timeframes 1d 1w --json
+uv run python tools/check_twins.py --record
+```
+
+Two venues never print the same close *and* the same volume for 24 bars in a
+row, so a run of identical bars between two venues' files (spot and perps of
+every exchange, grouped by symbol and timeframe) means one file holds bars
+copied from the other venue's feed. Any cross-venue agreement check would read
+such a block as perfect agreement, which is why this runs as its own audit.
+Untraded bars (volume 0) never count.
+
+Blocks listed in `twin_blocks.yaml` are known and reported apart. The tool is
+read-only and exits non-zero only when a block is new or has grown past its
+recorded bar count, so a nightly run alerts on a fresh copy without repeating
+the backlog. Repair means deleting the copied bars and refilling from the
+venue, then `--record` again (which needs a whole scan, never a symbol subset).
+
 ## `download_crypto.py`
 
 ```
@@ -295,7 +357,7 @@ freqtrade, `FT_BATCH_PAIRS` pairs per run, each batch merged before the next.
 Wraps freqtrade's public (unauthenticated) OHLCV download, merges into
 existing parquet with `normalize_ohlcv()` + dedup-on-timestamp, and updates
 the exchange's YAML catalog. See [`docs/workflows.md`](workflows.md#crypto-refresh)
-for the full refresh workflow and [`.agent/skills/crypto_download/SKILL.md`](../.agent/skills/crypto_download/SKILL.md)
+for the full refresh workflow and [`.agents/library/skills/crypto-download/SKILL.md`](../.agents/library/skills/crypto-download/SKILL.md)
 for the agent-skill version.
 
 `--prepend` doesn't run on the ccxt path; use `--full` there.

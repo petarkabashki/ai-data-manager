@@ -121,7 +121,7 @@ permission prompt is the approval step. See `cli-reference.md`.
 
 `audit` runs one of the checking tools on the host with `--json` and returns
 its report: `status`, `query`, `check_gaps`, `check_schema`, `check_catalog`,
-`check_splits`. The caller passes typed options (the tool's flags with `_` for
+`check_splits`, `check_twins`. The caller passes typed options (the tool's flags with `_` for
 `-`), never argv, and the option table in `pdm/audit.py` has nothing that
 writes. `check_catalog --fix` can't be expressed, and paths must lie under the
 data root. Each audit runs synchronously, capped at 600s, with at most 2 at once.
@@ -435,7 +435,7 @@ Jobs run in lanes, serial within each lane:
 | `equity` | download_yf, download_ibkr_*, retry_ibkr_failed_sequentially, check_catalog, fix_daily_stamps, dedupe_stock_universes | They load, edit and save the same index catalogs, and dedupe moves stock files. Stock catalogs are also written outside the lanes by `tools/ibkr_worker.sh`, so their writers lock (`catalog_txn`) |
 | `crypto` | download_crypto, fill_crypto_holes, download_funding, convert_crypto | crypto catalogs |
 | `options` / `marketcap` / `futures` | one tool each | disjoint catalogs |
-| `audit` | status, query, check_gaps, check_schema, check_splits | read-only, so never queued behind a download |
+| `audit` | status, query, check_gaps, check_schema, check_splits, check_twins | read-only, so never queued behind a download |
 | `backup` | backup_delta | writes only `.deltas/`; the nightly export runs whatever the downloads are doing |
 
 The lanes only serialize jobs that go **through the server**. A tool started

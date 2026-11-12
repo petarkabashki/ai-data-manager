@@ -42,6 +42,7 @@ AUDIT_TOOLS: dict[str, dict[str, str]] = {
     "check_schema": {"path": "path"},
     "check_catalog": {"catalog": "list", "skip_dates": "bool", "skip_orphans": "bool"},
     "check_splits": {"path": "paths", "tolerance": "float"},
+    "check_twins": {"timeframes": "list", "symbol": "str", "symbols": "list", "min_bars": "int"},
 }
 
 

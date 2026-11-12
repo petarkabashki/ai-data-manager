@@ -150,7 +150,7 @@ class PriceDataClient:
 
     def audit(self, tool: str, timeout: float | None = 660, **options) -> dict:
         """Read-only check on the host, no token: status, query, check_gaps,
-        check_schema, check_catalog (never --fix), check_splits. Options are the
+        check_schema, check_catalog (never --fix), check_splits, check_twins. Options are the
         tool's flags with `_` for `-` (see pdm/audit.py)."""
         return self.call("audit", timeout=timeout, tool=tool, options=options)
 

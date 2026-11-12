@@ -75,6 +75,7 @@ TOOL_LANES: dict[str, str] = {
     "dedupe_stock_universes": "equity",  # moves files; not while workers run that universe
     "download_crypto": "crypto",
     "fill_crypto_holes": "crypto",
+    "delete_twin_bars": "crypto",
     "download_funding": "crypto",       # writes the crypto_futures catalogs too
     "convert_crypto": "crypto",
     "download_deribit_options": "options",
@@ -85,6 +86,7 @@ TOOL_LANES: dict[str, str] = {
     "check_gaps": "audit",
     "check_schema": "audit",
     "check_splits": "audit",
+    "check_twins": "audit",
     "backup_delta": "backup",
 }
 
@@ -108,7 +110,7 @@ def lane_for(tool: str, args: list[str]) -> str:
 
 
 #: Tools whose completion cannot have written bars — skip the disk diff.
-READ_ONLY_TOOLS = {"status", "query", "check_gaps", "check_schema", "check_splits"}
+READ_ONLY_TOOLS = {"status", "query", "check_gaps", "check_schema", "check_splits", "check_twins"}
 
 TERMINAL = {"succeeded", "failed", "cancelled", "timed_out"}
 
