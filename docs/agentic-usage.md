@@ -46,7 +46,7 @@ Typical prompts and what the agent should reach for:
 
 | You ask | Agent should |
 |---|---|
-| "Refresh binance daily and 4h data" | Run the `crypto_download` skill: `check_gaps.py` → `download_crypto.py` → `query.py` |
+| "Refresh binance daily and 4h data" | Run the `crypto-download` skill: `check_gaps.py` → `download_crypto.py` → `query.py` |
 | "What's the state of the data?" | `tools/status.py --json`, then `--deep` if anything looks off |
 | "Is anything stale?" | `tools/check_gaps.py --all-catalogs --json` — every asset class, each against its own trading calendar |
 | "Add SOL/USDT going back to 2020" | `download_crypto.py --pairs SOL/USDT --full --since 2020-01-01` across the timeframes you need |
