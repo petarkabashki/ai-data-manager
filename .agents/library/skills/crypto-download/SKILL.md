@@ -1,5 +1,5 @@
 ---
-name: crypto_download
+name: crypto-download
 description: Refresh crypto OHLCV data from a CEX via freqtrade — find what's stale or missing, download and merge it, and keep the YAML catalog in sync. Use when asked to update, backfill or add crypto pairs on binance, bitget, bybit or kucoin.
 ---
 

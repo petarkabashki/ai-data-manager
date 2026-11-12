@@ -51,8 +51,8 @@ normalization.
 
 ```
 ai-data-manager/
-├── .agent/
-│   └── skills/crypto_download/    # agent skill: gap-check → download → verify
+├── .agents/
+│   └── library/skills/crypto-download/  # agent skill: gap-check → download → verify
 ├── docs/                         # this documentation set
 ├── tools/
 │   ├── status.py                 # read: one cross-class health roll-up

@@ -21,7 +21,7 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 AGENTS_MD = REPO_ROOT / "AGENTS.md"
-SKILLS_DIR = REPO_ROOT / ".agent" / "skills"
+SKILLS_DIR = REPO_ROOT / ".agents" / "library" / "skills"
 
 #: Tools that are deliberately undocumented in the table.
 EXEMPT_TOOLS = {
@@ -116,7 +116,7 @@ def test_every_tool_has_a_docstring_and_a_main():
 # --- skills -------------------------------------------------------------------
 
 def test_skills_directory_is_not_empty():
-    assert skill_dirs(), "no skills found under .agent/skills/"
+    assert skill_dirs(), "no skills found under .agents/library/skills/"
 
 
 @pytest.mark.parametrize("skill", skill_dirs(), ids=lambda p: p.name)

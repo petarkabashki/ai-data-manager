@@ -37,9 +37,9 @@ uv run python tools/download_crypto.py --exchange binance --all-pairs --timefram
 uv run python tools/query.py --exchange binance --timeframe 1d --stale-days 2
 ```
 
-This is also codified as the `crypto_download` agent skill — see
+This is also codified as the `crypto-download` agent skill — see
 [`docs/agentic-usage.md`](agentic-usage.md) and
-[`.agent/skills/crypto_download/SKILL.md`](../.agent/skills/crypto_download/SKILL.md).
+[`.agents/library/skills/crypto-download/SKILL.md`](../.agents/library/skills/crypto-download/SKILL.md).
 
 ## Onboard a brand-new crypto symbol
 

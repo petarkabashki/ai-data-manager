@@ -11,7 +11,7 @@ flowchart TD
     CM["CLAUDE.md\n(harness-loaded project instructions)"] --> Env["Python-env rule:\nalways uv run python, never system Python"]
     CM --> Ptr["pointer to agents.md"]
     AM["agents.md\n(full data-convention reference)"] --> Rules["path rule, canonical schema,\ncatalog shapes, tool table, skill table"]
-    Skill[".agent/skills/<name>/SKILL.md\n(frontmatter + workflow)"] --> Wf["concrete tool-chain workflows,\nnot just references"]
+    Skill[".agents/library/skills/<name>/SKILL.md\n(frontmatter + workflow)"] --> Wf["concrete tool-chain workflows,\nnot just references"]
 ```
 
 - **`CLAUDE.md`** — auto-loaded into every Claude Code session in this repo.
@@ -23,19 +23,19 @@ flowchart TD
   table, and the agent-skills table. Treat this as source of truth; the
   `docs/` set expands on it with diagrams and worked examples but never
   contradicts it.
-- **`.agent/skills/<name>/SKILL.md`** — one directory per **skill**: a named,
+- **`.agents/library/skills/<name>/SKILL.md`** — one directory per **skill**: a named,
   reusable workflow an agent can execute end-to-end (tool chain + standard
   invocations + gotchas), as opposed to `AGENTS.md`'s reference-style tables.
   YAML frontmatter (`name`, `description`) makes it discoverable by scanning,
-  so no harness depends on a human having read the table. Point a harness at
-  it with `ln -s ../.agent/skills .claude/skills` — the layout the sibling
-  `py-qwant` repo uses.
+  so no harness depends on a human having read the table. `agent-library link`
+  delivers each one to every harness (a copy in `.agents/skills/`, a symlink in
+  `.claude/skills/`); both are untracked. Keep skills harness-neutral.
 
 ## Skills currently defined
 
 | Skill | File | Covers |
 |---|---|---|
-| `crypto_download` | [`.agent/skills/crypto_download/SKILL.md`](../.agent/skills/crypto_download/SKILL.md) | Identify stale/missing crypto data → download via freqtrade → merge without duplicates → keep the catalog in sync |
+| `crypto-download` | [`.agents/library/skills/crypto-download/SKILL.md`](../.agents/library/skills/crypto-download/SKILL.md) | Identify stale/missing crypto data → download via freqtrade → merge without duplicates → keep the catalog in sync |
 
 See [`docs/workflows.md#crypto-refresh`](workflows.md#crypto-refresh) for the
 same workflow with a diagram.
@@ -119,9 +119,9 @@ not pre-allowed — that's intentional, since those touch real data files.
 
 ## Extending: adding a new agent skill
 
-1. Add `.agent/skills/<name>/SKILL.md`, starting with `name` + `description`
+1. Add `.agents/library/skills/<name>/SKILL.md`, starting with `name` + `description`
    frontmatter, then following the shape of
-   [`.agent/skills/crypto_download/SKILL.md`](../.agent/skills/crypto_download/SKILL.md):
+   [`.agents/library/skills/crypto-download/SKILL.md`](../.agents/library/skills/crypto-download/SKILL.md):
    what it covers, the tool chain, standard invocations, the rules that apply
    to every write, and the caveats.
 2. Register it in `AGENTS.md`'s Agent Skills table.

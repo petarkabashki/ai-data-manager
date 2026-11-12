@@ -622,20 +622,15 @@ agents, strategies — never mount `price-data/`; they ask the server.
 
 ## Agent Skills
 
-Skills live in `.agent/skills/<name>/SKILL.md` with YAML frontmatter (`name`,
-`description`) — the same layout as the sibling `py-qwant` repo. The
-frontmatter is what makes them **discoverable**: a harness can scan the
-directory instead of relying on someone having read this table. The content is
-harness-neutral; point a harness at it rather than keeping copies that drift:
-
-```bash
-ln -s ../.agent/skills .claude/skills
-ln -s ../.agent/skills .codex/skills
-```
+Skills live in `.agents/library/skills/<name>/SKILL.md` with YAML frontmatter
+(`name`, `description`). The frontmatter is what makes them **discoverable**: a
+harness can scan the directory instead of relying on someone having read this
+table. The content is harness-neutral; `agent-library link` delivers each skill
+to every harness (untracked copies/symlinks), so never add one to a harness's dir.
 
 | Skill | File | Description |
 |-------|------|-------------|
-| crypto_download | `.agent/skills/crypto_download/SKILL.md` | Check gaps → download via freqtrade → merge → verify the catalog |
+| crypto-download | `.agents/library/skills/crypto-download/SKILL.md` | Check gaps → download via freqtrade → merge → verify the catalog |
 
 ## Utilities (importable)
 

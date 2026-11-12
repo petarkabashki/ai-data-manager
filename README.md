@@ -114,7 +114,7 @@ flowchart LR
     DATA --> YAML
     DATA --> PARQUET
 
-    Agent["Any agent harness<br/>.agent/skills/*/SKILL.md"] -.drives.-> Tools
+    Agent["Any agent harness<br/>.agents/library/skills/*/SKILL.md"] -.drives.-> Tools
 ```
 
 Full breakdown, directory tree, and the provider-first path rule are in
@@ -128,7 +128,7 @@ Full breakdown, directory tree, and the provider-first path rule are in
 | [`docs/data-model.md`](docs/data-model.md) | Canonical OHLCV schema, catalog YAML shapes (flat vs. nested-by-provider), asset class coverage |
 | [`docs/cli-reference.md`](docs/cli-reference.md) | Every tool in `tools/`, full argument reference with examples |
 | [`docs/workflows.md`](docs/workflows.md) | End-to-end task walkthroughs (crypto refresh, IBKR download, market-cap snapshots, schema audits) |
-| [`docs/agentic-usage.md`](docs/agentic-usage.md) | How any agent harness drives this repo, `.agent/skills/` conventions, example prompts |
+| [`docs/agentic-usage.md`](docs/agentic-usage.md) | How any agent harness drives this repo, `.agents/library/skills/` conventions, example prompts |
 | [`AGENTS.md`](AGENTS.md) | Canonical, terse data-convention reference (source of truth; docs/ expands on it) |
 | [`ROADMAP.md`](ROADMAP.md) | Sequenced work plan: what's fixed, what's known-missing, and why |
 
@@ -136,7 +136,7 @@ Full breakdown, directory tree, and the provider-first path rule are in
 
 ```
 ai-data-manager/
-├── .agent/              # Agent skills (skills/<name>/SKILL.md + frontmatter)
+├── .agents/             # Agent skills (library/skills/<name>/SKILL.md + frontmatter)
 ├── docs/                # This documentation set
 ├── tools/               # Standalone CLI scripts (uv run python tools/<x>.py)
 ├── tests/               # pytest suite
@@ -153,7 +153,7 @@ ai-data-manager/
 
 - New CLI tool → drop it in `tools/`, add a row to the table in `AGENTS.md`
   and (if it's a common task) an example in `docs/cli-reference.md`.
-- New agent skill → add `.agent/skills/<name>/SKILL.md` with frontmatter, register it
+- New agent skill → add `.agents/library/skills/<name>/SKILL.md` with frontmatter, register it
   in `AGENTS.md`'s Agent Skills table. See
   [`docs/agentic-usage.md`](docs/agentic-usage.md).
 - New provider or asset class → follow the provider-first path rule in

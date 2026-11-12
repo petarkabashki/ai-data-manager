@@ -22,8 +22,9 @@ to add a tool or an agent skill. Read it before writing code that touches
 [`ROADMAP.md`](ROADMAP.md) has the current work plan and the known gaps —
 check it before assuming something is missing by accident.
 
-Skills live in `.agent/skills/<name>/SKILL.md`, harness-neutral. To use them
-here: `ln -s ../.agent/skills .claude/skills`.
+Project skills live in `.agents/library/skills/<name>/SKILL.md`, harness-neutral.
+`agent-library link` delivers them to every harness; don't add skills to a
+harness's own dir.
 
 Never hardcode an absolute path: every machine-specific value resolves through
 `utils/config.py` from the environment (`.env.example` lists them).
