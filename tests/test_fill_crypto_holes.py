@@ -282,6 +282,26 @@ def test_a_fill_fills_at_every_page_size(env, monkeypatch, tf, kept, missing):
     assert len(venue.calls) == 3 * -(-missing // page)
 
 
+@pytest.mark.parametrize("tf", ["1h", "1d", "1w"])
+def test_a_fill_only_adds_bars_and_never_rewrites_a_stored_one(env, monkeypatch, tf):
+    """The merge lets new data win on a timestamp, and the request runs one bar
+    past the hole, so only the trim in `fetch_hole` protects the bar after it.
+    The venue's bars differ from the stored ones to show which side survived."""
+    start = ms("2005-01-03") if tf == "1w" else ms("2024-01-01")     # a Monday
+    every = [start + i * BAR[tf] for i in range(30)]
+    now = freeze(monkeypatch, every[-1] + 2 * BAR[tf])
+    stored = every[:10] + every[15:]
+    path = store(env, "AAA_USDT", tf, stored)
+    before = pd.read_parquet(path).set_index("timestamp")
+
+    assert run(env, monkeypatch, CappedBitget({tf: every}, now), "--timeframes", tf, "--apply") == 0
+
+    after = pd.read_parquet(path).set_index("timestamp")
+    pd.testing.assert_frame_equal(after.loc[stored], before.loc[stored])
+    assert after.index.tolist() == every
+    assert (after.loc[every[10:15], "close"] == 1.5).all()
+
+
 @pytest.mark.parametrize("drops_unclosed", [True, False], ids=["history", "recent"])
 @pytest.mark.parametrize("missing", [1, 2, 199, 200, 201, 300])
 def test_the_last_bar_of_a_hole_is_filled_and_never_recorded_empty(env, monkeypatch, drops_unclosed, missing):

@@ -181,14 +181,23 @@ def test_all_pairs_skips_retired_entries():
     assert dc.select_pairs(args, catalog, is_futures=False)[0] == ["BTC/USDT"]
 
 
-def test_new_pairs_start_at_listing_and_known_pairs_need_no_request():
+def test_a_missing_series_starts_at_the_earlier_of_listing_and_the_pairs_own_start():
     catalog = {"ETH_USDT_kucoin": {"name": "ETH_USDT", "start_date": "2017-10-26",
-                                   "timeframe_dates": {"1d": {}}}}
+                                   "timeframe_dates": {"1d": {}}},
+               "BTC_USDT_kucoin": {"name": "BTC_USDT", "start_date": "2020-01-01",      # the first backfill's --since
+                                   "timeframe_dates": {"1d": {}}},
+               "XRP_USDT_kucoin": {"name": "XRP_USDT", "start_date": "2020-01-01",
+                                   "timeframe_dates": {"1d": {}, "1w": {}}}}
     venue = FakeVenue({"1M": [ms("2023-07-01")]})
-    markets = {"WLD/USDT": {"symbol": "WLD/USDT"}, "ETH/USDT": {"symbol": "ETH/USDT"}}
-    starts = dc.listing_starts("kucoin", "spot", ["ETH/USDT", "WLD/USDT"], ["1d", "1w"], catalog, markets, venue)
-    assert starts == {"ETH/USDT": "2017-10-26", "WLD/USDT": "2023-07-01"}
-    assert [c[0] for c in venue.calls] == ["1M"]              # one request, for the new pair only
+    markets = {"WLD/USDT": {"symbol": "WLD/USDT"}, "ETH/USDT": {"symbol": "ETH/USDT"},
+               "BTC/USDT": {"symbol": "BTC/USDT", "created": ms("2019-09-08")},
+               "XRP/USDT": {"symbol": "XRP/USDT", "created": ms("2019-09-08")}}
+    starts = dc.listing_starts("kucoin", "spot", ["ETH/USDT", "WLD/USDT", "BTC/USDT", "XRP/USDT"],
+                               ["1d", "1w"], catalog, markets, venue)
+    # ETH keeps its earlier start, WLD is new, BTC's 2020 floor gives way to the
+    # published listing, and XRP has every series so it isn't asked.
+    assert starts == {"ETH/USDT": "2017-10-26", "WLD/USDT": "2023-07-01", "BTC/USDT": "2019-09-08"}
+    assert [c[0] for c in venue.calls] == ["1M", "1M"]        # ETH and WLD; BTC's listing is published
     assert dc._year_start("2023-07-01") == "2023-01-01"
 
 

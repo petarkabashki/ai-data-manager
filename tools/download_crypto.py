@@ -577,9 +577,12 @@ def listing_starts(exchange: str, trading_mode: str, pairs: list[str], timeframe
                    catalog: dict, markets: dict[str, dict] | None, ccxt_ex=None) -> dict[str, str]:
     """Where each pair with a missing series should start: its listing date.
 
-    Only pairs missing at least one requested timeframe need one. A pair
-    already in the catalog starts where its earliest series does — no request;
-    a new pair asks the venue (published listing time, else first monthly bar).
+    Only pairs missing at least one requested timeframe need one. Every such
+    pair asks the venue (published listing time, else first monthly bar, one
+    request), and a pair already in the catalog takes the earlier of that and
+    its own start. Its own start alone was wrong: pairs from the first backfill
+    carry its `--since 2020-01-01` as their start, so a new timeframe for BTC
+    binance perps began 2020-01-01 where the venue serves 2019-09.
     """
     is_futures = trading_mode == "futures"
     starts: dict[str, str] = {}
@@ -591,18 +594,18 @@ def listing_starts(exchange: str, trading_mode: str, pairs: list[str], timeframe
             continue
         if entry.get("start_date"):
             starts[pair] = entry["start_date"]
-        else:
-            to_ask.append(pair)
+        to_ask.append(pair)
     if to_ask:
         ccxt_ex = ccxt_ex or ccxt_exchange(exchange, trading_mode)
         if markets is None:
             markets = ccxt_ex.load_markets()
-        print(f"Looking up listing dates for {len(to_ask)} new pair(s)…")
+        print(f"Looking up listing dates for {len(to_ask)} pair(s) with a missing series…")
         for pair in to_ask:
             market = markets.get(pair)
             date = listing_date(ccxt_ex, market) if market else None
             if date:
-                starts[pair] = max(date, EARLIEST)
+                date = max(date, EARLIEST)
+                starts[pair] = min(date, starts[pair]) if pair in starts else date
     return starts
 
 
