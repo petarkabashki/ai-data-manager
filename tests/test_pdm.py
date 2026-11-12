@@ -134,11 +134,23 @@ def test_yf_and_ibkr_share_a_lane():
     assert TOOL_LANES["download_yf"] == TOOL_LANES["download_ibkr_index"]
 
 
+def test_crypto_jobs_run_in_their_venues_lane():
+    """Each venue has its own catalogs and rate limit: a binance backfill doesn't block bitget."""
+    from pdm.jobs import lane_for
+
+    assert lane_for("download_crypto", ["--exchange", "binance", "--trading-mode", "futures"]) == "crypto-binance"
+    assert lane_for("download_crypto", ["-e", "kucoin"]) == "crypto-kucoin"
+    assert lane_for("delete_twin_bars", ["--exchange=bitget", "--apply"]) == "crypto-bitget"
+    assert lane_for("fill_crypto_holes", ["--exchange", "bybit", "--trading-mode", "spot"]) == "crypto-bybit"
+    with pytest.raises(ValueError, match="--exchange"):
+        lane_for("convert_crypto", [])  # every venue at once: no single lane covers it
+
+
 def test_a_provider_tool_runs_in_its_providers_lane():
     """fix_daily_stamps rewrites the files that provider's downloader writes."""
     from pdm.jobs import TOOL_LANES, lane_for
 
-    assert lane_for("fix_daily_stamps", ["--provider", "bitget"]) == TOOL_LANES["download_crypto"]
+    assert lane_for("fix_daily_stamps", ["--provider", "bitget"]) == "crypto-bitget"
     assert lane_for("fix_daily_stamps", ["--provider=deribit"]) == TOOL_LANES["download_deribit_options"]
     assert lane_for("fix_daily_stamps", ["--provider", "yf"]) == TOOL_LANES["download_yf"]
     assert lane_for("download_yf", ["--provider", "bitget"]) == TOOL_LANES["download_yf"]
@@ -196,7 +208,7 @@ def test_cancel_stops_the_tools_children_too(tmp_path):
         time.sleep(60)
     """))
     jm = JobManager(tools, tmp_path / "logs")
-    job = jm.submit("download_crypto", [])
+    job = jm.submit("download_crypto", ["--exchange", "binance"])
     deadline = time.time() + 10
     while not (pid_file.exists() and pid_file.read_text()) and time.time() < deadline:
         time.sleep(0.05)

@@ -433,7 +433,7 @@ Jobs run in lanes, serial within each lane:
 | Lane | Tools | Why together |
 |---|---|---|
 | `equity` | download_yf, download_ibkr_*, retry_ibkr_failed_sequentially, check_catalog, fix_daily_stamps, dedupe_stock_universes | They load, edit and save the same index catalogs, and dedupe moves stock files. Stock catalogs are also written outside the lanes by `tools/ibkr_worker.sh`, so their writers lock (`catalog_txn`) |
-| `crypto` | download_crypto, fill_crypto_holes, download_funding, convert_crypto | crypto catalogs |
+| `crypto-<exchange>` (binance, bitget, bybit, kucoin) | download_crypto, fill_crypto_holes, delete_twin_bars, download_funding, convert_crypto; the job must pass `--exchange` | that venue's spot and futures catalogs, files and rate limit; venues run in parallel |
 | `options` / `marketcap` / `futures` | one tool each | disjoint catalogs |
 | `audit` | status, query, check_gaps, check_schema, check_splits, check_twins | read-only, so never queued behind a download |
 | `backup` | backup_delta | writes only `.deltas/`; the nightly export runs whatever the downloads are doing |

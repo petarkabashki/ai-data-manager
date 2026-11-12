@@ -16,7 +16,13 @@ Jobs run in **lanes**, one worker thread per lane, serial within it:
     (`dedupe_stock_universes`), which that lock doesn't cover; those must not
     run alongside workers on the same universe, and only a person can see to
     that.
-  * `crypto`  — freqtrade spot/futures downloads and conversions.
+  * `crypto-<exchange>` — freqtrade spot/futures downloads, fills, deletes and
+    conversions, one lane per venue: each venue has its own catalogs
+    (`crypto_<ex>.yaml`, `crypto_futures_<ex>.yaml`), files, API rate limit and
+    freqtrade temp dir, so a binance backfill no longer holds up bitget's. Spot
+    and futures of one venue share a lane (shared rate limit, and
+    download_funding writes the futures catalog). A crypto job must name its
+    venue with `--exchange`.
   * `options`, `marketcap`, `futures` — disjoint catalogs, own lanes.
   * `audit`   — read-only tools; never blocked behind a multi-hour download.
   * `backup`  — backup_delta's nightly export: it writes only `.deltas/`, and
@@ -97,16 +103,38 @@ PROVIDER_LANES = {"binance": "crypto", "bybit": "crypto", "kucoin": "crypto",
                   "bitget": "crypto", "deribit": "options"}
 
 
+CRYPTO_LANE_EXCHANGES = ("binance", "bitget", "bybit", "kucoin")
+
+
+def _flag(args: list[str], *names: str) -> str | None:
+    """The value of the last `--name v` / `--name=v` in args, as argparse reads it."""
+    value = None
+    for i, a in enumerate(args):
+        for name in names:
+            if a == name and i + 1 < len(args):
+                value = args[i + 1]
+            elif a.startswith(name + "=") and name.startswith("--"):
+                value = a.split("=", 1)[1]
+    return value
+
+
 def lane_for(tool: str, args: list[str]) -> str:
-    """The tool's lane, or for a PROVIDER_TOOLS job its provider's."""
-    provider = None
+    """The tool's lane: a crypto tool's venue lane, a PROVIDER_TOOLS job its provider's."""
+    lane = TOOL_LANES[tool]
     if tool in PROVIDER_TOOLS:
-        for i, a in enumerate(args):      # last one wins, as with argparse
-            if a == "--provider" and i + 1 < len(args):
-                provider = args[i + 1]
-            elif a.startswith("--provider="):
-                provider = a.split("=", 1)[1]
-    return PROVIDER_LANES.get(provider, TOOL_LANES[tool])
+        lane = PROVIDER_LANES.get(_flag(args, "--provider"), lane)
+    if lane == "crypto":
+        exchange = _flag(args, "--exchange", "-e") or _flag(args, "--provider")
+        if exchange not in CRYPTO_LANE_EXCHANGES:
+            raise ValueError(f"{tool}: a crypto job must name its venue with --exchange "
+                             f"({', '.join(CRYPTO_LANE_EXCHANGES)}) to pick its lane")
+        lane = f"crypto-{exchange}"
+    return lane
+
+
+def all_lanes() -> list[str]:
+    plain = {lane for lane in TOOL_LANES.values() if lane != "crypto"}
+    return sorted(plain | {f"crypto-{ex}" for ex in CRYPTO_LANE_EXCHANGES})
 
 
 #: Tools whose completion cannot have written bars — skip the disk diff.
@@ -259,7 +287,7 @@ class JobManager:
 
     def lanes(self) -> dict[str, dict]:
         out = {}
-        for lane in sorted(set(TOOL_LANES.values())):
+        for lane in all_lanes():
             running = [j.id for j in self._jobs.values() if j.lane == lane and j.state == "running"]
             out[lane] = {"queued": len(self._queues.get(lane, ())), "running": running}
         return out
@@ -399,7 +427,12 @@ class JobManager:
             except (TypeError, ValueError) as exc:
                 print(f"pdm.jobs: dropping saved job {raw.get('id')}: {exc}", file=sys.stderr, flush=True)
                 continue
-            job.lane = lane_for(job.tool, job.args)
+            try:
+                job.lane = lane_for(job.tool, job.args)
+            except ValueError as exc:
+                if job.state not in TERMINAL:   # a finished one keeps its old lane
+                    print(f"pdm.jobs: dropping saved job {raw.get('id')}: {exc}", file=sys.stderr, flush=True)
+                    continue
             if job.state in ("running", INTERRUPTED) and job.error == "cancel requested":
                 job.state, job.finished_at = "cancelled", time.time()
             was_running = job.state in ("running", INTERRUPTED)
