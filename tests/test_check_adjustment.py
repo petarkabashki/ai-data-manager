@@ -96,6 +96,12 @@ def test_an_unadjusted_split_is_owned_by_the_file_that_jumps(tmp_path):
     assert jump["date"] == str(pd.Timestamp((10_000 + SPLIT_DAY) * 86_400_000, unit="ms").date())
     assert counts(list(rows.values()))["sp500"]["IBKR"] == {"split_jump": 1}
 
+    # Once the date is on the node's `unadjusted_splits`, it is no longer a finding.
+    catalogs["sp500"]["XOM"]["timeframe_dates"]["1d"]["IBKR"]["unadjusted_splits"] = [jump["date"]]
+    flagged = _by_file(audit(catalogs, tmp_path))[ib]
+    assert flagged["verdict"] == flagged["split"] == "flagged_unadjusted"
+    assert flagged["split_jumps"] == [jump]
+
 
 def test_a_crash_both_providers_record_is_clean(tmp_path):
     p = _prices(3)

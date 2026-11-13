@@ -358,6 +358,9 @@ the file holds, on daily closes, over the days two files share:
   split factor is a jump, owned by the file whose own close moved.
   A step undone on the next shared day is one bad bar, listed under
   `bad_bar_dates` on the YF row and counted as `has_bad_bar`, never as a jump.
+  A jump on a date the IBKR node already lists in `unadjusted_splits`
+  (`flag_unadjusted_splits.py`) is `flagged_unadjusted`, not a finding; a new
+  date is still `split_jump`.
 - **No overlap is unverifiable,** never passed.
 
 YF verdicts: `ok`, `mislabelled_raw_is_adjusted`, `mislabelled_adjusted_is_raw`,

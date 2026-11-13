@@ -84,6 +84,7 @@ class Node:
     provider: str          # "YF" or "IBKR"
     file_path: str         # as stored, "price-data/..."
     adjustment: str | None
+    flagged: tuple[str, ...] = ()  # IBKR `unadjusted_splits`: jumps already on record
 
 
 def resolve(data_root: Path, file_path: str) -> Path:
@@ -105,7 +106,8 @@ def daily_nodes(catalogs: dict[str, dict]) -> dict[str, list[Node]]:
                     continue
                 if node.get("file_path"):
                     by_symbol[symbol].append(
-                        Node(catalog, symbol, provider, node["file_path"], node.get("adjustment")))
+                        Node(catalog, symbol, provider, node["file_path"], node.get("adjustment"),
+                             tuple(str(d) for d in node.get("unadjusted_splits") or ())))
     return by_symbol
 
 
@@ -259,7 +261,9 @@ def audit(catalogs: dict[str, dict], data_root: Path, symbols: set[str] | None =
             fp = row["file_path"]
             row["split_jumps"] = sorted(jumps[fp].values(), key=lambda s: s["date"])
             row["bad_bar_dates"] = sorted(bad_bars[fp])
-            row["split"] = ("split_jump" if row["split_jumps"]
+            new = {s["date"] for s in row["split_jumps"]} - set(files[fp].flagged)
+            row["split"] = ("split_jump" if new
+                            else "flagged_unadjusted" if row["split_jumps"]
                             else "no_jump_found" if fp in compared else "unverifiable_no_overlap")
             if row["verdict"] is None:
                 row["verdict"] = row["split"]
