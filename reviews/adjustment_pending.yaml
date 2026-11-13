@@ -74,13 +74,6 @@
   waits_on: ibkr_restart
   review_by: '2026-12-11'
   ref: Product msg_d3d90042
-- file_path: price-data/stocks/yf/russell2000/MRDN/MRDN-1d.parquet
-  verdict: mislabelled_raw_is_adjusted
-  drift: 0.06137
-  reason: 'bad ranges deleted (stock-delete-20261113T154323Z, stock-delete-20261113T154729Z); split jumps gone. Left: label drift +6.1% on the clean 2019-05-14.. overlap, level 1.00; Yahoo likely adjusts the 7% and 5% stock dividends of 2019-12-27 and 2020-01-27. Candidate for known_adjustment'
-  asked: '2026-11-13'
-  review_by: '2026-11-27'
-  ref: Product msg_547a8316
 - file_path: price-data/stocks/ibkr/russell2000/MYE/MYE-all-1d.parquet
   split_dates: ['2002-09-03']
   reason: IBKR split jump; flag with flag_unadjusted_splits after the owner restarts the IBKR workers
@@ -102,10 +95,3 @@
   waits_on: ibkr_restart
   review_by: '2026-12-11'
   ref: Product msg_d3d90042
-- file_path: price-data/stocks/yf/russell2000/RCAT/RCAT-1d.parquet
-  verdict: anomaly
-  drift: -0.03716
-  reason: 'bad ranges deleted (stock-delete-20261113T154323Z), 2002-07-03..2011-07-17 flagged uncertain; split jumps gone. Left: label drift -3.7% on the 2011-07-18.. overlap, level 1.00, noisy ratio; IBKR shows tick-sized 2012 steps (4:5, 3:4, 3:2). Candidate for known_adjustment'
-  asked: '2026-11-13'
-  review_by: '2026-11-27'
-  ref: Product msg_547a8316
