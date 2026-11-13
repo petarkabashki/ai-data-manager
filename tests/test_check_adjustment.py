@@ -232,3 +232,21 @@ def test_a_recorded_finding_is_known_until_it_moves_or_lapses(tmp_path):
 
     yf_node["known_adjustment"].update(level=0.15, until_ibkr=last)  # IBKR reached the date
     assert _by_file(audit(catalogs, tmp_path))[yf]["verdict"] == "level_mismatch"
+
+
+def test_a_noisy_ratio_takes_no_share_steps_out_either(tmp_path):
+    """OKE vs IBKR 2020: held moves of all sizes; some land near 4% or 5% by chance."""
+    p = _prices(10)
+    yf_closes = p.copy()
+    for i, day in enumerate(range(30, 160, 30)):     # five 12% moves: a noisy ratio
+        yf_closes[day:] *= 1.12 if i % 2 == 0 else 1 / 1.12
+    for day in (200, 250):                             # two that happen to be 5%
+        yf_closes[day:] *= 1.05
+    yf, ib = ("price-data/stocks/yf/sp500/OKE/OKE-1d.parquet", "price-data/stocks/ibkr/sp500/OKE/OKE-all-1d.parquet")
+    _write(tmp_path, yf, yf_closes)
+    _write(tmp_path, ib, p)
+    catalogs = {"sp500": {"OKE": _entry(YF=_node(yf, "raw"), IBKR=_node(ib, "raw"))}}
+    row = _by_file(audit(catalogs, tmp_path))[yf]
+
+    assert row["vs_ibkr"]["noisy_ratio"] and row["vs_ibkr"]["share_steps"]
+    assert row["vs_ibkr"]["step_drift"] == 0

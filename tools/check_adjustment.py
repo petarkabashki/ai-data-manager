@@ -90,7 +90,7 @@ MAX_STEPS = 3   # more held one-day steps than this: a noisy ratio, steps not re
 #: Stock dividends Yahoo applies as splits and IBKR (pre-2005) does not: the
 #: ratio steps by exactly 1+p. Banks pay 3%, 5% and 10% in shares, many yearly.
 #: Not 2%: a high-yield quarterly cash dividend steps an adjusted file that much.
-SHARE_STEPS = (0.03, 0.04, 0.05, 0.06, 0.1, 0.15, 0.2, 0.25, 0.5)
+SHARE_STEPS = (0.03, 0.04, 0.05, 0.06, 0.07, 0.08, 0.1, 0.15, 0.2, 0.25, 0.5)
 #: How close (in log) a held step must sit to one: 0.15%, well inside the 1%
 #: spacing, so a random level change rarely passes as one.
 SHARE_TOL = 0.0015
@@ -218,10 +218,12 @@ def compare(this: pd.Series, ref: pd.Series) -> dict | None:
     jumps, shares = pd.Series(jumps, dtype=float), pd.Series(shares, dtype=float)
     # A corporate action is one or two steps. More means a noisy ratio (WBD vs
     # IBKR's Discovery listing in 2021), where steps can't be told from drift.
-    # Stock dividends are exempt: a bank paying 5% in shares every year is a
-    # share count IBKR left alone, like a split, however often it happens.
+    # Stock dividends don't count toward that: a bank paying 5% in shares every
+    # year is a share count IBKR left alone, like a split, however often. But on
+    # a noisy ratio a random held move lands near 3-25% too (OKE, KGEI 2020),
+    # so there nothing is taken out.
     noisy = len(jumps) > MAX_STEPS
-    removed = (0.0 if noisy else float(jumps.sum())) + float(shares.sum())
+    removed = 0.0 if noisy else float(jumps.sum()) + float(shares.sum())
     return {
         "overlap_days": int(len(ratio)),
         "first": str(ratio.index[0].date()), "last": str(ratio.index[-1].date()),
