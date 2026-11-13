@@ -462,9 +462,11 @@ deploy can restart `pdm` without waiting for the queue to drain.
   adjusted only from 2024-08-07), backed up and row-recorded; nightly YF
   stays raw and refuses a restated tail.
   **The only exceptions to RAW** (owner, 2026-11-13): sp500/WBD,
-  nasdaq100/WBD and sp500/PSKY stay dividend-adjusted and are labelled
-  `adjusted`. Yahoo serves no raw history before 2021 for either company:
-  DISCA, DISCK, VIAC and CBS return nothing, and PARA starts 2021-02-12.
+  nasdaq100/WBD, sp500/PSKY, sp500/KVUE, delisted_stocks/AVB and
+  delisted_stocks/EQR stay dividend-adjusted and are labelled `adjusted`.
+  Yahoo serves no raw history before 2021 for WBD or PSKY: DISCA, DISCK,
+  VIAC and CBS return nothing, and PARA starts 2021-02-12. For KVUE, AVB
+  and EQR, Yahoo now serves a single bar.
   download_yf skips a file stored under the other adjustment, so the
   nightly can't append raw bars to them.
   Labels record the request, not the content: `tools/check_adjustment.py`
