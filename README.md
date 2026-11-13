@@ -129,6 +129,7 @@ Full breakdown, directory tree, and the provider-first path rule are in
 | [`docs/cli-reference.md`](docs/cli-reference.md) | Every tool in `tools/`, full argument reference with examples |
 | [`docs/workflows.md`](docs/workflows.md) | End-to-end task walkthroughs (crypto refresh, IBKR download, market-cap snapshots, schema audits) |
 | [`docs/agentic-usage.md`](docs/agentic-usage.md) | How any agent harness drives this repo, `.agents/library/skills/` conventions, example prompts |
+| [`docs/consumers.md`](docs/consumers.md) | Onboarding for a repo that reads price-data: layout contract, mount vs. gateway, skills to pull, reporting breakage |
 | [`AGENTS.md`](AGENTS.md) | Canonical, terse data-convention reference (source of truth; docs/ expands on it) |
 | [`ROADMAP.md`](ROADMAP.md) | Sequenced work plan: what's fixed, what's known-missing, and why |
 

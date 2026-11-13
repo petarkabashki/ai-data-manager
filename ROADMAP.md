@@ -485,6 +485,13 @@ adjustment convention.
   archive it.
 - py-qwant: `qwant/data/sync.py` no longer did anything. **Deleted** in
   py-qwant.
+- flux-quant (added 2026-11-13): `flux/src/words/indicators.rs`
+  `resolve_symbol_path` still read `stocks/<SYM>.parquet` and
+  `indexes/<SYM>.parquet`, so every stock and index load failed. Crypto still
+  resolved. flux-quant's Architect is moving it to look up `file_path`
+  (catalog YAML, or PDM `series`) instead of building paths. Its
+  `kalman_hmm_nasdaq_100` study expected `stocks/nasdaq/<T>.parquet` and
+  `indexes/NDX.parquet`.
 
 **Done when.** No active repo reads a path the old layout used.
 

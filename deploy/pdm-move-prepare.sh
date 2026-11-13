@@ -40,16 +40,28 @@ chown pdm:pdm-data $dst && chmod 710 $dst      # pdm-data may pass through, not 
 chmod 750 /home/pdm-ro
 loginctl enable-linger pdm
 
-# the hub's keys, in files only root can change
+# the hub's keys, in files only root can change.
+# put_keys FILE PUBKEY... < lines: replaces the lines for those keys (matched by
+# key blob, so a rerun adds no duplicates) and keeps every other line, such as
+# the fleet hosts' pdm-ro grants the owner appends (docs/consumers.md).
+put_keys() {
+    local file=$1 blobs; shift
+    blobs=$(awk 'NF >= 2 {print $2}' "$@")
+    [ "$(wc -l <<<"$blobs")" = "$#" ] && ! grep -qx '' <<<"$blobs" ||
+        { echo "put_keys: unreadable public key in $*"; exit 1; }
+    { [ -f "$file" ] && grep -vF -- "$blobs" "$file" || true; cat; } > "$file.new"
+    mv "$file.new" "$file"
+}
 install -d -o root -g root -m 755 $dst/.ssh /home/pdm-ro/.ssh
 printf 'from="%s",no-agent-forwarding,no-port-forwarding,no-X11-forwarding,no-user-rc %s\n' \
-    "$HUB_ADDR" "$(cat "$keys/id_pdm_admin.pub")" > $dst/.ssh/authorized_keys
+    "$HUB_ADDR" "$(cat "$keys/id_pdm_admin.pub")" |
+    put_keys $dst/.ssh/authorized_keys "$keys/id_pdm_admin.pub"
 {
     printf 'from="%s",restrict,command="/usr/lib/openssh/sftp-server -R -d %s/work/price-data" %s\n' \
         "$HUB_ADDR" "$dst" "$(cat "$keys/id_pdm_mount.pub")"
     printf 'from="%s",restrict,command="/usr/bin/rrsync -ro %s/work/price-data/" %s\n' \
         "$HUB_ADDR" "$dst" "$(cat "$keys/id_pdm_backup.pub")"
-} > /home/pdm-ro/.ssh/authorized_keys
+} | put_keys /home/pdm-ro/.ssh/authorized_keys "$keys/id_pdm_mount.pub" "$keys/id_pdm_backup.pub"
 chown root:root $dst/.ssh/authorized_keys /home/pdm-ro/.ssh/authorized_keys
 chmod 644 $dst/.ssh/authorized_keys /home/pdm-ro/.ssh/authorized_keys
 
