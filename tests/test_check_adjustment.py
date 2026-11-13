@@ -115,6 +115,22 @@ def test_a_step_that_drifts_back_is_not_taken_out_of_drift(tmp_path):
     assert row["vs_ibkr"]["one_day_steps"] == [] and abs(row["vs_ibkr"]["drift"]) < 0.005
 
 
+def test_a_noisy_ratio_keeps_its_steps_in_drift(tmp_path):
+    """WBD vs IBKR 2021: many held 10-20% moves; removing them inverted the drift."""
+    p = _prices(7)
+    yf_closes = p * np.linspace(0.96, 1.0, DAYS)
+    for i, day in enumerate(range(40, 220, 30)):
+        yf_closes[day:] *= 1.1 if i % 2 == 0 else 1 / 1.1
+    yf, ib = ("price-data/stocks/yf/sp500/WBD/WBD-1d.parquet", "price-data/stocks/ibkr/sp500/WBD/WBD-all-1d.parquet")
+    _write(tmp_path, yf, yf_closes)
+    _write(tmp_path, ib, p)
+    catalogs = {"sp500": {"WBD": _entry(YF=_node(yf, "adjusted"), IBKR=_node(ib, "raw"))}}
+    row = _by_file(audit(catalogs, tmp_path))[yf]
+
+    assert row["vs_ibkr"]["noisy_ratio"] and row["vs_ibkr"]["step_drift"] == 0
+    assert row["verdict"] == "ok"
+
+
 def test_an_unadjusted_split_is_owned_by_the_file_that_jumps(tmp_path):
     p = _prices(2)
     ibkr_closes = p.copy()

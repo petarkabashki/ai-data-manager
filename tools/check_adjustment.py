@@ -82,6 +82,7 @@ STEP_TOL = 0.02
 #: drift, and is taken out of `drift`. A regular dividend moves the ratio well
 #: under 2.5% on its ex-date; a special one above it is listed, not counted.
 STEP_CUT = 0.025
+MAX_STEPS = 3   # more held one-day steps than this: a noisy ratio, steps not removed
 
 PROBLEMS = {"mislabelled_raw_is_adjusted", "mislabelled_adjusted_is_raw",
             "level_mismatch", "anomaly", "split_jump"}
@@ -186,11 +187,16 @@ def compare(this: pd.Series, ref: pd.Series) -> dict | None:
         if held * one_day > 0 and abs(held) >= abs(one_day) / 2:
             jumps[segment.index[pos]] = held
     jumps = pd.Series(jumps, dtype=float)
+    # A corporate action is one or two steps. More means a noisy ratio (WBD vs
+    # IBKR's Discovery listing in 2021), where steps can't be told from drift.
+    noisy = len(jumps) > MAX_STEPS
+    removed = 0.0 if noisy else float(jumps.sum())
     return {
         "overlap_days": int(len(ratio)),
         "first": str(ratio.index[0].date()), "last": str(ratio.index[-1].date()),
-        "drift": round(late / early / float(np.exp(jumps.sum())) - 1, 5), "level": round(late, 5),
-        "step_drift": round(float(np.exp(jumps.sum())) - 1, 5),
+        "drift": round(late / early / float(np.exp(removed)) - 1, 5), "level": round(late, 5),
+        "step_drift": round(float(np.exp(removed)) - 1, 5),
+        "noisy_ratio": noisy,
         "one_day_steps": [{"date": str(d.date()), "change": round(float(np.exp(v)) - 1, 4)}
                           for d, v in jumps.items()][:20],
         "steps": steps,
