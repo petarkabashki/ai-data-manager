@@ -27,6 +27,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Protocol
 
 import pandas as pd
@@ -218,3 +219,40 @@ def fetch_ohlcv(
     ticker = yf_ticker(symbol, asset_class)
     raw = fetcher.fetch(ticker, interval, clamp_start(start, timeframe), end, auto_adjust)
     return frame_from_yahoo(raw, timeframe)
+
+
+#: A fetched bar that differs from the stored bar of the same date by more than
+#: this, as the median over the overlap, means Yahoo restated history. Raw
+#: closes don't move for dividends; any split moves them by 25% or more.
+RESTATED_TOL = 0.03
+
+
+def restated_factor(fetched: pd.DataFrame, stored: Path, tol: float = RESTATED_TOL) -> float | None:
+    """fetched / stored close, median over shared dates, when it is off 1 by more than `tol`.
+
+    An incremental refresh re-fetches the last few stored days. If Yahoo has
+    restated the series since (a split after the stored history was written),
+    those days come back at the new share count. Merging would leave the file
+    with two share counts joined by a step that never traded (the split seam,
+    2024-08-07 and 2026-05-04). The caller must not merge; the series needs a
+    full re-download with `tools/redownload_yf.py`. A fetch reaching back to
+    the first stored bar replaces all of them, so it passes.
+    """
+    from utils.catalog import date_label_ms
+
+    if fetched.empty or not Path(stored).exists():
+        return None
+    old = pd.read_parquet(stored, columns=["timestamp", "close"])
+    old = pd.Series(old["close"].to_numpy(float), index=date_label_ms(old["timestamp"]))
+    new = pd.Series(fetched["close"].to_numpy(float), index=date_label_ms(fetched["timestamp"]))
+    old = old[~old.index.duplicated(keep="last")]
+    new = new[~new.index.duplicated(keep="last")]
+    if new.index.min() <= old.index.min():
+        return None     # the merge replaces every stored bar: one share count, no seam
+    shared = old.index.intersection(new.index)
+    ratio = (new[shared] / old[shared]).replace([float("inf")], float("nan")).dropna()
+    ratio = ratio[ratio > 0]
+    if ratio.empty:
+        return None
+    factor = float(ratio.median())
+    return factor if abs(factor - 1) > tol else None

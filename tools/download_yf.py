@@ -73,7 +73,7 @@ from utils.catalog import (
 from utils.planning import format_ranges, plan_download_ranges, throttle_sleep, utc_now
 from utils.report import print_table
 from utils.semantics import Semantics, semantics_for
-from utils.yf import UnsupportedTimeframe, YahooFetcher, fetch_ohlcv
+from utils.yf import UnsupportedTimeframe, YahooFetcher, fetch_ohlcv, restated_factor
 
 PROVIDER = "YF"
 
@@ -336,6 +336,14 @@ def main() -> None:
                 if asset_class == "Macro":
                     old_rows, new_rows, start_date, end_date = merge_macro(frame, dst)
                 else:
+                    factor = restated_factor(frame, dst)
+                    if factor is not None:
+                        # Never merge across a restatement: it writes a split seam.
+                        reason = (f"Yahoo restated history (x{factor:.4f} on the overlap); not merged. "
+                                  f"Repair: redownload_yf.py --files {relative_to_repo(dst)} --apply")
+                        failures.append((symbol, timeframe, reason))
+                        say(f"  {symbol}/{timeframe}: {reason}")
+                        continue
                     old_rows, new_rows = merge_ohlcv_parquet(
                         frame, dst, daily=timeframe in DATE_LABELLED_TIMEFRAMES)
                     result = read_parquet_range(dst)

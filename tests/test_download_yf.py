@@ -211,6 +211,45 @@ def test_merging_is_idempotent(yf_env, monkeypatch):
 
 # --- failure modes ------------------------------------------------------------
 
+class SplitYahoo(FakeYahoo):
+    """Yahoo after a 2:1 split: every close, old dates included, is halved."""
+
+    def fetch(self, ticker, interval, start, end, auto_adjust):
+        frame = super().fetch(ticker, interval, start, end, auto_adjust)
+        return frame.assign(Close=frame["Close"] / 2)
+
+
+def test_a_restated_tail_is_refused_not_merged(yf_env, monkeypatch, capsys):
+    """2024-08-07 and 2026-05-04: merging a restated tail wrote a split seam."""
+    root, catalog, tool = yf_env
+    _seed_stock_catalog(root)
+    path = catalog.stock_file_path("YF", "sp500", "AAPL", "1d")
+    _run(tool, ["--universe", "sp500", "--timeframes", "1d", "--full",
+                "--since", "2025-01-01"], monkeypatch, FakeYahoo())
+    before = pd.read_parquet(path)
+
+    with pytest.raises(SystemExit) as exit_:
+        _run(tool, ["--universe", "sp500", "--timeframes", "1d", "--overlap-days", "5"],
+             monkeypatch, SplitYahoo())
+
+    assert exit_.value.code == 1
+    assert "restated history (x0.5000" in capsys.readouterr().out
+    pd.testing.assert_frame_equal(pd.read_parquet(path), before)
+
+
+def test_a_full_refetch_across_a_split_replaces_everything(yf_env, monkeypatch):
+    root, catalog, tool = yf_env
+    _seed_stock_catalog(root)
+    path = catalog.stock_file_path("YF", "sp500", "AAPL", "1d")
+    _run(tool, ["--universe", "sp500", "--timeframes", "1d", "--full",
+                "--since", "2025-01-01"], monkeypatch, FakeYahoo())
+
+    _run(tool, ["--universe", "sp500", "--timeframes", "1d", "--full",
+                "--since", "2025-01-01"], monkeypatch, SplitYahoo())
+
+    assert set(pd.read_parquet(path)["close"]) == {0.75}
+
+
 def test_empty_response_writes_nothing(yf_env, monkeypatch):
     """An unknown ticker comes back empty rather than erroring — that must not
     create an empty parquet or a catalog node."""

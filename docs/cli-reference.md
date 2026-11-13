@@ -16,6 +16,7 @@ first when one is offered.
 | [`check_splits.py`](#check_splitspy) | read-only | Find un-back-adjusted split seams inside stored price files |
 | [`check_adjustment.py`](#check_adjustmentpy) | read-only | Check each stock YF node's `adjustment` label against IBKR and other universes; find unadjusted split jumps |
 | [`delete_twin_bars.py`](#delete_twin_barspy) | writes (with `--apply`) | Delete spans of crypto bars copied from another venue, logged row by row |
+| [`redownload_yf.py`](#redownload_yfpy) | writes (with `--apply`) | Replace YF daily stock files with a full raw re-download, logged row by row |
 | [`check_twins.py`](#check_twinspy) | read-only | Find blocks of crypto bars identical to another venue's (bars from the wrong venue) |
 | [`fix_daily_stamps.py`](#fix_daily_stampspy) | write | Restamp daily+ bars to 00:00 UTC of their date; drop duplicate dates |
 | [`backup_delta.py`](#backup_deltapy) | write (`.deltas/`, a restore dir) | Row-level backup deltas: export what changed, restore any night |
@@ -285,6 +286,35 @@ root, one row per deleted bar with its old OHLCV and a sha256 content hash,
 and `revisions/<run id>.yaml` with the spans, then refreshes the catalog dates.
 Procedure per venue: dry run, `--apply`, `fill_crypto_holes --apply`,
 `--log-refill`, `check_twins --record`. Runs in the venue's crypto lane (`crypto-<exchange>`) under PDM.
+
+## `redownload_yf.py`
+
+```
+uv run python tools/redownload_yf.py (--files FILE_PATH ... | --audit REPORT [--verdict V] [--jump-date YYYY-MM-DD])
+    [--apply] [--backup-dir DIR] [--run-id ID] [--slack-days N] [--sleep-seconds S] [--json]
+```
+
+| Flag | Meaning |
+|---|---|
+| `--files` | Catalog `file_path`s (`price-data/stocks/yf/<universe>/<SYM>/<SYM>-1d.parquet`) |
+| `--audit` | A `check_adjustment.py --json` report; pick its YF rows by `--verdict` and/or `--jump-date` (a split jump on that date) |
+| `--apply` | Fetch, back up, write the revision record, replace; without it nothing is fetched or written |
+| `--backup-dir` | Where originals go (default `<data root>.yf-backup-<today>`, never inside the data root) |
+| `--run-id` | Resume that run: files already recorded are skipped |
+| `--slack-days` | How far inside the stored first/last date the fetch may start or end before the file is refused (default `7`) |
+
+The remedy for the two faults `check_adjustment.py` finds in YF files that
+appending can't fix: dividend-adjusted closes under a `raw` label, and split
+seams (`download_yf.py` now refuses to merge a restated tail and names this
+tool). Each file is re-fetched raw (`auto_adjust=False`) from its stored first
+date to today and replaced whole. A fetch that comes back empty or short of the
+stored range is refused and the file left as it was. The dry run lists each file
+with its stored first and last date and row count. `--apply` writes
+`revisions/<run id>/` at the data root, one parquet part per file with a row per
+changed bar (`replaced`/`deleted` with the old OHLCV, `refetched`/`added` with
+the new, each with a sha256 content hash), and `revisions/<run id>.yaml` with
+the per-file summary, then refreshes the catalog dates. Runs in the `equity`
+lane under PDM, so it never overlaps a YF nightly.
 
 ## `check_adjustment.py`
 

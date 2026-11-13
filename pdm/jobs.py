@@ -79,6 +79,7 @@ TOOL_LANES: dict[str, str] = {
     "check_catalog": "equity",          # --fix writes catalogs
     "fix_daily_stamps": "equity",       # per provider, see PROVIDER_LANES
     "dedupe_stock_universes": "equity",  # moves files; not while workers run that universe
+    "redownload_yf": "equity",          # replaces YF files; never beside a YF nightly
     "download_crypto": "crypto",
     "fill_crypto_holes": "crypto",
     "delete_twin_bars": "crypto",
