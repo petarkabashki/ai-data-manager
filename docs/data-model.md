@@ -174,6 +174,19 @@ tree on 2026-11-13:
   2004-06-21. Before those dates IBKR prices are 2x YF's.
 
 So a `raw` IBKR file is not safe for returns across those dates either.
+The data stays as IBKR serves it (owner decision 2026-11-13). Instead the node
+lists each jump date, from `tools/flag_unadjusted_splits.py`:
+
+```yaml
+      IBKR:
+        file_path: price-data/stocks/ibkr/sp500/XOM/XOM-all-1d.parquet
+        adjustment: raw
+        unadjusted_splits: ["2001-07-19"]   # first bar at the new share count
+```
+
+The field is optional. Absent means no jump was found, or the file couldn't be
+compared with YF; it is not a guarantee. A reader computing returns across a
+listed date divides the earlier prices by the split ratio, or starts after it.
 
 The label records what the downloader asked for, not what came back:
 

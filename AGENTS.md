@@ -259,6 +259,7 @@ uv run python tools/convert_crypto.py [--exchange X] [--dry-run]
 | `tools/delete_twin_bars.py` | Delete spans of crypto bars copied from another venue (dry run by default), with backups and a per-row revision record; `--log-refill` records what the refill put back |
 | `tools/check_adjustment.py` | Check each stock and index YF node's `adjustment` label against its closes (dividend drift vs IBKR, else vs other universes) and find unadjusted split jumps in YF and IBKR daily files |
 | `tools/redownload_yf.py` | Replace YF daily stock files with a full raw re-download (dry run by default): refuses a short fetch, backs up, writes a per-row revision record; the remedy for `check_adjustment.py` mislabels and split seams |
+| `tools/flag_unadjusted_splits.py` | Write IBKR's unadjusted split dates from a `check_adjustment.py` report to `unadjusted_splits` on its catalog nodes (dry run by default); data unchanged |
 | `tools/check_twins.py` | Find blocks of crypto bars identical (close and volume) to another venue's: bars copied from the wrong venue, never agreement |
 | `tools/fix_daily_stamps.py` | Restamp a provider's daily/weekly/monthly bars to 00:00 UTC of their date and drop duplicate dates, with backups |
 | `tools/backup_delta.py` | Row-level backup deltas: export the rows that changed each night (host), plan, prune and restore from a base plus deltas (hub) |

@@ -17,6 +17,7 @@ first when one is offered.
 | [`check_adjustment.py`](#check_adjustmentpy) | read-only | Check each stock YF node's `adjustment` label against IBKR and other universes; find unadjusted split jumps |
 | [`delete_twin_bars.py`](#delete_twin_barspy) | writes (with `--apply`) | Delete spans of crypto bars copied from another venue, logged row by row |
 | [`redownload_yf.py`](#redownload_yfpy) | writes (with `--apply`) | Replace YF daily stock files with a full raw re-download, logged row by row |
+| [`flag_unadjusted_splits.py`](#flag_unadjusted_splitspy) | writes catalogs (with `--apply`) | Record IBKR's unadjusted split dates on its catalog nodes (`unadjusted_splits`) |
 | [`check_twins.py`](#check_twinspy) | read-only | Find blocks of crypto bars identical to another venue's (bars from the wrong venue) |
 | [`fix_daily_stamps.py`](#fix_daily_stampspy) | write | Restamp daily+ bars to 00:00 UTC of their date; drop duplicate dates |
 | [`backup_delta.py`](#backup_deltapy) | write (`.deltas/`, a restore dir) | Row-level backup deltas: export what changed, restore any night |
@@ -315,6 +316,19 @@ changed bar (`replaced`/`deleted` with the old OHLCV, `refetched`/`added` with
 the new, each with a sha256 content hash), and `revisions/<run id>.yaml` with
 the per-file summary, then refreshes the catalog dates. Runs in the `equity`
 lane under PDM, so it never overlaps a YF nightly.
+
+## `flag_unadjusted_splits.py`
+
+```
+uv run python tools/flag_unadjusted_splits.py --audit REPORT [--catalog U ...] [--apply]
+```
+
+Takes the IBKR `split_jumps` from a `check_adjustment.py --json` report and
+writes their dates to `unadjusted_splits` on every IBKR node that points at the
+file, in every stock catalog. A file audited without a jump loses the field; one
+the report couldn't compare is left alone. The price data is not touched: IBKR's
+pre-2005 splits stay as served (owner decision 2026-11-13). Dry run lists each
+node change; `--apply` writes under each catalog's lock. Equity lane.
 
 ## `check_adjustment.py`
 
