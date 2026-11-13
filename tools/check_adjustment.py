@@ -14,6 +14,11 @@ The test compares closes on the days both files hold (daily bars only):
   in the past and converges to it at the present, so the ratio YF / reference
   rises over the overlap. IBKR TRADES is never dividend-adjusted, so it is the
   reference; another universe's YF file of the same ticker is the fallback.
+- **A one-day step is not drift.** A ratio change over 2.5% in a day is a
+  corporate action applied on one side only: a spin-off (A 2014-11-03, PFE
+  2020-11-17), a stock dividend, or a split IBKR left alone (ABCB 6:5 on
+  2005-03-11). It is taken out of `drift` and listed under `one_day_steps`,
+  with the total in `step_drift`.
 - **An unadjusted split steps.** The ratio jumps by a split factor in one day.
   The file whose own one-day move is the jump owns it.
 - **No overlap, no verdict.** Such nodes are counted as unverifiable, never as
@@ -72,6 +77,11 @@ STEP_MIN = 1.25
 #: How close the step must sit to a split factor. Two providers' closes differ
 #: by a few tenths of a percent, so this is looser than check_splits' 0.3%.
 STEP_TOL = 0.02
+#: A one-day ratio change larger than this (in log) is a corporate action on one
+#: side (a spin-off, a stock dividend, a split IBKR left alone), not dividend
+#: drift, and is taken out of `drift`. A regular dividend moves the ratio well
+#: under 2.5% on its ex-date; a special one above it is listed, not counted.
+STEP_CUT = 0.025
 
 PROBLEMS = {"mislabelled_raw_is_adjusted", "mislabelled_adjusted_is_raw",
             "level_mismatch", "anomaly", "split_jump"}
@@ -162,10 +172,17 @@ def compare(this: pd.Series, ref: pd.Series) -> dict | None:
         segment = ratio
     early = float(segment.iloc[:EDGE_DAYS].median())
     late = float(segment.iloc[-EDGE_DAYS:].median())
+    log_change = np.log(segment.astype(float)).diff().iloc[1:]
+    inner = log_change.iloc[EDGE_DAYS:-EDGE_DAYS]     # a step inside an edge window moves its median only partly
+    jumps = inner[inner.abs() > STEP_CUT]
     return {
         "overlap_days": int(len(ratio)),
         "first": str(ratio.index[0].date()), "last": str(ratio.index[-1].date()),
-        "drift": round(late / early - 1, 5), "level": round(late, 5), "steps": steps,
+        "drift": round(late / early / float(np.exp(jumps.sum())) - 1, 5), "level": round(late, 5),
+        "step_drift": round(float(np.exp(jumps.sum())) - 1, 5),
+        "one_day_steps": [{"date": str(d.date()), "change": round(float(np.exp(v)) - 1, 4)}
+                          for d, v in jumps.items()][:20],
+        "steps": steps,
     }
 
 

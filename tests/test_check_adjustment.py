@@ -15,6 +15,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "tools"))
@@ -76,6 +77,26 @@ def test_a_dividend_adjusted_file_labelled_raw_is_mislabelled(tmp_path):
     ib = rows["price-data/stocks/ibkr/sp500/AAPL/AAPL-all-1d.parquet"]
     assert ib["verdict"] == "no_jump_found" and ib["catalog"] == "sp500"
     assert len(rows) == 3                      # the shared IBKR file is listed once
+
+
+@pytest.mark.parametrize("dividends, verdict", [(False, "ok"), (True, "mislabelled_raw_is_adjusted")])
+def test_a_spin_off_step_is_not_dividend_drift(tmp_path, dividends, verdict):
+    """Yahoo scales history before a spin-off (A 2014-11-03: 0.72x); IBKR doesn't."""
+    p = _prices(3)
+    yf_closes = p.copy()
+    yf_closes[:SPLIT_DAY] *= 0.85
+    if dividends:
+        yf_closes *= np.linspace(0.96, 1.0, DAYS)
+    yf, ib = ("price-data/stocks/yf/sp500/A/A-1d.parquet", "price-data/stocks/ibkr/sp500/A/A-all-1d.parquet")
+    _write(tmp_path, yf, yf_closes)
+    _write(tmp_path, ib, p)
+    catalogs = {"sp500": {"A": _entry(YF=_node(yf, "raw"), IBKR=_node(ib, "raw"))}}
+    row = _by_file(audit(catalogs, tmp_path))[yf]
+
+    assert row["verdict"] == verdict
+    (step,) = row["vs_ibkr"]["one_day_steps"]
+    assert step["date"] == str(pd.Timestamp((10_000 + SPLIT_DAY) * 86_400_000, unit="ms").date())
+    assert row["vs_ibkr"]["step_drift"] == pytest.approx(1 / 0.85 - 1, abs=0.01)
 
 
 def test_an_unadjusted_split_is_owned_by_the_file_that_jumps(tmp_path):

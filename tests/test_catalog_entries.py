@@ -100,6 +100,23 @@ def test_stock_providers_coexist_on_one_timeframe():
     assert set(catalog["AAPL"]["timeframe_dates"]["1d"]) == {"YF", "IBKR"}
 
 
+def test_a_download_keeps_the_audit_annotations_of_its_file():
+    """IBKR workers rewrote russell2000 nodes and dropped 94 `unadjusted_splits` (2026-11-13)."""
+    catalog: dict = {}
+    path = stock_file_path("IBKR", "sp500", "XOM", "1d", "all")
+    args = (catalog, "XOM", "1d", "IBKR")
+    update_stock_timeframe_entry(*args, path, "2000-01-03", "2026-09-01", session="all")
+    catalog["XOM"]["timeframe_dates"]["1d"]["IBKR"]["unadjusted_splits"] = ["2001-07-19"]
+
+    update_stock_timeframe_entry(*args, path, "2000-01-03", "2026-09-02", session="all")
+    node = catalog["XOM"]["timeframe_dates"]["1d"]["IBKR"]
+    assert node["end_date"] == "2026-09-02" and node["unadjusted_splits"] == ["2001-07-19"]
+
+    moved = stock_file_path("IBKR", "nasdaq100", "XOM", "1d", "all")
+    update_stock_timeframe_entry(*args, moved, "2000-01-03", "2026-09-02", session="all")
+    assert "unadjusted_splits" not in catalog["XOM"]["timeframe_dates"]["1d"]["IBKR"]
+
+
 def test_stock_sessions_do_not_clobber_each_other():
     """`session` is in the filename, so it must be in the catalog key too.
 

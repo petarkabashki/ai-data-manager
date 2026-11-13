@@ -513,6 +513,11 @@ def _register_timeframe(entry: dict, timeframe: str) -> None:
         entry["timeframes"] = _sort_timeframes(entry["timeframes"])
 
 
+#: Node fields an audit writes, not the downloader. A downloader rebuilds the
+#: node on every write; these are carried over while it points at the same file.
+ANNOTATION_KEYS = ("unadjusted_splits",)
+
+
 def _set_provider_node(
     entry: dict,
     timeframe: str,
@@ -537,7 +542,13 @@ def _set_provider_node(
         )
         tf_map[timeframe] = {legacy_key: existing}
 
-    tf_map.setdefault(timeframe, {})[node_key] = node
+    slot = tf_map.setdefault(timeframe, {})
+    previous = slot.get(node_key)
+    if isinstance(previous, dict) and previous.get("file_path") == node.get("file_path"):
+        for key in ANNOTATION_KEYS:
+            if key in previous and key not in node:
+                node[key] = previous[key]
+    slot[node_key] = node
 
 
 def update_catalog_entry(
