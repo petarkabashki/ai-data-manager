@@ -200,7 +200,7 @@ def compare(this: pd.Series, ref: pd.Series) -> dict | None:
     late = float(segment.iloc[-EDGE_DAYS:].median())
     log_ratio = np.log(segment.astype(float))
     log_change = log_ratio.diff()
-    jumps, shares = {}, {}
+    found: list[tuple[int, float, float]] = []      # (pos, one-day move, held)
     # A step inside an edge window moves its median only partly, so look inside.
     for pos in range(EDGE_DAYS + 1, len(segment) - EDGE_DAYS):
         one_day = float(log_change.iloc[pos])
@@ -210,11 +210,23 @@ def compare(this: pd.Series, ref: pd.Series) -> dict | None:
         # (ABBV 2024-08-07) is noise, and taking it out would invent drift.
         held = float(log_ratio.iloc[pos:pos + EDGE_DAYS].median() - log_ratio.iloc[pos - EDGE_DAYS:pos].median())
         if held * one_day > 0 and abs(held) >= abs(one_day) / 2:
-            day = segment.index[pos]
-            if _share_step(held, SHARE_TOL) is not None:
-                shares[day] = held
-            elif abs(one_day) > STEP_CUT:
-                jumps[day] = held
+            if not (_share_step(held, SHARE_TOL) or abs(one_day) > STEP_CUT):
+                continue
+            # Two moves one way in one window measure the same held step (PEBK
+            # 2005): keep the larger day, or the step is taken out twice. Moves
+            # that go and come back (ARKO 2019-09: +63%, then -38%) stay apart.
+            if found and pos - found[-1][0] < EDGE_DAYS and one_day * found[-1][1] > 0:
+                if abs(one_day) > abs(found[-1][1]):
+                    found[-1] = (pos, one_day, held)
+                continue
+            found.append((pos, one_day, held))
+    jumps, shares = {}, {}
+    for pos, _one_day, held in found:
+        day = segment.index[pos]
+        if _share_step(held, SHARE_TOL) is not None:
+            shares[day] = held
+        else:
+            jumps[day] = held
     jumps, shares = pd.Series(jumps, dtype=float), pd.Series(shares, dtype=float)
     # A corporate action is one or two steps. More means a noisy ratio (WBD vs
     # IBKR's Discovery listing in 2021), where steps can't be told from drift.
