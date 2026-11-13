@@ -461,6 +461,12 @@ deploy can restart `pdm` without waiting for the queue to drain.
   (runs yf-redownload-20261113T132948Z and the follow-up for the 231 files
   adjusted only from 2024-08-07), backed up and row-recorded; nightly YF
   stays raw and refuses a restated tail.
+  **The only exceptions to RAW** (owner, 2026-11-13): sp500/WBD,
+  nasdaq100/WBD and sp500/PSKY stay dividend-adjusted and are labelled
+  `adjusted`. Yahoo serves no raw history before 2021 for either company:
+  DISCA, DISCK, VIAC and CBS return nothing, and PARA starts 2021-02-12.
+  download_yf skips a file stored under the other adjustment, so the
+  nightly can't append raw bars to them.
   Labels record the request, not the content: `tools/check_adjustment.py`
   measures each YF node against IBKR TRADES (else other universes) and lists
   mislabelled nodes (sp500 AAPL and NVDA are `raw` but dividend-adjusted) and
