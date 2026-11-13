@@ -44,12 +44,13 @@ SCHEMAS = frozenset({"ohlcv", "rate_series", "funding_rate"})
 #: KNOWN IMPRECISION: `raw` covers two different things, because splits and
 #: dividends are adjusted independently and this vocabulary has no room to say
 #: so. Yahoo's unadjusted `Close` is already split-adjusted; IBKR `TRADES` is
-#: not. Measured on the stored tree, `stocks/ibkr/sp500/{XOM,PG,CVX,JNJ}`
-#: closes are exactly 2x Yahoo's for the same days — the 2:1 splits those names
-#: ran between 2001 and 2004, which IBKR never back-adjusted. Both files are
-#: `raw` here. That is fine for returns, which are scale-free, and wrong for
-#: anything quoting a historical price or sizing in shares; add a
-#: `split_adjusted` field before relying on it for the latter.
+#: split-adjusted for recent splits (AAPL/TSLA/NVDA 2020-2024 match Yahoo) but
+#: not for old ones. Measured on the stored tree, `stocks/ibkr/sp500/{XOM,PG,CVX,JNJ}`
+#: closes are exactly 2x Yahoo's before the 2:1 splits those names ran between
+#: 2001 and 2004, which IBKR never back-adjusted, so those files hold a one-day
+#: ~-50% bar at the split (XOM 2001-07-19, PG 2004-06-21). Both files are `raw`
+#: here. That breaks returns across the split day as well as historical prices
+#: and share sizing; add a `split_adjusted` field before relying on either.
 ADJUSTMENTS = frozenset({"raw", "adjusted", "not_applicable"})
 
 #: What one unit of `volume` counts.

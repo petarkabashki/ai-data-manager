@@ -37,9 +37,17 @@ flux-quant today builds `stocks/<SYM>.parquet`, `indexes/<SYM>.parquet` and
 
 The fix is to replace those joins with a node lookup:
 
+Catalogs sit at the data root (`price-data/<catalog>.yaml`). There is no
+`catalogs/` directory.
+
+In the non-binance crypto catalogs, the YAML key carries a venue suffix
+(`BTC_USDT_bybit`), while the entry's `name`, its directory and the series
+index all use `BTC_USDT`. So match on `name`.
+
 ```text
 resolve(catalog, symbol, tf, provider?):
-    entry = yaml(data_root / f"{catalog}.yaml")[symbol]          # e.g. sp500, indexes, crypto_binance
+    cat   = yaml(data_root / f"{catalog}.yaml")                  # e.g. sp500, indexes, crypto_bybit
+    entry = the value v at key k in cat with (v.name or k) == symbol   # key may be BTC_USDT_bybit; name is BTC_USDT
     node  = entry.timeframe_dates[tf]
     if "file_path" not in node:                                  # nested shape (stocks, indexes)
         node = node[provider or "YF"]                            # match keys case-insensitively

@@ -155,6 +155,34 @@ AAPL:
         bar_label: open
 ```
 
+**What `adjustment` means.**
+
+- `raw` means **not back-adjusted for dividends**. It does not mean
+  unadjusted for splits.
+- `adjusted` means back-adjusted for splits and dividends.
+- `not_applicable` means there are no corporate actions: crypto, indexes,
+  commodities, macro.
+
+Split handling under `raw` depends on the provider. Measured on the stored
+tree on 2026-11-13:
+
+- YF's `Close` is split-adjusted across its whole history.
+- IBKR `TRADES` is split-adjusted for recent splits. AAPL, TSLA and NVDA
+  splits from 2020 to 2024 match YF, and AAPL closes at 75.09 on 2020-01-02.
+- IBKR leaves older splits unadjusted. They show as one-day drops in the file:
+  `ibkr/sp500/XOM` falls 49% on 2001-07-19 and `ibkr/sp500/PG` 50% on
+  2004-06-21. Before those dates IBKR prices are 2x YF's.
+
+So a `raw` IBKR file is not safe for returns across those dates either.
+
+The label records what the downloader asked for, not what came back:
+
+- `yf/sp500/AAPL` is labelled `raw`, but its closes are dividend-adjusted:
+  72.40 on 2020-01-02, against 75.09 for `yf/nasdaq100/AAPL` and IBKR.
+- Making one YF convention is the open owner decision in ROADMAP. A
+  `split_adjusted` field would make the split half explicit
+  (`utils/semantics.py`).
+
 Writers stamp these automatically — `apply_semantics()` fills only the fields a
 caller didn't set, so an explicit `semantics=` argument always wins. Nodes
 written before this existed are backfilled by
