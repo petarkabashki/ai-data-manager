@@ -99,6 +99,22 @@ def test_a_spin_off_step_is_not_dividend_drift(tmp_path, dividends, verdict):
     assert row["vs_ibkr"]["step_drift"] == pytest.approx(1 / 0.85 - 1, abs=0.01)
 
 
+def test_a_step_that_drifts_back_is_not_taken_out_of_drift(tmp_path):
+    """ABBV 2024-08-07: the ratio fell 5.7% in a day and recovered; drift is 0."""
+    p = _prices(6)
+    yf_closes = p.copy()
+    back = np.linspace(0.943, 1.0, 10)
+    yf_closes[SPLIT_DAY:SPLIT_DAY + 10] *= back
+    yf, ib = ("price-data/stocks/yf/sp500/ABBV/ABBV-1d.parquet", "price-data/stocks/ibkr/sp500/ABBV/ABBV-all-1d.parquet")
+    _write(tmp_path, yf, yf_closes)
+    _write(tmp_path, ib, p)
+    catalogs = {"sp500": {"ABBV": _entry(YF=_node(yf, "raw"), IBKR=_node(ib, "raw"))}}
+    row = _by_file(audit(catalogs, tmp_path))[yf]
+
+    assert row["verdict"] == "ok"
+    assert row["vs_ibkr"]["one_day_steps"] == [] and abs(row["vs_ibkr"]["drift"]) < 0.005
+
+
 def test_an_unadjusted_split_is_owned_by_the_file_that_jumps(tmp_path):
     p = _prices(2)
     ibkr_closes = p.copy()

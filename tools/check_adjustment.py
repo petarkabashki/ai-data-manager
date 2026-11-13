@@ -172,9 +172,20 @@ def compare(this: pd.Series, ref: pd.Series) -> dict | None:
         segment = ratio
     early = float(segment.iloc[:EDGE_DAYS].median())
     late = float(segment.iloc[-EDGE_DAYS:].median())
-    log_change = np.log(segment.astype(float)).diff().iloc[1:]
-    inner = log_change.iloc[EDGE_DAYS:-EDGE_DAYS]     # a step inside an edge window moves its median only partly
-    jumps = inner[inner.abs() > STEP_CUT]
+    log_ratio = np.log(segment.astype(float))
+    log_change = log_ratio.diff()
+    jumps = {}
+    # A step inside an edge window moves its median only partly, so look inside.
+    for pos in range(EDGE_DAYS + 1, len(segment) - EDGE_DAYS):
+        one_day = float(log_change.iloc[pos])
+        if abs(one_day) <= STEP_CUT:
+            continue
+        # Only the part that stays is a level change; a move that drifts back
+        # (ABBV 2024-08-07) is noise, and taking it out would invent drift.
+        held = float(log_ratio.iloc[pos:pos + EDGE_DAYS].median() - log_ratio.iloc[pos - EDGE_DAYS:pos].median())
+        if held * one_day > 0 and abs(held) >= abs(one_day) / 2:
+            jumps[segment.index[pos]] = held
+    jumps = pd.Series(jumps, dtype=float)
     return {
         "overlap_days": int(len(ratio)),
         "first": str(ratio.index[0].date()), "last": str(ratio.index[-1].date()),
