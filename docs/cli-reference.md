@@ -312,6 +312,8 @@ the file holds, on daily closes, over the days two files share:
   other universes' YF files of the same ticker are the reference.
 - **An unadjusted split steps.** A one-day change in the ratio that matches a
   split factor is a jump, owned by the file whose own close moved.
+  A step undone on the next shared day is one bad bar, listed under
+  `bad_bar_dates` on the YF row and counted as `has_bad_bar`, never as a jump.
 - **No overlap is unverifiable,** never passed.
 
 YF verdicts: `ok`, `mislabelled_raw_is_adjusted`, `mislabelled_adjusted_is_raw`,

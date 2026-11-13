@@ -136,6 +136,12 @@ def compare(this: pd.Series, ref: pd.Series) -> dict | None:
     for day, q in change[(change >= STEP_MIN) | (change <= 1 / STEP_MIN)].items():
         if nearest_simple_ratio(float(q), STEP_TOL) is None:
             continue
+        # A step undone on the next shared day is one bad bar, not a split.
+        pos = change.index.get_loc(day)
+        if any(0 <= i < len(change) and abs(float(change.iloc[i]) * float(q) - 1) <= STEP_TOL
+               for i in (pos - 1, pos + 1)):
+            steps.append({"date": str(day.date()), "owner": "", "bad_bar": True})
+            continue
         own_this, own_ref = _move(this, day), _move(ref, day)
         owner = "this" if abs(np.log(own_this)) >= abs(np.log(own_ref)) else "ref"
         move = own_this if owner == "this" else own_ref
@@ -148,7 +154,8 @@ def compare(this: pd.Series, ref: pd.Series) -> dict | None:
         })
     # Drift and level are read after the last step, where both files agree on
     # the share count; before it the ratio is off by the split factor.
-    segment = ratio[ratio.index >= pd.Timestamp(steps[-1]["date"])] if steps else ratio
+    splits = [s for s in steps if not s.get("bad_bar")]
+    segment = ratio[ratio.index >= pd.Timestamp(splits[-1]["date"])] if splits else ratio
     if len(segment) < MIN_OVERLAP:
         segment = ratio
     early = float(segment.iloc[:EDGE_DAYS].median())
@@ -205,6 +212,7 @@ def audit(catalogs: dict[str, dict], data_root: Path, symbols: set[str] | None =
             files.setdefault(node.file_path, node)
         closes = {fp: load_close(resolve(data_root, fp)) for fp in files}
         jumps: dict[str, dict[str, dict]] = defaultdict(dict)
+        bad_bars: dict[str, set[str]] = defaultdict(set)
         compared: set[str] = set()
 
         def run(a: str, b: str) -> dict | None:
@@ -214,6 +222,9 @@ def audit(catalogs: dict[str, dict], data_root: Path, symbols: set[str] | None =
             if result is not None:
                 compared.update((a, b))
                 for step in result["steps"]:
+                    if step.get("bad_bar"):     # owner unknown: listed on the YF row only
+                        bad_bars[a].add(step["date"])
+                        continue
                     owner = a if step["owner"] == "this" else b
                     jumps[owner].setdefault(step["date"], step)
             return result
@@ -247,6 +258,7 @@ def audit(catalogs: dict[str, dict], data_root: Path, symbols: set[str] | None =
                 continue
             fp = row["file_path"]
             row["split_jumps"] = sorted(jumps[fp].values(), key=lambda s: s["date"])
+            row["bad_bar_dates"] = sorted(bad_bars[fp])
             row["split"] = ("split_jump" if row["split_jumps"]
                             else "no_jump_found" if fp in compared else "unverifiable_no_overlap")
             if row["verdict"] is None:
@@ -262,6 +274,8 @@ def counts(rows: list[dict]) -> dict[str, dict[str, dict[str, int]]]:
         bucket[row["verdict"]] += 1
         if row["provider"] == "YF":
             bucket[row["split"]] += 1
+        if row.get("bad_bar_dates"):
+            bucket["has_bad_bar"] += 1
     out: dict[str, dict[str, dict[str, int]]] = defaultdict(dict)
     for (catalog, provider), bucket in sorted(tally.items()):
         out[catalog][provider] = dict(sorted(bucket.items()))

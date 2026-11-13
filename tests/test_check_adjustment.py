@@ -119,3 +119,18 @@ def test_no_overlap_is_unverifiable_not_passed(tmp_path):
 
     assert row["verdict"] == "unverifiable_no_overlap"
     assert row["split"] == "unverifiable_no_overlap"
+
+
+def test_a_one_day_spike_is_a_bad_bar_not_a_split(tmp_path):
+    p = _prices(5)
+    spiked = p.copy()
+    spiked[SPLIT_DAY] *= 25                    # one bad print, back the next day
+    yf, ib = ("price-data/stocks/yf/sp500/AEYE/AEYE-1d.parquet",
+              "price-data/stocks/ibkr/sp500/AEYE/AEYE-all-1d.parquet")
+    _write(tmp_path, yf, p)
+    _write(tmp_path, ib, spiked)
+    catalogs = {"sp500": {"AEYE": _entry(YF=_node(yf, "raw"), IBKR=_node(ib, "raw"))}}
+    rows = _by_file(audit(catalogs, tmp_path))
+
+    assert rows[ib]["verdict"] == "no_jump_found"
+    assert rows[yf]["verdict"] == "ok" and len(rows[yf]["bad_bar_dates"]) == 2
