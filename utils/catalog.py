@@ -168,6 +168,9 @@ def merge_ohlcv_parquet(src: pd.DataFrame | Path | str, dst: Path, daily: bool |
     `date_label_ms` first, so one date is one row even if the two sides
     stamped it differently. Left at None, it follows `dst`'s name
     (`is_date_labelled`), so every writer keeps daily files at 00:00 UTC.
+
+    Rows inside a window of the deleted-bars record (`utils/deleted_bars.py`)
+    are dropped, so a deleted range can't be refilled by any downloader.
     """
     if daily is None:
         daily = is_date_labelled(dst)
@@ -191,6 +194,9 @@ def merge_ohlcv_parquet(src: pd.DataFrame | Path | str, dst: Path, daily: bool |
         old_rows = 0
         merged = new_df
 
+    # Bars deleted on purpose (utils/deleted_bars.py) stay out, whoever serves them.
+    from utils.deleted_bars import drop_deleted
+    merged = drop_deleted(merged, dst)
     write_parquet_atomic(merged, dst)
     return old_rows, len(merged)
 
@@ -590,7 +596,7 @@ def _register_timeframe(entry: dict, timeframe: str) -> None:
 
 #: Node fields an audit writes, not the downloader. A downloader rebuilds the
 #: node on every write; these are carried over while it points at the same file.
-ANNOTATION_KEYS = ("unadjusted_splits", "known_adjustment")
+ANNOTATION_KEYS = ("unadjusted_splits", "known_adjustment", "data_flags")
 
 
 def _set_provider_node(

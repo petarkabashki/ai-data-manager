@@ -34,7 +34,9 @@ explained and recorded on the node's `known_adjustment` (by
 file, YF or IBKR, also gets `split_jump` or `no_jump_found`; a jump already on
 the IBKR node's `unadjusted_splits` reads `flagged_unadjusted`, and one listed
 in a YF node's `known_adjustment.split_dates` (a spin-off ex-date Yahoo
-adjusts its own way) reads `known_split_jump`.
+adjusts its own way) or on a `break` in the node's `data_flags`, reads
+`known_split_jump`. Ranges flagged `bad`, `uncertain` or `deleted` in a node's
+`data_flags` (utils/data_flags.py) are left out of every comparison.
 
 Findings waiting on an owner decision (repair candidates, IBKR jumps to flag)
 are listed in `reviews/adjustment_pending.yaml` (`--pending`). A finding that
@@ -71,6 +73,7 @@ from check_splits import nearest_simple_ratio  # noqa: E402
 from utils.catalog import (  # noqa: E402
     DATA_ROOT, REPO_ROOT, STOCK_UNIVERSES, catalog_registry, iter_timeframe_nodes,
 )
+from utils.data_flags import FIELD as FLAGS_FIELD, break_dates, drop_masked, masked_ranges  # noqa: E402
 from utils.report import allow_broken_pipe  # noqa: E402
 
 CATALOGS = [*STOCK_UNIVERSES, "indexes"]
@@ -132,6 +135,7 @@ class Node:
     adjustment: str | None
     flagged: tuple[str, ...] = ()  # IBKR `unadjusted_splits`: jumps already on record
     known: dict | None = field(default=None, compare=False, hash=False)  # YF `known_adjustment`
+    flags: tuple = field(default=(), compare=False, hash=False)          # `data_flags`
 
 
 def resolve(data_root: Path, file_path: str) -> Path:
@@ -155,11 +159,13 @@ def daily_nodes(catalogs: dict[str, dict]) -> dict[str, list[Node]]:
                     by_symbol[symbol].append(
                         Node(catalog, symbol, provider, node["file_path"], node.get("adjustment"),
                              tuple(str(d) for d in node.get("unadjusted_splits") or ()),
-                             node.get("known_adjustment")))
+                             node.get("known_adjustment"),
+                             tuple(node.get(FLAGS_FIELD) or ())))
     return by_symbol
 
 
-def load_close(path: Path) -> pd.Series | None:
+def load_close(path: Path, masked: list[tuple[str, str]] | None = None) -> pd.Series | None:
+    """Positive closes by date, without the days of flagged `masked` ranges."""
     try:
         frame = pd.read_parquet(path, columns=["timestamp", "close"])
     except Exception:
@@ -167,7 +173,8 @@ def load_close(path: Path) -> pd.Series | None:
     dates = pd.to_datetime(frame["timestamp"].astype("int64"), unit="ms").dt.normalize()
     close = pd.Series(frame["close"].to_numpy(dtype=float), index=dates)
     close = close[~close.index.duplicated(keep="last")].sort_index()
-    return close[np.isfinite(close) & (close > 0)]
+    close = close[np.isfinite(close) & (close > 0)]
+    return drop_masked(close, masked) if masked else close
 
 
 def _move(close: pd.Series, day: pd.Timestamp) -> float:
@@ -332,7 +339,7 @@ def audit(catalogs: dict[str, dict], data_root: Path, symbols: set[str] | None =
         files: dict[str, Node] = {}
         for node in nodes:                      # IBKR is stored once, shared by universes
             files.setdefault(node.file_path, node)
-        closes = {fp: load_close(resolve(data_root, fp)) for fp in files}
+        closes = {fp: load_close(resolve(data_root, fp), masked_ranges(n.flags)) for fp, n in files.items()}
         jumps: dict[str, dict[str, dict]] = defaultdict(dict)
         bad_bars: dict[str, set[str]] = defaultdict(set)
         compared: set[str] = set()
@@ -386,7 +393,10 @@ def audit(catalogs: dict[str, dict], data_root: Path, symbols: set[str] | None =
             row["split_jumps"] = sorted(jumps[fp].values(), key=lambda s: s["date"])
             row["bad_bar_dates"] = sorted(bad_bars[fp])
             dates = {s["date"] for s in row["split_jumps"]}
-            known_dates = set((files[fp].known or {}).get("split_dates") or [])
+            known_dates = set((files[fp].known or {}).get("split_dates") or []) | break_dates(files[fp].flags)
+            if files[fp].flags:
+                row["data_flags"] = [{k: f[k] for k in ("kind", "from", "to", "date") if k in f}
+                                     for f in files[fp].flags]
             new = dates - set(files[fp].flagged) - known_dates
             row["open_split_dates"] = sorted(new)
             row["split"] = ("split_jump" if new

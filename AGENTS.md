@@ -150,6 +150,23 @@ directory level under the class:
   its entry to retry. Only an answer from the exchange belongs here, never an
   error. See `utils/exchange_empty.py`.
 
+- **Deleted-bars record** — `price-data/deleted_bars.yaml`, beside the catalogs.
+  Stock bars the owner ruled impossible and `delete_stock_bars.py` removed,
+  keyed by the file path's last four parts: `start_ms`/`end_ms` (inclusive),
+  readable `start`/`end`, `rows`, `run_id`, `reason`, `deleted`. The provider
+  may still serve them (Yahoo does for TBBK), so `merge_ohlcv_parquet` and
+  `redownload_yf.py` drop any row inside a window before they write: a deleted
+  range is never refilled, from that provider or another. Delete an entry to
+  allow it again. See `utils/deleted_bars.py`.
+
+- **`data_flags`** — on any stock catalog node: what is known wrong with the
+  file, with dates. `bad` and `uncertain` ranges (`from`/`to`), a `break`
+  (`date`: a step nothing in the file adjusts), and `deleted` ranges (with the
+  delete's `run_id`). Readers needing clean history drop the ranges and treat a
+  break as a seam; `check_adjustment.py` does. Written by `flag_data_range.py`
+  and `delete_stock_bars.py`, kept across downloader rewrites
+  (`ANNOTATION_KEYS`). See `utils/data_flags.py` and docs/data-model.md.
+
 ## Trading calendars (RULE — never judge a gap by the 24/7 clock)
 
 Crypto trades continuously, so any missing bar is a gap. Nothing else does.
@@ -268,6 +285,8 @@ uv run python tools/convert_crypto.py [--exchange X] [--dry-run]
 | `tools/redownload_yf.py` | Replace YF daily stock files with a full raw re-download (dry run by default): refuses a short fetch, backs up, writes a per-row revision record; the remedy for `check_adjustment.py` mislabels and split seams |
 | `tools/record_known_adjustment.py` | Record an explained `check_adjustment.py` finding on its YF node (`known_adjustment`: verdict, measured number, reason, optional `until_ibkr`), so the daily audit passes it while it measures the same (dry run by default); data unchanged |
 | `tools/relabel_adjustment.py` | Set the `adjustment` label (raw/adjusted) on every stock catalog node of the named files, when the owner rules a file's bars stay and its label changes (dry run by default; backs up the catalogs first); data unchanged |
+| `tools/flag_data_range.py` | Write `data_flags` (`bad`/`uncertain` ranges, `break` dates, with reason and ref) on every stock catalog node of the named files, or clear them (dry run by default; backs up the catalogs first); data unchanged |
+| `tools/delete_stock_bars.py` | Delete a date range from stored stock files, leaving a recorded gap: originals backed up, the deleted-bars record keeps every writer from refilling it, a revision record per bar, a `deleted` flag on the catalog nodes (dry run by default) |
 | `tools/flag_unadjusted_splits.py` | Write IBKR's unadjusted split dates from a `check_adjustment.py` report to `unadjusted_splits` on its catalog nodes (dry run by default); data unchanged |
 | `tools/check_twins.py` | Find blocks of crypto bars identical (close and volume) to another venue's: bars copied from the wrong venue, never agreement |
 | `tools/fix_daily_stamps.py` | Restamp a provider's daily/weekly/monthly bars to 00:00 UTC of their date and drop duplicate dates, with backups |
@@ -658,6 +677,8 @@ to every harness (untracked copies/symlinks), so never add one to a harness's di
 | `utils/report.py` | `render_table()`, `print_table()`, `allow_broken_pipe()` |
 | `utils/market_caps.py` | `CoinGeckoClient`, `resolve_coin_ids()`, `fetch_or_load_history()`, `rank_top_n()` |
 | `utils/semantics.py` | `Semantics`, `semantics_for()`, `validate_node_semantics()`, `apply_semantics()` |
+| `utils/data_flags.py` | `make_flag()`, `set_flag()`, `clear_flag()`, `masked_ranges()`, `break_dates()`, `drop_masked()` — the `data_flags` node field: known-bad, uncertain and deleted ranges, and breaks |
+| `utils/deleted_bars.py` | `drop_deleted()`, `windows()`, `add()`, `record_path()` — the deleted-bars record that keeps deleted stock ranges from being refilled |
 | `utils/exchange_empty.py` | `ExchangeEmptyRecord` (`windows()`, `add()`, `save()`), `record_path()`, `split_bars()`, `bar_runs()` — the record of windows an exchange answered with nothing |
 | `utils/calendars.py` | `CONTINUOUS`, `CME_FUTURES`, `UsEquityCalendar`, `CmeFuturesCalendar`, `calendar_for()`, `calendar_by_name()`, `us_market_holidays()` |
 | `utils/planning.py` | `DownloadRange`, `plan_download_ranges()`, `merge_ranges()`, `daterange_chunks()` — provider-neutral |

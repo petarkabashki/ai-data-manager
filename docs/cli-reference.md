@@ -19,6 +19,8 @@ first when one is offered.
 | [`redownload_yf.py`](#redownload_yfpy) | writes (with `--apply`) | Replace YF daily stock files with a full raw re-download, logged row by row |
 | [`record_known_adjustment.py`](#record_known_adjustmentpy) | writes catalogs (with `--apply`) | Record an explained adjustment finding on its YF node (`known_adjustment`) |
 | [`relabel_adjustment.py`](#relabel_adjustmentpy) | writes catalogs (with `--apply`) | Set the `adjustment` label on the nodes of named files |
+| [`flag_data_range.py`](#flag_data_rangepy) | writes catalogs (with `--apply`) | Flag known-bad or uncertain ranges and breaks on the nodes of named files (`data_flags`) |
+| [`delete_stock_bars.py`](#delete_stock_barspy) | writes (with `--apply`) | Delete a date range from stock files, leaving a recorded gap that no download refills |
 | [`flag_unadjusted_splits.py`](#flag_unadjusted_splitspy) | writes catalogs (with `--apply`) | Record IBKR's unadjusted split dates on its catalog nodes (`unadjusted_splits`) |
 | [`check_twins.py`](#check_twinspy) | read-only | Find blocks of crypto bars identical to another venue's (bars from the wrong venue) |
 | [`fix_daily_stamps.py`](#fix_daily_stampspy) | write | Restamp daily+ bars to 00:00 UTC of their date; drop duplicate dates |
@@ -367,12 +369,51 @@ a file whose bars contradict its label and that the owner rules is kept as it
 is (sp500/WBD is adjusted while the YF convention is raw). The bars are not
 touched. Dry run by default. Equity lane.
 
+## `flag_data_range.py`
+
+```
+uv run python tools/flag_data_range.py --file FP --kind {bad,uncertain,break}
+    (--from D --to D | --date D) --reason TEXT [--ref TEXT] [--clear]
+    [--catalog U ...] [--apply] [--catalog-backup-dir DIR]
+uv run python tools/flag_data_range.py --spec flags.yaml [--clear] [--apply]
+```
+
+Writes a `data_flags` entry (utils/data_flags.py) on every stock catalog node
+whose `file_path` is named: a `bad` range (bars known wrong, waiting on a
+repair), an `uncertain` range (price scale not established) or a `break` (a
+step on that date that nothing in the file adjusts). `--spec` takes a YAML list
+of `{file_path, kind, from, to | date, reason, ref}`. Setting the same kind and
+dates again replaces the flag; `--clear` removes it. The bars are not touched.
+`check_adjustment.py` leaves flagged ranges out of its comparisons and reads a
+split jump on a flagged break as `known_split_jump`. Dry run by default. Equity
+lane.
+
+## `delete_stock_bars.py`
+
+```
+uv run python tools/delete_stock_bars.py --range FP FROM TO [--range ...] --reason TEXT [--ref TEXT]
+    [--spec deletes.yaml] [--catalog U ...] [--apply] [--run-id ID] [--backup-dir DIR]
+    [--catalog-backup-dir DIR] [--json]
+```
+
+Deletes the bars of a date range (inclusive, UTC) from stored stock files, for
+a range the owner ruled impossible with no fix at that provider. The gap stays:
+it is never filled from another provider. The dry run prints each range's rows,
+dates, close range and zero-volume count. `--apply` backs up the catalogs, copies
+the originals to `--backup-dir` (default `<data root>.stock-delete-backup-<stamp>`),
+adds each range to `deleted_bars.yaml` (so `merge_ohlcv_parquet` and
+`redownload_yf.py` drop those bars from any later download), rewrites the files,
+writes `revisions/<run id>.parquet` (one row per deleted bar with its values and
+hash) and `.yaml`, puts a `deleted` flag with the run id on every catalog node
+of the file, and refreshes the nodes' dates. Equity lane.
+
 ### Catalog backups
 
 Every tool that changes catalogs with `--apply` (or `--fix`) backs them up
 first: `check_catalog.py`, `dedupe_stock_universes.py`,
 `flag_unadjusted_splits.py`, `record_known_adjustment.py`,
-`relabel_adjustment.py` and `redownload_yf.py`. The copies go to
+`relabel_adjustment.py`, `flag_data_range.py`, `delete_stock_bars.py` and
+`redownload_yf.py`. The copies go to
 `--catalog-backup-dir` (default `TMP_ROOT/catalog-backup-<tool>-<UTC stamp>/`),
 are checked byte for byte, and hold each catalog as it was before the run.
 When a copy can't be written the tool prints why, applies nothing (no catalog

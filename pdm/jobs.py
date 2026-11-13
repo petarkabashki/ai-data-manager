@@ -82,6 +82,8 @@ TOOL_LANES: dict[str, str] = {
     "flag_unadjusted_splits": "equity",  # writes stock catalogs
     "record_known_adjustment": "equity",  # writes stock catalogs
     "relabel_adjustment": "equity",  # writes stock catalogs
+    "flag_data_range": "equity",     # writes stock catalogs
+    "delete_stock_bars": "equity",   # rewrites stock files and catalogs
     "redownload_yf": "equity",          # replaces YF files; never beside a YF nightly
     "download_crypto": "crypto",
     "fill_crypto_holes": "crypto",

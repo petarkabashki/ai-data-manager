@@ -107,10 +107,13 @@ def test_a_download_keeps_the_audit_annotations_of_its_file():
     args = (catalog, "XOM", "1d", "IBKR")
     update_stock_timeframe_entry(*args, path, "2000-01-03", "2026-09-01", session="all")
     catalog["XOM"]["timeframe_dates"]["1d"]["IBKR"]["unadjusted_splits"] = ["2001-07-19"]
+    flags = [{"kind": "bad", "from": "2020-01-09", "to": "2021-12-31", "reason": "re-fetch"}]
+    catalog["XOM"]["timeframe_dates"]["1d"]["IBKR"]["data_flags"] = flags
 
     update_stock_timeframe_entry(*args, path, "2000-01-03", "2026-09-02", session="all")
     node = catalog["XOM"]["timeframe_dates"]["1d"]["IBKR"]
     assert node["end_date"] == "2026-09-02" and node["unadjusted_splits"] == ["2001-07-19"]
+    assert node["data_flags"] == flags
 
     moved = stock_file_path("IBKR", "nasdaq100", "XOM", "1d", "all")
     update_stock_timeframe_entry(*args, moved, "2000-01-03", "2026-09-02", session="all")

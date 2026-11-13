@@ -210,6 +210,45 @@ The audit reads such a file as `known` while it still measures the same. With
 `known_split_jump`. Both
 fields survive a downloader rewrite of the node (`ANNOTATION_KEYS`).
 
+Any stock node can carry `data_flags`: what is known wrong with the file,
+with dates, after the owner has ruled on it (utils/data_flags.py):
+
+```yaml
+      YF:
+        file_path: price-data/stocks/yf/russell2000/VTOL/VTOL-1d.parquet
+        data_flags:
+        - kind: break               # a step on this date nothing in the file adjusts
+          date: '2020-06-12'
+          reason: Yahoo serves an unadjusted 1.55 jump; its split calendar says 0.5
+          ref: Product msg_d3d90042
+          recorded: '2026-11-13'
+      IBKR:
+        file_path: price-data/stocks/ibkr/sp500/APO/APO-all-1d.parquet
+        data_flags:
+        - kind: bad                 # bars known wrong, waiting on a repair
+          from: '2020-01-09'
+          to: '2021-12-31'
+          ...
+        - kind: deleted             # removed by delete_stock_bars.py; stays a gap
+          from: '2004-12-23'
+          to: '2005-01-18'
+          run_id: stock-delete-20261113T160000Z
+          ...
+```
+
+| kind | fields | meaning for a reader |
+|---|---|---|
+| `bad` | `from`, `to` | Bars in the range are wrong; drop them |
+| `uncertain` | `from`, `to` | The price scale of the range is not established; drop it or treat it with care |
+| `deleted` | `from`, `to`, `run_id` | No bars there on purpose; `deleted_bars.yaml` keeps every writer from refilling it |
+| `break` | `date` | The series steps on that date; returns across it are not real |
+
+Dates are inclusive, UTC. `check_adjustment.py` leaves `bad`, `uncertain` and
+`deleted` ranges out of its comparisons, and reads a split jump on a `break`
+date as `known_split_jump`. The field survives a downloader rewrite of the node
+(`ANNOTATION_KEYS`). Written by `tools/flag_data_range.py` and
+`tools/delete_stock_bars.py`.
+
 The label records what the downloader asked for, not what came back:
 
 - `yf/sp500/AAPL` is labelled `raw`, but its closes are dividend-adjusted:

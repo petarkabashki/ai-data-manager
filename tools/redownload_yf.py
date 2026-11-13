@@ -60,6 +60,7 @@ from utils.catalog import (  # noqa: E402
     run_with_catalog_backup, write_parquet_atomic,
 )
 from utils.config import DATA_ROOT  # noqa: E402
+from utils.deleted_bars import drop_deleted  # noqa: E402
 from utils.planning import throttle_sleep  # noqa: E402
 from utils.report import allow_broken_pipe, print_table  # noqa: E402
 from utils.yf import YahooFetcher, fetch_ohlcv  # noqa: E402
@@ -147,7 +148,7 @@ def redownload(data_root: Path, target: Target, fetcher, run_dir: Path, backup_d
     new = fetch_ohlcv(fetcher, target.symbol, "Stock", "1d", start, today, auto_adjust=False)
     if new.empty:
         return {"file": target.file_path, "status": "refused", "reason": "Yahoo returned nothing"}
-    new = _daily(new)
+    new = drop_deleted(_daily(new), path)      # bars deleted on purpose stay out
     slack = slack_days * DAY_MS
     if new["timestamp"].iloc[0] > old["timestamp"].iloc[0] + slack or \
             new["timestamp"].iloc[-1] < old["timestamp"].iloc[-1] - slack:

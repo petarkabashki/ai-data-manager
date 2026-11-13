@@ -301,3 +301,33 @@ def test_a_pending_label_finding_must_measure_the_same():
     assert row["verdict"] == "anomaly"                                 # a different number: still open
     apply_pending([row], {"f": {"file_path": "f", "verdict": "anomaly", "drift": -0.05}}, "2026-11-13")
     assert row["verdict"] == "pending" and not failing(row)
+
+
+def _day(i: int) -> str:
+    return str(pd.to_datetime((10_000 + i) * 86_400_000, unit="ms").date())
+
+
+def test_a_flagged_break_reads_known_split_jump(tmp_path):
+    catalogs, yf, _ib, yf_node = _yf_jump(tmp_path)
+    (date,) = _by_file(audit(catalogs, tmp_path))[yf]["open_split_dates"]
+    yf_node["data_flags"] = [{"kind": "break", "date": date, "reason": "Yahoo's factor"}]
+    row = _by_file(audit(catalogs, tmp_path))[yf]
+    assert row["split"] == "known_split_jump" and not failing(row)
+    assert row["data_flags"] == [{"kind": "break", "date": date}]
+
+
+def test_a_flagged_bad_range_is_left_out_of_the_comparison(tmp_path):
+    """APO shape: IBKR's bars are off for a stretch; flagged bad, the YF file compares clean."""
+    p = _prices(5)
+    ib_closes = p.copy()
+    ib_closes[100:200] *= np.linspace(0.8, 0.95, 100)     # IBKR wrong for 100 days
+    yf, ib = "price-data/stocks/yf/sp500/APO/APO-1d.parquet", "price-data/stocks/ibkr/sp500/APO/APO-all-1d.parquet"
+    _write(tmp_path, yf, p)
+    _write(tmp_path, ib, ib_closes)
+    ib_node = _node(ib, "raw")
+    catalogs = {"sp500": {"APO": _entry(YF=_node(yf, "raw"), IBKR=ib_node)}}
+    assert _by_file(audit(catalogs, tmp_path))[yf]["verdict"] != "ok"
+
+    ib_node["data_flags"] = [{"kind": "bad", "from": _day(100), "to": _day(199), "reason": "re-fetch"}]
+    row = _by_file(audit(catalogs, tmp_path))[yf]
+    assert row["verdict"] == "ok" and row["vs_ibkr"]["overlap_days"] == DAYS - 100
