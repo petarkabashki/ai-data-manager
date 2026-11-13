@@ -18,6 +18,7 @@ first when one is offered.
 | [`delete_twin_bars.py`](#delete_twin_barspy) | writes (with `--apply`) | Delete spans of crypto bars copied from another venue, logged row by row |
 | [`redownload_yf.py`](#redownload_yfpy) | writes (with `--apply`) | Replace YF daily stock files with a full raw re-download, logged row by row |
 | [`record_known_adjustment.py`](#record_known_adjustmentpy) | writes catalogs (with `--apply`) | Record an explained adjustment finding on its YF node (`known_adjustment`) |
+| [`relabel_adjustment.py`](#relabel_adjustmentpy) | writes catalogs (with `--apply`) | Set the `adjustment` label on the nodes of named files |
 | [`flag_unadjusted_splits.py`](#flag_unadjusted_splitspy) | writes catalogs (with `--apply`) | Record IBKR's unadjusted split dates on its catalog nodes (`unadjusted_splits`) |
 | [`check_twins.py`](#check_twinspy) | read-only | Find blocks of crypto bars identical to another venue's (bars from the wrong venue) |
 | [`fix_daily_stamps.py`](#fix_daily_stampspy) | write | Restamp daily+ bars to 00:00 UTC of their date; drop duplicate dates |
@@ -347,6 +348,29 @@ reads the file as `known` while the verdict is the same and the number within
 explained findings only (a spin-off residue, a split IBKR hasn't reached): a
 real data error goes to the owner as a repair candidate. Dry run by default;
 `--apply` writes under each catalog's lock. Equity lane.
+
+## `relabel_adjustment.py`
+
+```
+uv run python tools/relabel_adjustment.py --files FP ... --adjustment {raw,adjusted}
+    [--catalog U ...] [--apply] [--catalog-backup-dir DIR]
+```
+
+Sets `adjustment` on every stock catalog node whose `file_path` is named, for
+a file whose bars contradict its label and that the owner rules is kept as it
+is (sp500/WBD is adjusted while the YF convention is raw). The bars are not
+touched. Dry run by default. Equity lane.
+
+### Catalog backups
+
+Every tool that changes catalogs with `--apply` (or `--fix`) backs them up
+first: `check_catalog.py`, `dedupe_stock_universes.py`,
+`flag_unadjusted_splits.py`, `record_known_adjustment.py`,
+`relabel_adjustment.py` and `redownload_yf.py`. The copies go to
+`--catalog-backup-dir` (default `TMP_ROOT/catalog-backup-<tool>-<UTC stamp>/`),
+are checked byte for byte, and hold each catalog as it was before the run.
+When a copy can't be written the tool prints why, applies nothing (no catalog
+and, for `redownload_yf.py`, no parquet) and exits 2.
 
 ## `check_adjustment.py`
 

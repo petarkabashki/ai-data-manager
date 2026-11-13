@@ -34,7 +34,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from utils.catalog import (  # noqa: E402
-    STOCK_UNIVERSES, iter_timeframe_nodes, load_stock_catalog, stock_catalog_txn,
+    STOCK_UNIVERSES, iter_timeframe_nodes, load_stock_catalog, run_with_catalog_backup,
+    stock_catalog_path, stock_catalog_txn,
 )
 from utils.report import allow_broken_pipe  # noqa: E402
 
@@ -77,10 +78,20 @@ def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--audit", type=Path, required=True, help="A check_adjustment.py --json report")
     p.add_argument("--catalog", nargs="+", choices=STOCK_UNIVERSES, default=STOCK_UNIVERSES)
-    p.add_argument("--apply", action="store_true", help="Write the catalogs")
+    p.add_argument("--apply", action="store_true", help="Back up, then write the catalogs")
+    p.add_argument("--catalog-backup-dir", type=Path,
+                   help="Default: TMP_ROOT/catalog-backup-flag_unadjusted_splits-<UTC stamp>")
     args = p.parse_args(argv)
 
     flags = splits_by_file(json.loads(args.audit.read_text()))
+    if args.apply:
+        return run_with_catalog_backup("flag_unadjusted_splits",
+                                       [stock_catalog_path(u) for u in args.catalog],
+                                       lambda: write(args, flags), args.catalog_backup_dir)
+    return write(args, flags)
+
+
+def write(args: argparse.Namespace, flags: dict[str, list[str]]) -> int:
     total = 0
     for universe in args.catalog:
         if args.apply:

@@ -56,7 +56,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from delete_twin_bars import OHLCV, row_hash  # noqa: E402
 
 from utils.catalog import (  # noqa: E402
-    date_label_ms, normalize_ohlcv, refresh_dates_for_files, write_parquet_atomic,
+    all_catalog_paths, date_label_ms, normalize_ohlcv, refresh_dates_for_files,
+    run_with_catalog_backup, write_parquet_atomic,
 )
 from utils.config import DATA_ROOT  # noqa: E402
 from utils.planning import throttle_sleep  # noqa: E402
@@ -174,6 +175,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--jump-date", help="With --audit: YF rows with a split jump on this date")
     p.add_argument("--apply", action="store_true", help="Back up, record and replace")
     p.add_argument("--backup-dir", type=Path, help="Default: <data root>.yf-backup-<today>")
+    p.add_argument("--catalog-backup-dir", type=Path,
+                   help="Default: TMP_ROOT/catalog-backup-redownload_yf-<UTC stamp>")
     p.add_argument("--run-id", help="Resume this run (skips files already recorded)")
     p.add_argument("--slack-days", type=int, default=7,
                    help="How far inside the stored range the fetch may start or end (default 7)")
@@ -206,6 +209,12 @@ def main(argv: list[str] | None = None) -> int:
     backup_dir = args.backup_dir or real.with_name(f"{real.name}.yf-backup-{date.today().isoformat()}")
     if backup_dir.resolve().is_relative_to(real):
         p.error(f"--backup-dir must be outside the data root: {backup_dir}")
+    return run_with_catalog_backup("redownload_yf", all_catalog_paths(),
+                                   lambda: apply_redownload(args, targets, backup_dir), args.catalog_backup_dir)
+
+
+def apply_redownload(args: argparse.Namespace, targets: list[Target], backup_dir: Path) -> int:
+    """Back up, fetch and replace each target, then refresh the catalogs' dates."""
     now = datetime.now(tz=timezone.utc)
     run_id = args.run_id or f"yf-redownload-{now.strftime('%Y%m%dT%H%M%SZ')}"
     run_dir = DATA_ROOT / "revisions" / run_id

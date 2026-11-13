@@ -11,13 +11,16 @@ This module owns three things nothing else may re-implement:
 from __future__ import annotations
 
 import fcntl
+import filecmp
 import os
 import secrets
+import shutil
 import signal
+import sys
 import threading
 import time
 from collections.abc import Callable, Iterator
-from contextlib import AbstractContextManager, contextmanager
+from contextlib import AbstractContextManager, contextmanager, suppress
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -36,6 +39,7 @@ from utils.config import (  # noqa: F401  (DATA_ROOT/REPO_ROOT/FREQTRADE_BIN re-
     DATA_ROOT,
     FREQTRADE_BIN,
     REPO_ROOT,
+    TMP_ROOT,
     relative_to_repo,
     resolve_from_repo,
 )
@@ -302,7 +306,10 @@ def _dump_yaml(path: Path, data: dict) -> None:
 
     The catalog keeps its mode (other users read these); a new one gets the
     umask default. `os.open` is used rather than mkstemp, which would give 0600.
+    Inside a `catalog_backup` scope the catalog is backed up first, and a backup
+    that fails raises here, before anything is written.
     """
+    backup_catalog(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f"{path.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp")
     try:
@@ -316,6 +323,74 @@ def _dump_yaml(path: Path, data: dict) -> None:
         tmp.unlink(missing_ok=True)
         raise
 
+
+class CatalogBackupError(RuntimeError):
+    """A catalog could not be backed up, so it was not written."""
+
+
+#: The active `catalog_backup` directory; None outside a scope.
+_backup_dir: Path | None = None
+
+
+def default_backup_dir(tool: str) -> Path:
+    """`<TMP_ROOT>/catalog-backup-<tool>-<UTC stamp>`, one per run."""
+    stamp = datetime.now(tz=timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return TMP_ROOT / f"catalog-backup-{tool}-{stamp}"
+
+
+def backup_catalog(path: Path) -> Path | None:
+    """Copy `path` into the active backup directory, once per scope; verify the bytes.
+
+    The first copy wins, so the directory holds each catalog as it was before
+    the run touched it. No-op outside a scope or for a catalog that does not
+    exist yet. Raises `CatalogBackupError` on any failure.
+    """
+    if _backup_dir is None or not path.exists():
+        return None
+    dest = _backup_dir / path.name
+    if dest.exists():
+        return dest
+    part = dest.with_name(dest.name + ".part")
+    try:
+        _backup_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(path, part)
+        if not filecmp.cmp(path, part, shallow=False):
+            raise CatalogBackupError(f"backup of {path} does not match it")
+        part.replace(dest)
+    except OSError as exc:
+        with suppress(OSError):
+            part.unlink()
+        raise CatalogBackupError(f"cannot back up {path} to {_backup_dir}: {exc}") from exc
+    return dest
+
+
+@contextmanager
+def catalog_backup(directory: Path, paths: list[Path] | tuple[Path, ...] = ()) -> Iterator[Path]:
+    """Back up every catalog this process writes, before it writes it.
+
+    The listed `paths` are copied on entry, so a tool whose apply also touches
+    other files (parquet, say) fails before it starts. Any other catalog is
+    copied by `_dump_yaml` before its first write. A failed copy raises
+    `CatalogBackupError` and nothing is written: an apply never runs without
+    its backup. Tools that change catalogs open one of these around `--apply`.
+
+    The scope is process-wide, not per-thread: open it in a tool's main, not in
+    a library. Downloaders don't open one; they write one node at a time
+    through `stock_catalog_txn`, and the nightly backups cover them.
+    """
+    global _backup_dir
+    previous, _backup_dir = _backup_dir, Path(directory)
+    try:
+        for path in paths:
+            backup_catalog(Path(path))
+        yield _backup_dir
+    finally:
+        _backup_dir = previous
+
+
+def all_catalog_paths() -> list[Path]:
+    """Every catalog YAML under the data root (they all live at its top level)."""
+    return sorted(DATA_ROOT.glob("*.yaml"))
 
 @contextmanager
 def catalog_txn(path: Path, load: Callable[[], dict]) -> Iterator[dict]:
@@ -1316,3 +1391,20 @@ def refresh_catalog_dates(exchange: str, symbols: list[str] | None = None) -> in
     if updated:
         save_crypto_catalog(exchange, catalog)
     return updated
+
+
+def run_with_catalog_backup(tool: str, paths: list[Path], body: Callable[[], int],
+                            directory: Path | None = None) -> int:
+    """Run a tool's apply step inside `catalog_backup`; a failed backup exits 2, nothing applied.
+
+    `paths` are the catalogs the step may write; they are copied before `body`
+    runs. Prints where the backup went.
+    """
+    directory = directory or default_backup_dir(tool)
+    try:
+        with catalog_backup(directory, paths):
+            print(f"catalog backup: {directory}", file=sys.stderr)
+            return body()
+    except CatalogBackupError as exc:
+        print(f"error: {exc}. Nothing was applied.", file=sys.stderr)
+        return 2

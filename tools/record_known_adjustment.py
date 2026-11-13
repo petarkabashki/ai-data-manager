@@ -43,7 +43,8 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from check_adjustment import PROBLEMS, measure  # noqa: E402
 from utils.catalog import (  # noqa: E402
-    STOCK_UNIVERSES, iter_timeframe_nodes, load_stock_catalog, stock_catalog_txn,
+    STOCK_UNIVERSES, iter_timeframe_nodes, load_stock_catalog, run_with_catalog_backup,
+    stock_catalog_path, stock_catalog_txn,
 )
 from utils.report import allow_broken_pipe  # noqa: E402
 
@@ -101,7 +102,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--until-ibkr", help="YYYY-MM-DD: the record lapses once the IBKR file reaches it")
     p.add_argument("--clear", action="store_true", help="Remove the record instead")
     p.add_argument("--catalog", nargs="+", choices=STOCK_UNIVERSES, default=STOCK_UNIVERSES)
-    p.add_argument("--apply", action="store_true", help="Write the catalogs")
+    p.add_argument("--apply", action="store_true", help="Back up, then write the catalogs")
+    p.add_argument("--catalog-backup-dir", type=Path,
+                   help="Default: TMP_ROOT/catalog-backup-record_known_adjustment-<UTC stamp>")
     args = p.parse_args(argv)
     if not (args.symbols or args.files):
         p.error("name --symbols or --files")
@@ -117,6 +120,14 @@ def main(argv: list[str] | None = None) -> int:
     else:
         wanted, skipped = records(report, set(args.symbols), set(args.files), args.reason,
                                   args.until_ibkr, dt.date.today().isoformat())
+    if args.apply:
+        return run_with_catalog_backup("record_known_adjustment",
+                                       [stock_catalog_path(u) for u in args.catalog],
+                                       lambda: write(args, wanted, skipped), args.catalog_backup_dir)
+    return write(args, wanted, skipped)
+
+
+def write(args: argparse.Namespace, wanted: dict[str, dict | None], skipped: list[str]) -> int:
     total = 0
     for universe in args.catalog:
         if args.apply:

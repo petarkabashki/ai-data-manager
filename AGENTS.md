@@ -84,6 +84,13 @@ directory level under the class:
   Never nest two txns. `migrate_price_data_layout.py` is the one exception, an
   offline migration. Index, commodity and macro catalogs still rely on the
   `equity` lane for one writer at a time.
+  **A tool that changes catalogs backs them up before it applies anything**:
+  wrap the apply in `run_with_catalog_backup()` (a `catalog_backup()` scope).
+  It copies the catalogs to `TMP_ROOT/catalog-backup-<tool>-<stamp>/` and checks
+  the bytes. Inside the scope, `_dump_yaml` backs up any other catalog before
+  its first write. A failed backup exits 2 with nothing applied. Downloaders
+  don't open a scope; they write one node at a time, and the nightly backups
+  cover them.
   Never manually flatten this back to a single node per timeframe.
   The node key is `PROVIDER` for the default session and `PROVIDER:session`
   otherwise (`IBKR:overnight`), because `session` is part of the *filename* —
@@ -260,6 +267,7 @@ uv run python tools/convert_crypto.py [--exchange X] [--dry-run]
 | `tools/check_adjustment.py` | Check each stock and index YF node's `adjustment` label against its closes (dividend drift vs IBKR, else vs other universes) and find unadjusted split jumps in YF and IBKR daily files |
 | `tools/redownload_yf.py` | Replace YF daily stock files with a full raw re-download (dry run by default): refuses a short fetch, backs up, writes a per-row revision record; the remedy for `check_adjustment.py` mislabels and split seams |
 | `tools/record_known_adjustment.py` | Record an explained `check_adjustment.py` finding on its YF node (`known_adjustment`: verdict, measured number, reason, optional `until_ibkr`), so the daily audit passes it while it measures the same (dry run by default); data unchanged |
+| `tools/relabel_adjustment.py` | Set the `adjustment` label (raw/adjusted) on every stock catalog node of the named files, when the owner rules a file's bars stay and its label changes (dry run by default; backs up the catalogs first); data unchanged |
 | `tools/flag_unadjusted_splits.py` | Write IBKR's unadjusted split dates from a `check_adjustment.py` report to `unadjusted_splits` on its catalog nodes (dry run by default); data unchanged |
 | `tools/check_twins.py` | Find blocks of crypto bars identical (close and volume) to another venue's: bars copied from the wrong venue, never agreement |
 | `tools/fix_daily_stamps.py` | Restamp a provider's daily/weekly/monthly bars to 00:00 UTC of their date and drop duplicate dates, with backups |

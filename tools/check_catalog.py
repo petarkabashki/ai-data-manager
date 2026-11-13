@@ -72,6 +72,8 @@ from utils.catalog import (
     read_parquet_range,
     recompute_entry_bounds,
     resolve_from_repo,
+    all_catalog_paths,
+    run_with_catalog_backup,
     stock_catalog_txn,
     stock_file_path,
     update_catalog_entry,
@@ -491,6 +493,8 @@ def main() -> None:
     p.add_argument("--skip-orphans", action="store_true",
                    help="Don't scan the data tree for unreferenced parquet files")
     p.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    p.add_argument("--catalog-backup-dir", type=Path,
+                   help="With --fix. Default: TMP_ROOT/catalog-backup-check_catalog-<UTC stamp>")
     args = p.parse_args()
 
     specs = catalog_registry()
@@ -500,6 +504,13 @@ def main() -> None:
         if unknown:
             p.error(f"unknown catalog(s): {', '.join(sorted(unknown))}")
         specs = [s for s in specs if s.name in wanted]
+    if args.fix:
+        sys.exit(run_with_catalog_backup("check_catalog", all_catalog_paths(),
+                                         lambda: run(args, specs) or 0, args.catalog_backup_dir))
+    run(args, specs)
+
+
+def run(args: argparse.Namespace, specs: list) -> None:
 
     issues: list[Issue] = []
     referenced: set[str] = set()

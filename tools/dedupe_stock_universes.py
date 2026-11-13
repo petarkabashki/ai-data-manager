@@ -49,6 +49,8 @@ from utils.catalog import (
     merge_ohlcv_parquet,
     provider_node_key,
     read_parquet_range,
+    run_with_catalog_backup,
+    stock_catalog_path,
     stock_catalog_txn,
     stock_home_universe,
 )
@@ -174,8 +176,16 @@ def main() -> int:
     p.add_argument("--apply", action="store_true", help="Make the changes (default: plan only)")
     p.add_argument("--backup-dir", type=Path,
                    help="Where originals are copied first (default: TMP_ROOT/dedupe_<universe>_<UTC stamp>)")
+    p.add_argument("--catalog-backup-dir", type=Path,
+                   help="Default: TMP_ROOT/catalog-backup-dedupe_stock_universes-<UTC stamp>")
     args = p.parse_args()
+    if args.apply:
+        return run_with_catalog_backup("dedupe_stock_universes", [stock_catalog_path(args.universe)],
+                                       lambda: run(args), args.catalog_backup_dir)
+    return run(args)
 
+
+def run(args: argparse.Namespace) -> int:
     root = DATA_ROOT / "stocks" / PROVIDER.lower() / args.universe
     if not root.is_dir():
         print(f"no {PROVIDER} directory for {args.universe}: {root}", file=sys.stderr)
