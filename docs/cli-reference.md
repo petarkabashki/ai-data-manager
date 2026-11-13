@@ -274,6 +274,7 @@ uv run python tools/delete_twin_bars.py --log-refill RUN_ID
 | `--apply` | Back up, delete, write the revision record; without it nothing is written |
 | `--backup-dir` | Where originals go (default `<data root>.twin-backup-<today>`, never inside the data root) |
 | `--log-refill` | After the refill, add `refetched`/`not_served` rows for every deleted bar of that run |
+| `--off-anchor` | Instead of copies, delete the bars off the anchor most of the file's bars share (strays at the edge of a deleted span make the fill reject the venue's own bars); run id `offanchor-delete-…`, same backup, record and `--log-refill` |
 
 The remedy for blocks `check_twins.py` finds. Each span runs from its first
 equal bar to its last and is deleted whole, so a bar the source revised inside
@@ -282,7 +283,7 @@ bar (UTC, inclusive). `--apply` writes `revisions/<run id>.parquet` at the data
 root, one row per deleted bar with its old OHLCV and a sha256 content hash,
 and `revisions/<run id>.yaml` with the spans, then refreshes the catalog dates.
 Procedure per venue: dry run, `--apply`, `fill_crypto_holes --apply`,
-`--log-refill`, `check_twins --record`. Runs in the crypto lane under PDM.
+`--log-refill`, `check_twins --record`. Runs in the venue's crypto lane (`crypto-<exchange>`) under PDM.
 
 ## `check_twins.py`
 

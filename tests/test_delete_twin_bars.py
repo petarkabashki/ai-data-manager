@@ -137,3 +137,29 @@ def test_the_hash_changes_with_any_value():
     other = row.copy()
     other["volume"] += 1e-9
     assert dtb.row_hash(row) != dtb.row_hash(other)
+
+
+def test_off_anchor_bars_go_with_a_backup_and_record(root):
+    """Two 3d bars a day off bitget's grid make the fill reject bitget's own bars."""
+    day = 86_400_000
+    own = bars(40, 1.0)
+    own["timestamp"] = [i * 3 * day for i in range(40)]
+    strays = bars(2, 5.0)
+    strays["timestamp"] = [10 * 3 * day + day, 30 * 3 * day + day]
+    frame = pd.concat([own, strays]).sort_values("timestamp").reset_index(drop=True)
+    path = write(root, "cryptos", "bitget", "AAVE_USDT", "3d", frame)
+
+    spans = dtb.plan_off_anchor(root, "bitget-spot", ["3d"])
+    assert [s.first for s in spans] == strays["timestamp"].tolist()
+    summary = dtb.apply(root, spans, "run", root.parent / "bk", {})
+    assert summary["rows_deleted"] == 2
+    after = pd.read_parquet(path)
+    assert after["timestamp"].tolist() == own["timestamp"].tolist()
+    assert len(pd.read_parquet(root.parent / "bk" / path.relative_to(root))) == 42
+    record = pd.read_parquet(root / "revisions" / "run.parquet")
+    assert record["timestamp"].tolist() == strays["timestamp"].tolist()
+
+
+def test_no_anchor_majority_deletes_nothing():
+    ts = pd.Series([0, 86_400_000, 3 * 86_400_000, 4 * 86_400_000])
+    assert not dtb.off_anchor_rows(ts, 3 * 86_400_000).any()

@@ -44,6 +44,13 @@ Usage examples:
   uv run python tools/delete_twin_bars.py --exchange bybit --trading-mode futures
   uv run python tools/delete_twin_bars.py --exchange bybit --trading-mode futures --apply
   uv run python tools/delete_twin_bars.py --log-refill twin-delete-20261112T101500Z-bybit-perps
+  uv run python tools/delete_twin_bars.py --exchange bitget --off-anchor --timeframes 3d --symbols AAVE_USDT
+
+`--off-anchor` instead deletes the bars of a file that sit off the anchor most
+of its bars share (e.g. two 3d bars a day off bitget's grid, left at the edges
+of a deleted span). The refill measures a hole from its stored neighbours, so
+one such bar makes the venue's own bars look off-grid and the fill refuses
+them. Same dry run, backup, revision record and `--log-refill`; no source.
 """
 
 from __future__ import annotations
@@ -62,7 +69,7 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from utils.catalog import CRYPTO_EXCHANGES, refresh_dates_for_files, write_parquet_atomic  # noqa: E402
+from utils.catalog import CRYPTO_EXCHANGES, TF_TO_MS, refresh_dates_for_files, write_parquet_atomic  # noqa: E402
 from utils.config import DATA_ROOT  # noqa: E402
 from utils.report import allow_broken_pipe, print_table  # noqa: E402
 
@@ -80,7 +87,7 @@ class Span:
     """A run of copied bars in one file, deleted whole."""
 
     file: str  # relative to the data root
-    source: str  # the source file, relative to the data root
+    source: str  # the source file, relative to the data root; "" for an off-anchor bar
     symbol: str
     timeframe: str
     first: int  # bar open time, epoch ms
@@ -166,6 +173,37 @@ def plan(
     return spans
 
 
+def off_anchor_rows(timestamps: pd.Series, tf_ms: int) -> pd.Series:
+    """Mask of the bars off the anchor (epoch offset mod tf) that most bars share.
+
+    Empty when no anchor holds a strict majority: then there's no grid to keep.
+    """
+    phase = timestamps % tf_ms
+    counts = phase.value_counts()
+    if counts.empty or counts.iloc[0] * 2 <= len(phase):
+        return pd.Series(False, index=timestamps.index)
+    return phase != counts.index[0]
+
+
+def plan_off_anchor(data_root: Path, target: str, timeframes: list[str],
+                    symbols: set[str] | None = None) -> list[Span]:
+    """One single-bar span per off-anchor bar in `target`'s files."""
+    spans: list[Span] = []
+    wanted = set(timeframes)
+    for file in sorted(venue_dir(data_root, target).glob("*/*.parquet")):
+        stem = file.name[: -len(".parquet")]
+        if "-" not in stem:
+            continue
+        symbol, timeframe = stem.rsplit("-", 1)
+        if timeframe not in wanted or (symbols and symbol not in symbols) or not TF_TO_MS.get(timeframe):
+            continue
+        ts = pd.read_parquet(file, columns=["timestamp"])["timestamp"]
+        rel = str(file.relative_to(data_root))
+        for t in ts[off_anchor_rows(ts, TF_TO_MS[timeframe])]:
+            spans.append(Span(rel, "", symbol, timeframe, int(t), int(t), 1, 0))
+    return spans
+
+
 def revisions_dir(data_root: Path) -> Path:
     return data_root / "revisions"
 
@@ -180,8 +218,11 @@ def apply(data_root: Path, spans: list[Span], run_id: str, backup_dir: Path, met
     for rel, file_spans in by_file.items():
         path = data_root / rel
         frame = pd.read_parquet(path)
-        on_source = frame["timestamp"].isin(pd.read_parquet(data_root / file_spans[0].source,
-                                                             columns=["timestamp"])["timestamp"])
+        if file_spans[0].source:
+            on_source = frame["timestamp"].isin(pd.read_parquet(data_root / file_spans[0].source,
+                                                                 columns=["timestamp"])["timestamp"])
+        else:  # off-anchor bars: the span is the bar itself
+            on_source = pd.Series(True, index=frame.index)
         drop = pd.Series(False, index=frame.index)
         for s in file_spans:
             drop |= (frame["timestamp"] >= s.first) & (frame["timestamp"] <= s.last)
@@ -238,10 +279,10 @@ def log_refill(data_root: Path, run_id: str) -> dict:
 
 def report(spans: list[Span], target: str, source: str) -> None:
     if not spans:
-        print(f"{target}: no bars copied from {source}.")
+        print(f"{target}: no off-anchor bars." if source == "off-anchor" else f"{target}: no bars copied from {source}.")
         return
     rows = [[s.symbol, s.timeframe, s.first_utc, s.last_utc, s.rows, s.matched] for s in spans]
-    print(f"{target}: bars copied from {source}, by span (UTC, bar open times, inclusive):")
+    print(f"{target}: bars off the file's anchor:" if source == "off-anchor" else f"{target}: bars copied from {source}, by span (UTC, bar open times, inclusive):")
     print_table(["symbol", "tf", "first", "last", "rows", "equal"], rows)
     per_tf: dict[str, list[int]] = {}
     for s in spans:
@@ -270,6 +311,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--apply", action="store_true", help="Back up, delete and write the revision record")
     p.add_argument("--backup-dir", type=Path,
                    help="Where originals are copied (default: <data root>.twin-backup-<today>)")
+    p.add_argument("--off-anchor", action="store_true",
+                   help="Delete bars off the anchor most of the file's bars share (no --source)")
     p.add_argument("--log-refill", metavar="RUN_ID", help="Record what the refill put back for a run")
     p.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
     args = p.parse_args(argv)
@@ -284,9 +327,13 @@ def main(argv: list[str] | None = None) -> int:
         p.error("--exchange is required (or --log-refill)")
 
     target = f"{args.exchange}-{MODES[args.trading_mode]}"
+    symbols = set(args.symbols) if args.symbols else None
     try:
-        spans = plan(DATA_ROOT, target, args.source, args.timeframes,
-                     set(args.symbols) if args.symbols else None, args.min_bars, args.max_gap)
+        if args.off_anchor:
+            spans = plan_off_anchor(DATA_ROOT, target, args.timeframes, symbols)
+            args.source = "off-anchor"
+        else:
+            spans = plan(DATA_ROOT, target, args.source, args.timeframes, symbols, args.min_bars, args.max_gap)
     except ValueError as exc:
         p.error(str(exc))
 
@@ -308,7 +355,8 @@ def main(argv: list[str] | None = None) -> int:
     if not spans:
         print(f"{target}: nothing to delete.")
         return 0
-    run_id = f"twin-delete-{datetime.now(tz=timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-{target}"
+    kind = "offanchor-delete" if args.off_anchor else "twin-delete"
+    run_id = f"{kind}-{datetime.now(tz=timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-{target}"
     meta = {"target": target, "source": args.source, "timeframes": args.timeframes,
             "min_bars": args.min_bars, "max_gap": args.max_gap}
     summary = apply(DATA_ROOT, spans, run_id, backup_dir, meta)
