@@ -128,7 +128,7 @@ def main(argv: list[str] | None = None) -> None:
     sp.add_argument("symbol")
 
     sp = sub.add_parser("audit", help="read-only check on the host: audit TOOL [option=value ...]")
-    sp.add_argument("tool", help="status|query|check_gaps|check_schema|check_catalog|check_splits")
+    sp.add_argument("tool", help="status|query|check_gaps|check_schema|check_catalog|check_splits|check_twins|check_adjustment")
     sp.add_argument("options", nargs="*", metavar="option=value",
                     help="flag=value (bool: flag or flag=true; list: a,b,c)")
 

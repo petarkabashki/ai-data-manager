@@ -171,7 +171,8 @@ def pdm_job(job_id: str, log_lines: int = 30) -> dict:
 @tool(READ)
 def pdm_audit(tool: str, options: dict | None = None) -> dict:
     """Run a read-only check on the data host and return its JSON report.
-    tool: status | query | check_gaps | check_schema | check_catalog | check_splits.
+    tool: status | query | check_gaps | check_schema | check_catalog | check_splits |
+    check_twins | check_adjustment.
     options: the tool's flags with _ for -, e.g. {"catalog": ["sp500"], "timeframe": "1d"}
     for check_gaps, {"list_catalogs": true} for query. A non-zero `exit` with ok=true means
     the check found problems."""

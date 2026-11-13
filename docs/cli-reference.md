@@ -14,6 +14,7 @@ first when one is offered.
 | [`check_gaps.py`](#check_gapspy) | read-only | Audit crypto data for internal gaps + trailing staleness |
 | [`check_schema.py`](#check_schemapy) | read-only | Verify every OHLCV parquet matches the canonical schema |
 | [`check_splits.py`](#check_splitspy) | read-only | Find un-back-adjusted split seams inside stored price files |
+| [`check_adjustment.py`](#check_adjustmentpy) | read-only | Check each stock YF node's `adjustment` label against IBKR and other universes; find unadjusted split jumps |
 | [`delete_twin_bars.py`](#delete_twin_barspy) | writes (with `--apply`) | Delete spans of crypto bars copied from another venue, logged row by row |
 | [`check_twins.py`](#check_twinspy) | read-only | Find blocks of crypto bars identical to another venue's (bars from the wrong venue) |
 | [`fix_daily_stamps.py`](#fix_daily_stampspy) | write | Restamp daily+ bars to 00:00 UTC of their date; drop duplicate dates |
@@ -284,6 +285,42 @@ root, one row per deleted bar with its old OHLCV and a sha256 content hash,
 and `revisions/<run id>.yaml` with the spans, then refreshes the catalog dates.
 Procedure per venue: dry run, `--apply`, `fill_crypto_holes --apply`,
 `--log-refill`, `check_twins --record`. Runs in the venue's crypto lane (`crypto-<exchange>`) under PDM.
+
+## `check_adjustment.py`
+
+```
+uv run python tools/check_adjustment.py [--catalog C ...] [--symbols S ...] [--json]
+```
+
+| Flag | Meaning |
+|---|---|
+| `--catalog` | Catalogs to audit (default `sp500 nasdaq100 russell2000 delisted_stocks indexes`) |
+| `--symbols` | Only these bare symbols |
+| `--json` | Emit `{"counts": {catalog: {provider: {verdict: n}}}, "files": [...]}` |
+
+```bash
+uv run python tools/check_adjustment.py
+uv run python tools/check_adjustment.py --catalog sp500 --symbols AAPL XOM
+```
+
+A node's `adjustment` records what the downloader asked for. This checks what
+the file holds, on daily closes, over the days two files share:
+
+- **Dividend adjustment drifts.** YF / IBKR TRADES (never dividend-adjusted)
+  rises over the overlap when YF is back-adjusted. More than 0.3% between the
+  medians of the first and last 20 days counts as adjusted. Without IBKR, the
+  other universes' YF files of the same ticker are the reference.
+- **An unadjusted split steps.** A one-day change in the ratio that matches a
+  split factor is a jump, owned by the file whose own close moved.
+- **No overlap is unverifiable,** never passed.
+
+YF verdicts: `ok`, `mislabelled_raw_is_adjusted`, `mislabelled_adjusted_is_raw`,
+`adjusted_label_no_drift`, `level_mismatch`, `anomaly`,
+`unverifiable_no_overlap`, `unverifiable_yf_agree`. Each compared file also
+gets `split_jump` or `no_jump_found`; an IBKR row's verdict is that result,
+counted once under the first catalog that points at it. Exit 1 when any file is
+mislabelled, mismatched or has a split jump. Read-only: the fix is a
+re-download under the owner's chosen convention.
 
 ## `check_twins.py`
 

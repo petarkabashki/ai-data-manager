@@ -457,6 +457,11 @@ deploy can restart `pdm` without waiting for the queue to drain.
 - Yahoo adjustment differs per file: sp500 has 429 raw and 69 adjusted,
   nasdaq100 93/15, russell2000 93/1823, delisted 33/0. **Owner decision**:
   pick one convention and re-download the rest.
+  Labels record the request, not the content: `tools/check_adjustment.py`
+  measures each YF node against IBKR TRADES (else other universes) and lists
+  mislabelled nodes (sp500 AAPL and NVDA are `raw` but dividend-adjusted) and
+  IBKR files with unadjusted split jumps (XOM 2001, PG 2004). Its counts are
+  the input to this decision.
 - Kucoin spot may hold reused tickers spliced into one series. Across the
   hole starting 2024-08-15/16 the exchange has no bars, but the close jumps
   about 316× on ARX (0.000927 to 0.29304) and about 233× on AI (0.0002209 to

@@ -257,6 +257,7 @@ uv run python tools/convert_crypto.py [--exchange X] [--dry-run]
 | `tools/check_catalog.py` | Verify every catalog node has valid semantics and matches its file; `--fix` backfills and adopts orphan crypto and stock files |
 | `tools/check_splits.py` | Find un-back-adjusted split seams inside stored files — history at the old share count spliced to bars at the new one |
 | `tools/delete_twin_bars.py` | Delete spans of crypto bars copied from another venue (dry run by default), with backups and a per-row revision record; `--log-refill` records what the refill put back |
+| `tools/check_adjustment.py` | Check each stock and index YF node's `adjustment` label against its closes (dividend drift vs IBKR, else vs other universes) and find unadjusted split jumps in YF and IBKR daily files |
 | `tools/check_twins.py` | Find blocks of crypto bars identical (close and volume) to another venue's: bars copied from the wrong venue, never agreement |
 | `tools/fix_daily_stamps.py` | Restamp a provider's daily/weekly/monthly bars to 00:00 UTC of their date and drop duplicate dates, with backups |
 | `tools/backup_delta.py` | Row-level backup deltas: export the rows that changed each night (host), plan, prune and restore from a base plus deltas (hub) |
