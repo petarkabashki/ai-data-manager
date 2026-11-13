@@ -78,7 +78,7 @@
   verdict: mislabelled_raw_is_adjusted
   drift: 0.06137
   split_dates: ['2013-05-02', '2013-05-15', '2016-08-12', '2017-01-09', '2019-03-04', '2019-04-08', '2019-05-14']
-  reason: 'ruled: delete both providers'' impossible ranges (dry run sent, apply waits on Product''s go); YF closes 50x+ too high 2009-10-30..2016-05-31, IBKR flat placeholders 2013-2015'
+  reason: 'impossible ranges deleted at both providers (stock-delete-20261113T154323Z); left: YF 2016 adjustment-scale values and open split jumps 2016-08-12, 2017-01-09, 2019-03..05. Scope for the owner as one item: flag, delete or drop the file'
   asked: '2026-11-13'
   review_by: '2026-11-27'
   ref: Product msg_d3d90042
@@ -107,7 +107,7 @@
   verdict: anomaly
   drift: -0.03716
   split_dates: ['2002-02-12', '2002-03-04', '2002-03-19', '2002-04-02', '2003-04-30', '2006-06-16', '2007-11-19', '2010-03-10', '2011-07-18']
-  reason: 'ruled: delete both providers'' impossible ranges (dry run sent, apply waits on Product''s go); YF closes absurd 2002-01-16..2002-07-02, IBKR odd in 2002'
+  reason: 'impossible ranges deleted at both providers (stock-delete-20261113T154323Z); left: YF anomaly and open split jumps 2003-04-30..2011-07-18. Scope for the owner with MRDN: flag, delete or drop the file'
   asked: '2026-11-13'
   review_by: '2026-11-27'
   ref: Product msg_d3d90042
