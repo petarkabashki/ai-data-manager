@@ -455,8 +455,12 @@ deploy can restart `pdm` without waiting for the queue to drain.
   empty, which the old 2020 fallback hit for every newer pair. bitget spot
   `3d`/`1w`/`1Mo` now go through ccxt from each pair's listing (E15).
 - Yahoo adjustment differs per file: sp500 has 429 raw and 69 adjusted,
-  nasdaq100 93/15, russell2000 93/1823, delisted 33/0. **Owner decision**:
-  pick one convention and re-download the rest.
+  nasdaq100 93/15, russell2000 93/1823, delisted 33/0. **Decided 2026-11-13:
+  RAW.** It matches IBKR, needs the fewest re-downloads and keeps true price
+  levels. The adjusted files were re-downloaded raw by `redownload_yf`
+  (runs yf-redownload-20261113T132948Z and the follow-up for the 231 files
+  adjusted only from 2024-08-07), backed up and row-recorded; nightly YF
+  stays raw and refuses a restated tail.
   Labels record the request, not the content: `tools/check_adjustment.py`
   measures each YF node against IBKR TRADES (else other universes) and lists
   mislabelled nodes (sp500 AAPL and NVDA are `raw` but dividend-adjusted) and
