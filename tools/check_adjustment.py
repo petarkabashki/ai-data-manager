@@ -41,8 +41,10 @@ adjusts its own way) or on a `break` in the node's `data_flags`, reads
 Findings waiting on an owner decision (repair candidates, IBKR jumps to flag)
 are listed in `reviews/adjustment_pending.yaml` (`--pending`). A finding that
 matches its entry reads `pending` (a split: `pending_split_jump`) until the
-entry's `review_by` date, and doesn't fail the run. The exit code is 1 only for
-findings on no record.
+entry's `review_by` date, and doesn't fail the run. An entry with an `action`
+is repair work the audit can no longer see (its range is flagged `bad`); it
+fails the run once past `review_by`. The exit code is 1 only for findings on no
+record and for overdue actions.
 
 Read-only. Fixing a finding is a re-download under the owner's chosen YF
 convention, never an in-place patch.
@@ -440,6 +442,17 @@ def apply_pending(rows: list[dict], pending: dict[str, dict], today: str) -> Non
                 row["verdict"] = "pending_split_jump"
 
 
+def overdue_actions(pending: dict[str, dict], today: str) -> list[dict]:
+    """Action records (entries with an `action`) past their `review_by`.
+
+    An action record stands for repair work whose finding the audit no longer
+    sees (its range is flagged `bad`, so the comparison leaves it out). Nothing
+    would ever fail for it, so its `review_by` fails the run instead: work that
+    waits on an event which never comes doesn't stay quiet for good.
+    """
+    return [e for e in pending.values() if e.get("action") and str(e.get("review_by", "9999")) < today]
+
+
 def failing(row: dict) -> bool:
     return row["verdict"] in PROBLEMS or row.get("split") == "split_jump"
 
@@ -486,12 +499,18 @@ def main() -> int:
     specs = {s.name: s for s in catalog_registry()}
     catalogs = {name: specs[name].load() for name in args.catalog}
     rows = audit(catalogs, DATA_ROOT, set(args.symbols) if args.symbols else None)
-    apply_pending(rows, load_pending(args.pending), dt.date.today().isoformat())
+    pending, today = load_pending(args.pending), dt.date.today().isoformat()
+    apply_pending(rows, pending, today)
+    overdue = overdue_actions(pending, today)
     if args.json:
-        print(json.dumps({"counts": counts(rows), "files": rows}, indent=1))
+        print(json.dumps({"counts": counts(rows), "files": rows, "overdue_actions": overdue}, indent=1))
     else:
         report(rows)
-    return 1 if any(failing(r) for r in rows) else 0
+        if overdue:
+            print(f"\n{len(overdue)} pending action(s) past review_by:")
+            for e in overdue:
+                print(f"  {e['review_by']}  {e['file_path']}  {e['action']}")
+    return 1 if overdue or any(failing(r) for r in rows) else 0
 
 
 if __name__ == "__main__":

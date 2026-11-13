@@ -20,7 +20,7 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "tools"))
 
-from check_adjustment import apply_pending, audit, counts, failing  # noqa: E402
+from check_adjustment import apply_pending, audit, counts, failing, overdue_actions  # noqa: E402
 
 DAYS = 300
 SPLIT_DAY = 150
@@ -331,3 +331,14 @@ def test_a_flagged_bad_range_is_left_out_of_the_comparison(tmp_path):
     ib_node["data_flags"] = [{"kind": "bad", "from": _day(100), "to": _day(199), "reason": "re-fetch"}]
     row = _by_file(audit(catalogs, tmp_path))[yf]
     assert row["verdict"] == "ok" and row["vs_ibkr"]["overlap_days"] == DAYS - 100
+
+
+def test_an_action_record_fails_the_run_once_past_review_by():
+    # APO's IBKR range is flagged bad, so the audit sees no finding; the
+    # re-fetch waiting on the IBKR restart must still surface on its date.
+    entry = {"file_path": "ibkr/APO", "action": "re-fetch 2020-01-09..2021-12-31",
+             "waits_on": "ibkr_restart", "review_by": "2026-12-11"}
+    plain = {"file_path": "yf/X", "verdict": "anomaly", "drift": -0.04, "review_by": "2026-12-11"}
+    pending = {e["file_path"]: e for e in (entry, plain)}
+    assert overdue_actions(pending, "2026-12-11") == []
+    assert overdue_actions(pending, "2026-12-12") == [entry]   # a plain entry just stops matching

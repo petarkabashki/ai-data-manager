@@ -16,127 +16,98 @@
 #   asked: "2026-11-13"
 #   review_by: "2026-11-27"
 #   ref: "Product msg_..."
-- {file_path: price-data/stocks/yf/sp500/APO/APO-1d.parquet, verdict: anomaly, drift: -0.04368, reason: 'repair candidate: IBKR wrong 2020-01-09..2021-12-31 (500 bars); proposed IBKR re-fetch of that range,
-    waits on owner (Gateway + worker restart)', asked: '2026-11-13', review_by: '2026-11-27', ref: Product msg_43dc7d6e}
+#
+# An entry with an `action` (and no verdict or split_dates) is an action record:
+# repair work whose finding the audit no longer sees, because the range is
+# flagged `bad` in data_flags. Past its `review_by` it fails the run itself.
+# `waits_on` names the event the work waits for (ibkr_restart: the owner brings
+# up the Gateway and restarts the IBKR workers); review_by is the backstop.
+- file_path: price-data/stocks/ibkr/sp500/APO/APO-all-1d.parquet
+  action: 're-fetch the range from IBKR (2020-01-09..2021-12-31, flagged bad); if IBKR still serves bad bars, delete_stock_bars.py with a recorded gap; py-qwant pre-notice first'
+  waits_on: ibkr_restart
+  asked: '2026-11-13'
+  review_by: '2026-12-11'
+  ref: Product msg_d3d90042
+- file_path: price-data/stocks/ibkr/sp500/OKE/OKE-all-1d.parquet
+  action: 're-fetch the range from IBKR (2020-01-02..2023-09-22, flagged bad); if IBKR still serves bad bars, delete_stock_bars.py with a recorded gap; py-qwant pre-notice first'
+  waits_on: ibkr_restart
+  asked: '2026-11-13'
+  review_by: '2026-12-11'
+  ref: Product msg_d3d90042
+- file_path: price-data/stocks/ibkr/russell2000/SUNS/SUNS-all-1d.parquet
+  action: 're-fetch the range from IBKR (2024-07-11..2024-08-19, flagged bad); if IBKR still serves bad bars, delete_stock_bars.py with a recorded gap; py-qwant pre-notice first'
+  waits_on: ibkr_restart
+  asked: '2026-11-13'
+  review_by: '2026-12-11'
+  ref: Product msg_d3d90042
+- file_path: price-data/stocks/ibkr/russell2000/SUPN/SUPN-all-1d.parquet
+  action: 'check the conid, then re-fetch the whole file (2023-06-12..2026-11-13, flagged bad); if IBKR still serves bad bars, delete_stock_bars.py with a recorded gap; py-qwant pre-notice first'
+  waits_on: ibkr_restart
+  asked: '2026-11-13'
+  review_by: '2026-12-11'
+  ref: Product msg_d3d90042
 - file_path: price-data/stocks/ibkr/russell2000/BMRC/BMRC-all-1d.parquet
   split_dates: ['2004-05-25']
   reason: IBKR split jump; flag with flag_unadjusted_splits after the owner restarts the IBKR workers
   asked: '2026-11-13'
-  review_by: '2026-11-27'
-  ref: Product msg_43dc7d6e
+  waits_on: ibkr_restart
+  review_by: '2026-12-11'
+  ref: Product msg_d3d90042
 - file_path: price-data/stocks/ibkr/russell2000/CBAN/CBAN-all-1d.parquet
   split_dates: ['2003-09-16']
   reason: IBKR split jump; flag with flag_unadjusted_splits after the owner restarts the IBKR workers
   asked: '2026-11-13'
-  review_by: '2026-11-27'
-  ref: Product msg_43dc7d6e
-- file_path: price-data/stocks/yf/russell2000/DCTH/DCTH-1d.parquet
-  split_dates: ['2020-01-30']
-  reason: 'repair candidate: YF split jump Yahoo still serves on 2026-11-13 (its split calendar disagrees); proposed catalog flag of the break'
-  asked: '2026-11-13'
-  review_by: '2026-11-27'
-  ref: Product msg_43dc7d6e
-- file_path: price-data/stocks/yf/russell2000/FTLF/FTLF-1d.parquet
-  split_dates: ['2019-04-22']
-  reason: 'repair candidate: YF split jump Yahoo still serves on 2026-11-13 (its split calendar disagrees); proposed catalog flag of the break'
-  asked: '2026-11-13'
-  review_by: '2026-11-27'
-  ref: Product msg_43dc7d6e
-- file_path: price-data/stocks/yf/russell2000/FVCB/FVCB-1d.parquet
-  split_dates: ['2017-09-29']
-  reason: 'repair candidate: YF split jump Yahoo still serves on 2026-11-13 (its split calendar disagrees); proposed catalog flag of the break'
-  asked: '2026-11-13'
-  review_by: '2026-11-27'
-  ref: Product msg_43dc7d6e
-- file_path: price-data/stocks/yf/russell2000/HURA/HURA-1d.parquet
-  split_dates: ['2016-05-20']
-  reason: 'repair candidate: YF split jump Yahoo still serves on 2026-11-13 (its split calendar disagrees); proposed catalog flag of the break'
-  asked: '2026-11-13'
-  review_by: '2026-11-27'
-  ref: Product msg_43dc7d6e
+  waits_on: ibkr_restart
+  review_by: '2026-12-11'
+  ref: Product msg_d3d90042
 - file_path: price-data/stocks/ibkr/russell2000/IBOC/IBOC-all-1d.parquet
   split_dates: ['2004-06-01']
   reason: IBKR split jump; flag with flag_unadjusted_splits after the owner restarts the IBKR workers
   asked: '2026-11-13'
-  review_by: '2026-11-27'
-  ref: Product msg_43dc7d6e
-- file_path: price-data/stocks/yf/russell2000/IRON/IRON-1d.parquet
-  split_dates: ['2022-12-30']
-  reason: 'repair candidate: YF split jump Yahoo still serves on 2026-11-13 (its split calendar disagrees); proposed catalog flag of the break'
-  asked: '2026-11-13'
-  review_by: '2026-11-27'
-  ref: Product msg_43dc7d6e
+  waits_on: ibkr_restart
+  review_by: '2026-12-11'
+  ref: Product msg_d3d90042
 - file_path: price-data/stocks/ibkr/russell2000/LYTS/LYTS-all-1d.parquet
   split_dates: ['2003-11-17']
   reason: IBKR split jump; flag with flag_unadjusted_splits after the owner restarts the IBKR workers
   asked: '2026-11-13'
-  review_by: '2026-11-27'
-  ref: Product msg_43dc7d6e
+  waits_on: ibkr_restart
+  review_by: '2026-12-11'
+  ref: Product msg_d3d90042
 - file_path: price-data/stocks/yf/russell2000/MRDN/MRDN-1d.parquet
   verdict: mislabelled_raw_is_adjusted
   drift: 0.06137
   split_dates: ['2013-05-02', '2013-05-15', '2016-08-12', '2017-01-09', '2019-03-04', '2019-04-08', '2019-05-14']
-  reason: 'awaiting a ruling (outside msg_43dc7d6e lists): YF closes 50x+ too high 2009-10-30..2016-05-31, IBKR flat placeholders 2013-2015'
+  reason: 'ruled: delete both providers'' impossible ranges (dry run sent, apply waits on Product''s go); YF closes 50x+ too high 2009-10-30..2016-05-31, IBKR flat placeholders 2013-2015'
   asked: '2026-11-13'
   review_by: '2026-11-27'
-  ref: Product msg_43dc7d6e
+  ref: Product msg_d3d90042
 - file_path: price-data/stocks/ibkr/russell2000/MYE/MYE-all-1d.parquet
   split_dates: ['2002-09-03']
   reason: IBKR split jump; flag with flag_unadjusted_splits after the owner restarts the IBKR workers
   asked: '2026-11-13'
-  review_by: '2026-11-27'
-  ref: Product msg_43dc7d6e
+  waits_on: ibkr_restart
+  review_by: '2026-12-11'
+  ref: Product msg_d3d90042
 - file_path: price-data/stocks/ibkr/russell2000/NECB/NECB-all-1d.parquet
   split_dates: ['2021-07-13']
   reason: IBKR split jump; flag with flag_unadjusted_splits after the owner restarts the IBKR workers
   asked: '2026-11-13'
-  review_by: '2026-11-27'
-  ref: Product msg_43dc7d6e
-- file_path: price-data/stocks/yf/russell2000/OBT/OBT-1d.parquet
-  split_dates: ['2018-02-28']
-  reason: 'repair candidate: YF split jump Yahoo still serves on 2026-11-13 (its split calendar disagrees); proposed catalog flag of the break'
-  asked: '2026-11-13'
-  review_by: '2026-11-27'
-  ref: Product msg_43dc7d6e
-- {file_path: price-data/stocks/yf/sp500/OKE/OKE-1d.parquet, verdict: anomaly, drift: -0.15143, reason: 'repair candidate: IBKR wrong 2020-01-02..2023-09-22 (936 bars); proposed IBKR re-fetch of that range,
-    waits on owner (Gateway + worker restart)', asked: '2026-11-13', review_by: '2026-11-27', ref: Product msg_43dc7d6e}
+  waits_on: ibkr_restart
+  review_by: '2026-12-11'
+  ref: Product msg_d3d90042
 - file_path: price-data/stocks/ibkr/russell2000/OVBC/OVBC-all-1d.parquet
   split_dates: ['2005-05-11']
   reason: IBKR split jump; flag with flag_unadjusted_splits after the owner restarts the IBKR workers
   asked: '2026-11-13'
-  review_by: '2026-11-27'
-  ref: Product msg_43dc7d6e
+  waits_on: ibkr_restart
+  review_by: '2026-12-11'
+  ref: Product msg_d3d90042
 - file_path: price-data/stocks/yf/russell2000/RCAT/RCAT-1d.parquet
   verdict: anomaly
   drift: -0.03716
   split_dates: ['2002-02-12', '2002-03-04', '2002-03-19', '2002-04-02', '2003-04-30', '2006-06-16', '2007-11-19', '2010-03-10', '2011-07-18']
-  reason: 'awaiting a ruling (outside msg_43dc7d6e lists): YF closes absurd 2002-01-16..2002-07-02, IBKR odd in 2002'
+  reason: 'ruled: delete both providers'' impossible ranges (dry run sent, apply waits on Product''s go); YF closes absurd 2002-01-16..2002-07-02, IBKR odd in 2002'
   asked: '2026-11-13'
   review_by: '2026-11-27'
-  ref: Product msg_43dc7d6e
-- file_path: price-data/stocks/yf/russell2000/SKIN/SKIN-1d.parquet
-  split_dates: ['2026-01-02']
-  reason: 'repair candidate: YF split jump Yahoo still serves on 2026-11-13 (its split calendar disagrees); proposed catalog flag of the break'
-  asked: '2026-11-13'
-  review_by: '2026-11-27'
-  ref: Product msg_43dc7d6e
-- {file_path: price-data/stocks/yf/russell2000/SSP/SSP-1d.parquet, verdict: anomaly, drift: -0.48162, reason: 'awaiting a ruling (outside msg_43dc7d6e lists): pre-2008-07 scale differs YF vs IBKR (ratio
-    0.03-0.05), IBKR gap 2008-07..2018-06', asked: '2026-11-13', review_by: '2026-11-27', ref: Product msg_43dc7d6e}
-- file_path: price-data/stocks/yf/russell2000/SUNS/SUNS-1d.parquet
-  verdict: anomaly
-  drift: -0.00728
-  split_dates: ['2024-07-11']
-  reason: 'repair candidate: IBKR wrong 2024-07-11..2024-08-19 (28 bars); proposed IBKR re-fetch, waits on owner'
-  asked: '2026-11-13'
-  review_by: '2026-11-27'
-  ref: Product msg_43dc7d6e
-- {file_path: price-data/stocks/yf/russell2000/SUPN/SUPN-1d.parquet, verdict: anomaly, drift: -0.6979, reason: 'repair candidate: whole IBKR file off (2023-06-12..2026-10-23, ratio 0.30-0.85, likely wrong
-    contract); proposed IBKR re-fetch after checking the conid, waits on owner', asked: '2026-11-13', review_by: '2026-11-27', ref: Product msg_43dc7d6e}
-- {file_path: price-data/stocks/yf/russell2000/TBBK/TBBK-1d.parquet, verdict: anomaly, drift: -0.10227, reason: 'repair candidate: YF 2004-12-23..2005-01-18 is 17 stale zero-volume bars at 16.72, Yahoo
-    still serves them; proposed delete leaving a recorded gap', asked: '2026-11-13', review_by: '2026-11-27', ref: Product msg_43dc7d6e}
-- file_path: price-data/stocks/yf/russell2000/VTOL/VTOL-1d.parquet
-  split_dates: ['2020-06-12']
-  reason: 'repair candidate: YF split jump Yahoo still serves on 2026-11-13 (its split calendar disagrees); proposed catalog flag of the break'
-  asked: '2026-11-13'
-  review_by: '2026-11-27'
-  ref: Product msg_43dc7d6e
+  ref: Product msg_d3d90042
