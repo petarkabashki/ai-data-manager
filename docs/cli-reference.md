@@ -336,7 +336,8 @@ node change; `--apply` writes under each catalog's lock. Equity lane.
 
 ```
 uv run python tools/record_known_adjustment.py --audit REPORT (--symbols S ... | --files FP ...)
-    (--reason TEXT [--until-ibkr YYYY-MM-DD] | --clear) [--catalog U ...] [--apply]
+    (--reason TEXT [--until-ibkr YYYY-MM-DD] | --clear) [--split-jumps] [--catalog U ...]
+    [--apply] [--catalog-backup-dir DIR]
 ```
 
 Writes `known_adjustment` on the YF nodes of the named files: the verdict and
@@ -346,8 +347,13 @@ recorded; others are listed as "nothing to record". `check_adjustment.py` then
 reads the file as `known` while the verdict is the same and the number within
 0.005 (or 10% of itself), and until the IBKR file reaches `until_ibkr`. For
 explained findings only (a spin-off residue, a split IBKR hasn't reached): a
-real data error goes to the owner as a repair candidate. Dry run by default;
-`--apply` writes under each catalog's lock. Equity lane.
+real data error goes to the owner as a repair candidate. `--split-jumps`
+records the row's split jump dates instead (`split_dates`, `split_reason`,
+`split_recorded`), read by the audit as `known_split_jump`: for a spin-off
+ex-date Yahoo adjusts its own way. The label part and the split part are
+merged into one record and cleared apart (`--clear`, with `--split-jumps` for
+the split part). Dry run by default; `--apply` backs up the catalogs, then
+writes under each catalog's lock. Equity lane.
 
 ## `relabel_adjustment.py`
 
@@ -375,13 +381,14 @@ and, for `redownload_yf.py`, no parquet) and exits 2.
 ## `check_adjustment.py`
 
 ```
-uv run python tools/check_adjustment.py [--catalog C ...] [--symbols S ...] [--json]
+uv run python tools/check_adjustment.py [--catalog C ...] [--symbols S ...] [--pending FILE] [--json]
 ```
 
 | Flag | Meaning |
 |---|---|
 | `--catalog` | Catalogs to audit (default `sp500 nasdaq100 russell2000 delisted_stocks indexes`) |
 | `--symbols` | Only these bare symbols |
+| `--pending` | Findings waiting on a decision (default `reviews/adjustment_pending.yaml`) |
 | `--json` | Emit `{"counts": {catalog: {provider: {verdict: n}}}, "files": [...]}` |
 
 ```bash
@@ -402,7 +409,10 @@ the file holds, on daily closes, over the days two files share:
   `bad_bar_dates` on the YF row and counted as `has_bad_bar`, never as a jump.
   A jump on a date the IBKR node already lists in `unadjusted_splits`
   (`flag_unadjusted_splits.py`) is `flagged_unadjusted`, not a finding; a new
-  date is still `split_jump`.
+  date is still `split_jump`. On a YF file, a date in its
+  `known_adjustment.split_dates` (`record_known_adjustment.py --split-jumps`)
+  is `known_split_jump`. Each row lists the dates on neither record as
+  `open_split_dates`.
 - **No overlap is unverifiable,** never passed.
 
 YF verdicts: `ok`, `mislabelled_raw_is_adjusted`, `mislabelled_adjusted_is_raw`,
@@ -412,9 +422,19 @@ the node's `known_adjustment` that still measures the same,
 `record_known_adjustment.py`). Each compared file also
 gets `split_jump` or `no_jump_found`; an IBKR row's verdict is that result,
 counted once under the first catalog that points at it. Exit 1 when any file is
-mislabelled, mismatched, an anomaly or has a new split jump; `known` and
-`flagged_unadjusted` files don't count. Read-only: the fix is a
-re-download under the owner's chosen convention.
+mislabelled, mismatched, an anomaly or has a new split jump; `known`,
+`known_split_jump` and `flagged_unadjusted` files don't count.
+
+**Pending decisions.** A finding sent to the owner (a repair candidate, an
+IBKR jump to flag after a worker restart) is listed in
+`reviews/adjustment_pending.yaml` by file_path, with the verdict and number
+(as for `known_adjustment`) or the `split_dates`, a reason and a `review_by`
+date. A matching finding reads `pending` (`pending_split_jump`) and doesn't fail
+the run until `review_by`; after that it fails again, so an undecided finding
+can't stay quiet for good. The file is in git, so the open list is reviewed
+like code, and it doesn't depend on catalog annotations that an IBKR worker on
+old code could drop. Read-only: the fix is a re-download under the owner's
+chosen convention.
 
 ## `check_twins.py`
 

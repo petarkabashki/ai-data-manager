@@ -32,8 +32,15 @@ Verdicts per YF node: `ok`, `mislabelled_raw_is_adjusted`,
 explained and recorded on the node's `known_adjustment` (by
 `record_known_adjustment.py`) that still measures the same. Every compared
 file, YF or IBKR, also gets `split_jump` or `no_jump_found`; a jump already on
-the IBKR node's `unadjusted_splits` reads `flagged_unadjusted`. The exit code is
-1 only for findings on neither record.
+the IBKR node's `unadjusted_splits` reads `flagged_unadjusted`, and one listed
+in a YF node's `known_adjustment.split_dates` (a spin-off ex-date Yahoo
+adjusts its own way) reads `known_split_jump`.
+
+Findings waiting on an owner decision (repair candidates, IBKR jumps to flag)
+are listed in `reviews/adjustment_pending.yaml` (`--pending`). A finding that
+matches its entry reads `pending` (a split: `pending_split_jump`) until the
+entry's `review_by` date, and doesn't fail the run. The exit code is 1 only for
+findings on no record.
 
 Read-only. Fixing a finding is a re-download under the owner's chosen YF
 convention, never an in-place patch.
@@ -46,6 +53,7 @@ convention, never an in-place patch.
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import json
 import sys
 from collections import Counter, defaultdict
@@ -54,15 +62,19 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import yaml
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from check_splits import nearest_simple_ratio  # noqa: E402
 
-from utils.catalog import DATA_ROOT, STOCK_UNIVERSES, catalog_registry, iter_timeframe_nodes  # noqa: E402
+from utils.catalog import (  # noqa: E402
+    DATA_ROOT, REPO_ROOT, STOCK_UNIVERSES, catalog_registry, iter_timeframe_nodes,
+)
 from utils.report import allow_broken_pipe  # noqa: E402
 
 CATALOGS = [*STOCK_UNIVERSES, "indexes"]
+PENDING = REPO_ROOT / "reviews" / "adjustment_pending.yaml"
 TIMEFRAME = "1d"
 
 #: Days at each end of the overlap whose median ratio is compared. A median, so
@@ -373,13 +385,53 @@ def audit(catalogs: dict[str, dict], data_root: Path, symbols: set[str] | None =
             fp = row["file_path"]
             row["split_jumps"] = sorted(jumps[fp].values(), key=lambda s: s["date"])
             row["bad_bar_dates"] = sorted(bad_bars[fp])
-            new = {s["date"] for s in row["split_jumps"]} - set(files[fp].flagged)
+            dates = {s["date"] for s in row["split_jumps"]}
+            known_dates = set((files[fp].known or {}).get("split_dates") or [])
+            new = dates - set(files[fp].flagged) - known_dates
+            row["open_split_dates"] = sorted(new)
             row["split"] = ("split_jump" if new
+                            else "known_split_jump" if dates & known_dates
                             else "flagged_unadjusted" if row["split_jumps"]
                             else "no_jump_found" if fp in compared else "unverifiable_no_overlap")
             if row["verdict"] is None:
                 row["verdict"] = row["split"]
     return rows
+
+
+def load_pending(path: Path | None) -> dict[str, dict]:
+    """file_path → its entry in the pending-decisions file; {} when there is none."""
+    if path is None or not path.exists():
+        return {}
+    entries = yaml.safe_load(path.read_text()) or []
+    return {e["file_path"]: e for e in entries}
+
+
+def apply_pending(rows: list[dict], pending: dict[str, dict], today: str) -> None:
+    """Mark findings that wait on an owner decision, so they don't fail the run.
+
+    A label finding matches when its entry has the same verdict and number (as
+    `is_known`); a split when every open jump date is in the entry's
+    `split_dates`. An entry past its `review_by` date matches nothing: an
+    undecided finding fails again rather than staying quiet for good.
+    """
+    for row in rows:
+        entry = pending.get(row["file_path"])
+        if not entry or str(entry.get("review_by", "9999")) < today:
+            continue
+        note = {k: entry[k] for k in ("reason", "asked", "review_by", "ref") if k in entry}
+        verdict = row["verdict"]
+        result = row.get("vs_ibkr") or next(iter(row.get("vs_yf") or []), None)
+        if verdict in PROBLEMS and verdict != "split_jump" and is_known(entry, verdict, result):
+            row["verdict"], row["pending"] = "pending", {**note, "measured_verdict": verdict}
+        if row.get("split") == "split_jump" and set(row["open_split_dates"]) <= set(entry.get("split_dates") or []):
+            row["split"] = "pending_split_jump"
+            row.setdefault("pending", note)
+            if verdict == "split_jump":
+                row["verdict"] = "pending_split_jump"
+
+
+def failing(row: dict) -> bool:
+    return row["verdict"] in PROBLEMS or row.get("split") == "split_jump"
 
 
 def counts(rows: list[dict]) -> dict[str, dict[str, dict[str, int]]]:
@@ -403,7 +455,7 @@ def report(rows: list[dict]) -> None:
     for catalog, by_provider in counts(rows).items():
         for provider, bucket in by_provider.items():
             print(f"{catalog:<16} {provider:<8} " + ", ".join(f"{k} {v}" for k, v in bucket.items()))
-    problems = [r for r in rows if r["verdict"] in PROBLEMS or r.get("split") == "split_jump"]
+    problems = [r for r in rows if failing(r)]
     if problems:
         print(f"\n{len(problems)} file(s) with findings (first 40):")
         for row in problems[:40]:
@@ -417,16 +469,19 @@ def main() -> int:
     p.add_argument("--catalog", nargs="+", choices=CATALOGS, default=CATALOGS)
     p.add_argument("--symbols", nargs="+", help="Only these symbols (bare names, e.g. AAPL GSPC)")
     p.add_argument("--json", action="store_true", help="Counts and the per-file list as JSON")
+    p.add_argument("--pending", type=Path, default=PENDING,
+                   help="Findings waiting on a decision (default: reviews/adjustment_pending.yaml)")
     args = p.parse_args()
 
     specs = {s.name: s for s in catalog_registry()}
     catalogs = {name: specs[name].load() for name in args.catalog}
     rows = audit(catalogs, DATA_ROOT, set(args.symbols) if args.symbols else None)
+    apply_pending(rows, load_pending(args.pending), dt.date.today().isoformat())
     if args.json:
         print(json.dumps({"counts": counts(rows), "files": rows}, indent=1))
     else:
         report(rows)
-    return 1 if any(r["verdict"] in PROBLEMS or r.get("split") == "split_jump" for r in rows) else 0
+    return 1 if any(failing(r) for r in rows) else 0
 
 
 if __name__ == "__main__":

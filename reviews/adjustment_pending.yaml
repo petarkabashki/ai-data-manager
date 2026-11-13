@@ -1,0 +1,19 @@
+# check_adjustment findings waiting on an owner decision.
+#
+# A finding that matches its entry reads `pending` (a split: `pending_split_jump`)
+# and does not fail `check_adjustment.py` (or the check-adjustment-daily schedule)
+# until `review_by`. After that date it fails again. Remove an entry once
+# the owner's decision has been carried out.
+#
+# Matching:
+#   label finding: same `verdict`, and `drift` (or `level` for level_mismatch)
+#                  within 0.005 or 10% of itself, as for `known_adjustment`.
+#   split jump:    every open jump date of the file is in `split_dates`.
+#
+# - file_path: price-data/stocks/ibkr/sp500/XYZ/XYZ-all-1d.parquet
+#   split_dates: ["2004-05-25"]
+#   reason: "IBKR jump to flag once the workers run the annotation-keeping code"
+#   asked: "2026-11-13"
+#   review_by: "2026-11-27"
+#   ref: "Product msg_..."
+[]

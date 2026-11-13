@@ -204,7 +204,10 @@ measured when it was recorded:
           until_ibkr: "2026-10-01"
 ```
 
-The audit reads such a file as `known` while it still measures the same. Both
+The audit reads such a file as `known` while it still measures the same. With
+`--split-jumps` the record also holds `split_dates` (with `split_reason` and
+`split_recorded`): one-day jumps on the YF file that are explained, read as
+`known_split_jump`. Both
 fields survive a downloader rewrite of the node (`ANNOTATION_KEYS`).
 
 The label records what the downloader asked for, not what came back:

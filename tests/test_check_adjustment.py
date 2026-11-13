@@ -20,7 +20,7 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "tools"))
 
-from check_adjustment import audit, counts  # noqa: E402
+from check_adjustment import apply_pending, audit, counts, failing  # noqa: E402
 
 DAYS = 300
 SPLIT_DAY = 150
@@ -250,3 +250,54 @@ def test_a_noisy_ratio_takes_no_share_steps_out_either(tmp_path):
 
     assert row["vs_ibkr"]["noisy_ratio"] and row["vs_ibkr"]["share_steps"]
     assert row["vs_ibkr"]["step_drift"] == 0
+
+
+def _yf_jump(tmp_path: Path) -> tuple[dict, str, str, dict]:
+    """MO 2007-04-02 shape: a one-day jump on the YF file (Yahoo's Kraft spin-off factor)."""
+    p = _prices(11)
+    yf_closes = p.copy()
+    yf_closes[:SPLIT_DAY] *= 2                 # YF kept the pre-split level
+    yf, ib = ("price-data/stocks/yf/sp500/MO/MO-1d.parquet", "price-data/stocks/ibkr/sp500/MO/MO-all-1d.parquet")
+    _write(tmp_path, yf, yf_closes)
+    _write(tmp_path, ib, p)
+    yf_node = _node(yf, "raw")
+    return {"sp500": {"MO": _entry(YF=yf_node, IBKR=_node(ib, "raw"))}}, yf, ib, yf_node
+
+
+def test_a_yf_split_jump_on_record_reads_known(tmp_path):
+    catalogs, yf, _ib, yf_node = _yf_jump(tmp_path)
+    row = _by_file(audit(catalogs, tmp_path))[yf]
+    assert row["split"] == "split_jump" and failing(row)
+    (date,) = row["open_split_dates"]
+
+    yf_node["known_adjustment"] = {"split_dates": [date], "split_reason": "Kraft spin-off"}
+    row = _by_file(audit(catalogs, tmp_path))[yf]
+    assert row["split"] == "known_split_jump" and row["open_split_dates"] == [] and not failing(row)
+
+    yf_node["known_adjustment"]["split_dates"] = ["1999-01-01"]       # another date: still open
+    assert _by_file(audit(catalogs, tmp_path))[yf]["split"] == "split_jump"
+
+
+def test_pending_findings_pass_until_their_review_date(tmp_path):
+    catalogs, yf, _ib, _ = _yf_jump(tmp_path)
+    rows = audit(catalogs, tmp_path)
+    date = _by_file(rows)[yf]["open_split_dates"][0]
+    entry = {"file_path": yf, "split_dates": [date], "reason": "repair candidate", "review_by": "2026-12-01"}
+
+    apply_pending(rows, {yf: entry}, "2026-11-13")
+    row = _by_file(rows)[yf]
+    assert row["split"] == "pending_split_jump" and row["pending"]["reason"] == "repair candidate"
+    assert not any(failing(r) for r in rows)
+
+    late = audit(catalogs, tmp_path)
+    apply_pending(late, {yf: entry}, "2026-12-02")                   # undecided past review_by: fails
+    assert failing(_by_file(late)[yf])
+
+
+def test_a_pending_label_finding_must_measure_the_same():
+    row = {"file_path": "f", "verdict": "anomaly", "split": "no_jump_found",
+           "vs_ibkr": {"drift": -0.05, "level": 1.0, "last": "2026-11-12"}}
+    apply_pending([row], {"f": {"file_path": "f", "verdict": "anomaly", "drift": -0.20}}, "2026-11-13")
+    assert row["verdict"] == "anomaly"                                 # a different number: still open
+    apply_pending([row], {"f": {"file_path": "f", "verdict": "anomaly", "drift": -0.05}}, "2026-11-13")
+    assert row["verdict"] == "pending" and not failing(row)
