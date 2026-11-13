@@ -80,6 +80,7 @@ TOOL_LANES: dict[str, str] = {
     "fix_daily_stamps": "equity",       # per provider, see PROVIDER_LANES
     "dedupe_stock_universes": "equity",  # moves files; not while workers run that universe
     "flag_unadjusted_splits": "equity",  # writes stock catalogs
+    "record_known_adjustment": "equity",  # writes stock catalogs
     "redownload_yf": "equity",          # replaces YF files; never beside a YF nightly
     "download_crypto": "crypto",
     "fill_crypto_holes": "crypto",

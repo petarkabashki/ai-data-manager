@@ -515,7 +515,7 @@ def _register_timeframe(entry: dict, timeframe: str) -> None:
 
 #: Node fields an audit writes, not the downloader. A downloader rebuilds the
 #: node on every write; these are carried over while it points at the same file.
-ANNOTATION_KEYS = ("unadjusted_splits",)
+ANNOTATION_KEYS = ("unadjusted_splits", "known_adjustment")
 
 
 def _set_provider_node(

@@ -188,6 +188,25 @@ The field is optional. Absent means no jump was found, or the file couldn't be
 compared with YF; it is not a guarantee. A reader computing returns across a
 listed date divides the earlier prices by the split ratio, or starts after it.
 
+A YF node can carry `known_adjustment`, from `tools/record_known_adjustment.py`:
+a `check_adjustment.py` finding that is explained and kept, with the number
+measured when it was recorded:
+
+```yaml
+      YF:
+        file_path: price-data/stocks/yf/sp500/CTVA/CTVA-1d.parquet
+        adjustment: raw
+        known_adjustment:
+          verdict: level_mismatch
+          level: 0.15004
+          reason: "Yahoo applied the 2026-10-01 6.665:1 split; IBKR's file ends before it"
+          recorded: "2026-11-13"
+          until_ibkr: "2026-10-01"
+```
+
+The audit reads such a file as `known` while it still measures the same. Both
+fields survive a downloader rewrite of the node (`ANNOTATION_KEYS`).
+
 The label records what the downloader asked for, not what came back:
 
 - `yf/sp500/AAPL` is labelled `raw`, but its closes are dividend-adjusted:

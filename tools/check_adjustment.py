@@ -28,8 +28,12 @@ Verdicts per YF node: `ok`, `mislabelled_raw_is_adjusted`,
 `mislabelled_adjusted_is_raw` (only provable against another YF file),
 `adjusted_label_no_drift` (no dividends in the overlap, or not adjusted),
 `level_mismatch` (the files disagree on today's price), `anomaly`,
-`unverifiable_no_overlap`, `unverifiable_yf_agree`. Every compared file, YF or
-IBKR, also gets `split_jump` or `no_jump_found`.
+`unverifiable_no_overlap`, `unverifiable_yf_agree`, and `known`: a finding
+explained and recorded on the node's `known_adjustment` (by
+`record_known_adjustment.py`) that still measures the same. Every compared
+file, YF or IBKR, also gets `split_jump` or `no_jump_found`; a jump already on
+the IBKR node's `unadjusted_splits` reads `flagged_unadjusted`. The exit code is
+1 only for findings on neither record.
 
 Read-only. Fixing a finding is a re-download under the owner's chosen YF
 convention, never an in-place patch.
@@ -45,7 +49,7 @@ import argparse
 import json
 import sys
 from collections import Counter, defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -99,6 +103,10 @@ def _share_step(log_step: float, tol: float) -> str | None:
             return f"{round(p * 100)}%"
     return None
 
+#: A recorded finding still covers a file whose number moved at most this much
+#: (or 10% of itself, for the large ones).
+KNOWN_TOL = 0.005
+
 PROBLEMS = {"mislabelled_raw_is_adjusted", "mislabelled_adjusted_is_raw",
             "level_mismatch", "anomaly", "split_jump"}
 
@@ -111,6 +119,7 @@ class Node:
     file_path: str         # as stored, "price-data/..."
     adjustment: str | None
     flagged: tuple[str, ...] = ()  # IBKR `unadjusted_splits`: jumps already on record
+    known: dict | None = field(default=None, compare=False, hash=False)  # YF `known_adjustment`
 
 
 def resolve(data_root: Path, file_path: str) -> Path:
@@ -133,7 +142,8 @@ def daily_nodes(catalogs: dict[str, dict]) -> dict[str, list[Node]]:
                 if node.get("file_path"):
                     by_symbol[symbol].append(
                         Node(catalog, symbol, provider, node["file_path"], node.get("adjustment"),
-                             tuple(str(d) for d in node.get("unadjusted_splits") or ())))
+                             tuple(str(d) for d in node.get("unadjusted_splits") or ()),
+                             node.get("known_adjustment")))
     return by_symbol
 
 
@@ -260,6 +270,33 @@ def label_verdict(node: Node, vs_ibkr: dict | None, vs_yf: list[tuple[Node, dict
     return "unverifiable_yf_agree"
 
 
+def measure(verdict: str, result: dict | None) -> tuple[str, float] | None:
+    """The number a label verdict rests on: the level for a level gap, else the drift."""
+    if result is None:
+        return None
+    key = "level" if verdict == "level_mismatch" else "drift"
+    return key, float(result[key])
+
+
+def is_known(known: dict | None, verdict: str, result: dict | None) -> bool:
+    """The finding is the one on record: same verdict, about the same size, still in force.
+
+    A record stops covering a file whose number moves (new bad data on top of
+    an explained one), and one with `until_ibkr` lapses once the IBKR file
+    reaches that date (CTVA: IBKR's 2026-10-01 split, not yet in its file).
+    """
+    if not known or known.get("verdict") != verdict:
+        return False
+    got = measure(verdict, result)
+    if got is None or got[0] not in known:
+        return False
+    recorded = float(known[got[0]])
+    if abs(got[1] - recorded) > max(KNOWN_TOL, 0.1 * abs(recorded)):
+        return False
+    until = known.get("until_ibkr")
+    return not (until and result["last"] >= str(until))
+
+
 def audit(catalogs: dict[str, dict], data_root: Path, symbols: set[str] | None = None) -> list[dict]:
     """One row per stored daily file: its verdict, comparisons and split jumps."""
     rows: list[dict] = []
@@ -296,14 +333,18 @@ def audit(catalogs: dict[str, dict], data_root: Path, symbols: set[str] | None =
             vs_ibkr = next((r for r in (run(node.file_path, fp) for fp in ibkr) if r), None)
             vs_yf = [(files[fp], r) for fp in yf if fp != node.file_path
                      for r in [run(node.file_path, fp)] if r]
-            rows.append({
+            verdict = label_verdict(node, vs_ibkr, vs_yf if vs_ibkr is None else [])
+            row = {
                 "catalog": node.catalog, "symbol": symbol, "provider": "YF",
                 "file_path": node.file_path, "adjustment": node.adjustment,
-                "verdict": label_verdict(node, vs_ibkr, vs_yf if vs_ibkr is None else []),
+                "verdict": verdict,
                 "vs_ibkr": vs_ibkr,
                 "vs_yf": [{"file_path": o.file_path, **{k: v for k, v in r.items() if k != "steps"}}
                           for o, r in vs_yf],
-            })
+            }
+            if verdict in PROBLEMS and is_known(node.known, verdict, vs_ibkr or (vs_yf[0][1] if vs_yf else None)):
+                row["verdict"], row["known"] = "known", {**node.known, "measured_verdict": verdict}
+            rows.append(row)
         for fp in ibkr:
             if not yf:
                 continue

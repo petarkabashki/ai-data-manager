@@ -210,3 +210,25 @@ def test_a_one_day_spike_is_a_bad_bar_not_a_split(tmp_path):
 
     assert rows[ib]["verdict"] == "no_jump_found"
     assert rows[yf]["verdict"] == "ok" and len(rows[yf]["bad_bar_dates"]) == 2
+
+
+def test_a_recorded_finding_is_known_until_it_moves_or_lapses(tmp_path):
+    """CTVA: YF carries the 2026-10-01 split, IBKR's file stops before it."""
+    p = _prices(9)
+    yf, ib = ("price-data/stocks/yf/sp500/CTVA/CTVA-1d.parquet", "price-data/stocks/ibkr/sp500/CTVA/CTVA-all-1d.parquet")
+    _write(tmp_path, yf, p * 0.15)
+    _write(tmp_path, ib, p)
+    last = str(pd.Timestamp((10_000 + DAYS - 1) * 86_400_000, unit="ms").date())
+    yf_node = _node(yf, "raw")
+    catalogs = {"sp500": {"CTVA": _entry(YF=yf_node, IBKR=_node(ib, "raw"))}}
+    assert _by_file(audit(catalogs, tmp_path))[yf]["verdict"] == "level_mismatch"
+
+    yf_node["known_adjustment"] = {"verdict": "level_mismatch", "level": 0.15, "until_ibkr": "2099-01-01"}
+    row = _by_file(audit(catalogs, tmp_path))[yf]
+    assert row["verdict"] == "known" and row["known"]["measured_verdict"] == "level_mismatch"
+
+    yf_node["known_adjustment"]["level"] = 0.30              # the file moved: a new finding
+    assert _by_file(audit(catalogs, tmp_path))[yf]["verdict"] == "level_mismatch"
+
+    yf_node["known_adjustment"].update(level=0.15, until_ibkr=last)  # IBKR reached the date
+    assert _by_file(audit(catalogs, tmp_path))[yf]["verdict"] == "level_mismatch"

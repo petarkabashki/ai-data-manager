@@ -17,6 +17,7 @@ first when one is offered.
 | [`check_adjustment.py`](#check_adjustmentpy) | read-only | Check each stock YF node's `adjustment` label against IBKR and other universes; find unadjusted split jumps |
 | [`delete_twin_bars.py`](#delete_twin_barspy) | writes (with `--apply`) | Delete spans of crypto bars copied from another venue, logged row by row |
 | [`redownload_yf.py`](#redownload_yfpy) | writes (with `--apply`) | Replace YF daily stock files with a full raw re-download, logged row by row |
+| [`record_known_adjustment.py`](#record_known_adjustmentpy) | writes catalogs (with `--apply`) | Record an explained adjustment finding on its YF node (`known_adjustment`) |
 | [`flag_unadjusted_splits.py`](#flag_unadjusted_splitspy) | writes catalogs (with `--apply`) | Record IBKR's unadjusted split dates on its catalog nodes (`unadjusted_splits`) |
 | [`check_twins.py`](#check_twinspy) | read-only | Find blocks of crypto bars identical to another venue's (bars from the wrong venue) |
 | [`fix_daily_stamps.py`](#fix_daily_stampspy) | write | Restamp daily+ bars to 00:00 UTC of their date; drop duplicate dates |
@@ -330,6 +331,23 @@ the report couldn't compare is left alone. The price data is not touched: IBKR's
 pre-2005 splits stay as served (owner decision 2026-11-13). Dry run lists each
 node change; `--apply` writes under each catalog's lock. Equity lane.
 
+## `record_known_adjustment.py`
+
+```
+uv run python tools/record_known_adjustment.py --audit REPORT (--symbols S ... | --files FP ...)
+    (--reason TEXT [--until-ibkr YYYY-MM-DD] | --clear) [--catalog U ...] [--apply]
+```
+
+Writes `known_adjustment` on the YF nodes of the named files: the verdict and
+number (`drift`, or `level` for `level_mismatch`) the report measured, the
+reason, the date, and optionally `until_ibkr`. Only a YF row with a finding is
+recorded; others are listed as "nothing to record". `check_adjustment.py` then
+reads the file as `known` while the verdict is the same and the number within
+0.005 (or 10% of itself), and until the IBKR file reaches `until_ibkr`. For
+explained findings only (a spin-off residue, a split IBKR hasn't reached): a
+real data error goes to the owner as a repair candidate. Dry run by default;
+`--apply` writes under each catalog's lock. Equity lane.
+
 ## `check_adjustment.py`
 
 ```
@@ -365,10 +383,13 @@ the file holds, on daily closes, over the days two files share:
 
 YF verdicts: `ok`, `mislabelled_raw_is_adjusted`, `mislabelled_adjusted_is_raw`,
 `adjusted_label_no_drift`, `level_mismatch`, `anomaly`,
-`unverifiable_no_overlap`, `unverifiable_yf_agree`. Each compared file also
+`unverifiable_no_overlap`, `unverifiable_yf_agree`, and `known` (a finding on
+the node's `known_adjustment` that still measures the same,
+`record_known_adjustment.py`). Each compared file also
 gets `split_jump` or `no_jump_found`; an IBKR row's verdict is that result,
 counted once under the first catalog that points at it. Exit 1 when any file is
-mislabelled, mismatched or has a split jump. Read-only: the fix is a
+mislabelled, mismatched, an anomaly or has a new split jump; `known` and
+`flagged_unadjusted` files don't count. Read-only: the fix is a
 re-download under the owner's chosen convention.
 
 ## `check_twins.py`
