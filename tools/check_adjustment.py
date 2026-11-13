@@ -83,6 +83,21 @@ STEP_TOL = 0.02
 #: under 2.5% on its ex-date; a special one above it is listed, not counted.
 STEP_CUT = 0.025
 MAX_STEPS = 3   # more held one-day steps than this: a noisy ratio, steps not removed
+#: Stock dividends Yahoo applies as splits and IBKR (pre-2005) does not: the
+#: ratio steps by exactly 1+p. Banks pay 3%, 5% and 10% in shares, many yearly.
+#: Not 2%: a high-yield quarterly cash dividend steps an adjusted file that much.
+SHARE_STEPS = (0.03, 0.04, 0.05, 0.06, 0.1, 0.15, 0.2, 0.25, 0.5)
+#: How close (in log) a held step must sit to one: 0.15%, well inside the 1%
+#: spacing, so a random level change rarely passes as one.
+SHARE_TOL = 0.0015
+
+
+def _share_step(log_step: float, tol: float) -> str | None:
+    """'5%' if the ratio stepped by a stock dividend of that size (either side)."""
+    for p in SHARE_STEPS:
+        if abs(abs(log_step) - np.log1p(p)) <= tol:
+            return f"{round(p * 100)}%"
+    return None
 
 PROBLEMS = {"mislabelled_raw_is_adjusted", "mislabelled_adjusted_is_raw",
             "level_mismatch", "anomaly", "split_jump"}
@@ -175,22 +190,28 @@ def compare(this: pd.Series, ref: pd.Series) -> dict | None:
     late = float(segment.iloc[-EDGE_DAYS:].median())
     log_ratio = np.log(segment.astype(float))
     log_change = log_ratio.diff()
-    jumps = {}
+    jumps, shares = {}, {}
     # A step inside an edge window moves its median only partly, so look inside.
     for pos in range(EDGE_DAYS + 1, len(segment) - EDGE_DAYS):
         one_day = float(log_change.iloc[pos])
-        if abs(one_day) <= STEP_CUT:
+        if abs(one_day) <= STEP_CUT and _share_step(one_day, SHARE_TOL * 2) is None:
             continue
         # Only the part that stays is a level change; a move that drifts back
         # (ABBV 2024-08-07) is noise, and taking it out would invent drift.
         held = float(log_ratio.iloc[pos:pos + EDGE_DAYS].median() - log_ratio.iloc[pos - EDGE_DAYS:pos].median())
         if held * one_day > 0 and abs(held) >= abs(one_day) / 2:
-            jumps[segment.index[pos]] = held
-    jumps = pd.Series(jumps, dtype=float)
+            day = segment.index[pos]
+            if _share_step(held, SHARE_TOL) is not None:
+                shares[day] = held
+            elif abs(one_day) > STEP_CUT:
+                jumps[day] = held
+    jumps, shares = pd.Series(jumps, dtype=float), pd.Series(shares, dtype=float)
     # A corporate action is one or two steps. More means a noisy ratio (WBD vs
     # IBKR's Discovery listing in 2021), where steps can't be told from drift.
+    # Stock dividends are exempt: a bank paying 5% in shares every year is a
+    # share count IBKR left alone, like a split, however often it happens.
     noisy = len(jumps) > MAX_STEPS
-    removed = 0.0 if noisy else float(jumps.sum())
+    removed = (0.0 if noisy else float(jumps.sum())) + float(shares.sum())
     return {
         "overlap_days": int(len(ratio)),
         "first": str(ratio.index[0].date()), "last": str(ratio.index[-1].date()),
@@ -199,6 +220,8 @@ def compare(this: pd.Series, ref: pd.Series) -> dict | None:
         "noisy_ratio": noisy,
         "one_day_steps": [{"date": str(d.date()), "change": round(float(np.exp(v)) - 1, 4)}
                           for d, v in jumps.items()][:20],
+        "share_steps": [{"date": str(d.date()), "stock_dividend": _share_step(v, SHARE_TOL)}
+                        for d, v in shares.items()][:20],
         "steps": steps,
     }
 

@@ -131,6 +131,23 @@ def test_a_noisy_ratio_keeps_its_steps_in_drift(tmp_path):
     assert row["verdict"] == "ok"
 
 
+def test_yearly_stock_dividends_are_share_steps_not_noise(tmp_path):
+    """GABC: 5% in shares each year, applied by Yahoo, not by IBKR before 2005."""
+    p = _prices(8)
+    yf_closes = p.copy()
+    for day in range(40, 260, 45):             # five 5% stock dividends
+        yf_closes[:day] /= 1.05
+    yf, ib = ("price-data/stocks/yf/russell2000/GABC/GABC-1d.parquet", "price-data/stocks/ibkr/russell2000/GABC/GABC-all-1d.parquet")
+    _write(tmp_path, yf, yf_closes)
+    _write(tmp_path, ib, p)
+    catalogs = {"russell2000": {"GABC": _entry(YF=_node(yf, "raw"), IBKR=_node(ib, "raw"))}}
+    row = _by_file(audit(catalogs, tmp_path))[yf]
+
+    assert row["verdict"] == "ok"
+    assert [s["stock_dividend"] for s in row["vs_ibkr"]["share_steps"]] == ["5%"] * 5
+    assert not row["vs_ibkr"]["noisy_ratio"]
+
+
 def test_an_unadjusted_split_is_owned_by_the_file_that_jumps(tmp_path):
     p = _prices(2)
     ibkr_closes = p.copy()
