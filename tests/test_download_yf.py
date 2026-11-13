@@ -8,6 +8,7 @@ asked for, so the tests can assert on the *requests* as well as the result.
 from __future__ import annotations
 
 import importlib
+import json
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -112,6 +113,30 @@ def test_node_records_the_adjustment_choice(yf_env, monkeypatch):
     assert raw_node["adjustment"] == "raw"
     assert raw_node["volume_basis"] == "shares"
     assert raw_node["schema"] == "ohlcv"
+
+
+def test_a_file_stored_adjusted_is_skipped_by_a_raw_run(yf_env, monkeypatch, capsys):
+    """WBD/PSKY are kept adjusted by owner decision: a raw nightly must not touch them."""
+    root, catalog, tool = yf_env
+    _seed_stock_catalog(root)
+    argv = ["--universe", "sp500", "--timeframes", "1d", "--full", "--since", "2025-01-01"]
+    _run(tool, argv, monkeypatch, FakeYahoo())
+    doc = yaml.safe_load((root / "sp500.yaml").read_text())
+    doc["AAPL"]["timeframe_dates"]["1d"]["YF"]["adjustment"] = "adjusted"
+    (root / "sp500.yaml").write_text(yaml.dump(doc))
+    before = pd.read_parquet(catalog.stock_file_path("YF", "sp500", "AAPL", "1d"))
+    capsys.readouterr()
+
+    fetcher = FakeYahoo()
+    _run(tool, [*argv, "--json"], monkeypatch, fetcher)
+
+    assert fetcher.calls == []
+    report = json.loads(capsys.readouterr().out)
+    assert report["skipped"] == [{"symbol": "AAPL", "timeframe": "1d", "reason": "stored adjusted, run is raw"}]
+    assert report["failures"] == []
+    node = yaml.safe_load((root / "sp500.yaml").read_text())["AAPL"]["timeframe_dates"]["1d"]["YF"]
+    assert node["adjustment"] == "adjusted"
+    pd.testing.assert_frame_equal(before, pd.read_parquet(catalog.stock_file_path("YF", "sp500", "AAPL", "1d")))
 
 
 def test_adjusted_flag_changes_both_the_request_and_the_record(yf_env, monkeypatch):

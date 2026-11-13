@@ -155,6 +155,13 @@ def _apply_entry(write_entry, symbol, timeframe, dst, start, end, semantics, cat
     write_entry(catalog, symbol, timeframe, dst, start, end, semantics)
 
 
+def stored_adjustment(catalog: dict, symbol: str, timeframe: str) -> str | None:
+    """The `adjustment` the catalog records for this symbol's YF file, if any."""
+    slot = (catalog.get(symbol) or {}).get("timeframe_dates", {}).get(timeframe) or {}
+    node = slot.get(PROVIDER) if isinstance(slot.get(PROVIDER), dict) else slot
+    return node.get("adjustment")
+
+
 def resolve_target(universe: str | None, asset_class: str | None):
     """(asset_class, label, loader, saver, path_for, write_entry) for the run."""
     if universe:
@@ -272,6 +279,7 @@ def main() -> None:
     download_end = utc_now()
     updated = 0
     failures: list[tuple[str, str, str]] = []
+    skipped: list[tuple[str, str, str]] = []
     rows: list[list] = []
     plan: list[dict] = []
     calendar_name = calendar_for(asset_class).name
@@ -287,6 +295,15 @@ def main() -> None:
         for symbol in symbols:
             for timeframe in args.timeframes:
                 dst = path_for(symbol, timeframe)
+                stored = stored_adjustment(catalog, symbol, timeframe)
+                if asset_class != "Macro" and stored and stored != semantics.adjustment and dst.exists():
+                    # Raw bars appended to an adjusted file (or the reverse) write a
+                    # seam, and the node would be relabelled. Owner exceptions to the
+                    # RAW convention (WBD, PSKY: no raw history on Yahoo) stay as stored.
+                    reason = f"stored {stored}, run is {semantics.adjustment}"
+                    skipped.append((symbol, timeframe, reason))
+                    say(f"  {symbol}/{timeframe}: skipped ({reason})")
+                    continue
                 try:
                     ranges = plan_download_ranges(
                         dst,
@@ -369,7 +386,9 @@ def main() -> None:
         if len(rows) > 40:
             print(f"… and {len(rows) - 40} more")
 
-    say(f"\nSummary\n  updated: {updated}\n  failures: {len(failures)}")
+    say(f"\nSummary\n  updated: {updated}\n  skipped: {len(skipped)}\n  failures: {len(failures)}")
+    for symbol, timeframe, message in skipped:
+        say(f"  ~ {symbol}/{timeframe}: {message}")
     for symbol, timeframe, message in failures[:20]:
         say(f"  - {symbol}/{timeframe}: {message}")
     if len(failures) > 20:
@@ -393,6 +412,9 @@ def main() -> None:
                 for r in rows
             ],
             "updated": updated,
+            "skipped": [
+                {"symbol": sym, "timeframe": tf, "reason": msg} for sym, tf, msg in skipped
+            ],
             "failures": [
                 {"symbol": sym, "timeframe": tf, "error": msg} for sym, tf, msg in failures
             ],

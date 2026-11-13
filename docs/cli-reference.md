@@ -660,7 +660,10 @@ Three Yahoo-specific behaviours worth knowing:
 - **Intraday history is capped** (~730 days of 60m, 7 days of 1m) and truncates
   silently, so the start is clamped before the request.
 - **Adjustment is recorded, not assumed.** Either way the node gets
-  `adjustment: raw|adjusted`, so `close` is interpretable later.
+  `adjustment: raw|adjusted`, so `close` is interpretable later. A file whose
+  node is labelled otherwise than the run is skipped and listed under
+  `skipped`, not merged: the owner keeps sp500/WBD, nasdaq100/WBD and
+  sp500/PSKY adjusted (Yahoo serves no raw history before 2021 for them).
 
 The catalog is written after every series, so interrupting a long run loses at
 most one symbol's registration. Exits non-zero if any series failed.
