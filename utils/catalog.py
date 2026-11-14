@@ -436,8 +436,9 @@ def _dump_yaml(path: Path, data: dict) -> None:
 
     The catalog keeps its mode (other users read these); a new one gets the
     umask default. `os.open` is used rather than mkstemp, which would give 0600.
-    Inside a `catalog_backup` scope the catalog is backed up first, and a backup
-    that fails raises here, before anything is written.
+    The catalog is backed up first (into the `catalog_backup` scope's directory,
+    or outside one into the rotating `unscoped_backup_dir`), and a backup that
+    fails raises here, before anything is written.
     """
     backup_catalog(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -468,21 +469,28 @@ def default_backup_dir(tool: str) -> Path:
     return TMP_ROOT / f"catalog-backup-{tool}-{stamp}"
 
 
-def backup_catalog(path: Path) -> Path | None:
-    """Copy `path` into the active backup directory, once per scope; verify the bytes.
+#: Pre-images kept per catalog in the unscoped backup directory.
+UNSCOPED_KEEP = 20
 
-    The first copy wins, so the directory holds each catalog as it was before
-    the run touched it. No-op outside a scope or for a catalog that does not
-    exist yet. Raises `CatalogBackupError` on any failure.
+#: Catalogs this process has already backed up outside a scope.
+_unscoped_done: set[Path] = set()
+
+
+def unscoped_backup_dir(path: Path) -> Path:
+    """`<data root>.catalog-autobackup`, beside the data root that holds `path`.
+
+    Beside it rather than in it, so the host backup of the data root doesn't
+    carry the copies; beside the catalog rather than in TMP_ROOT, so a test's
+    catalog under tmp_path backs up under tmp_path too.
     """
-    if _backup_dir is None or not path.exists():
-        return None
-    dest = _backup_dir / path.name
-    if dest.exists():
-        return dest
+    parent = path.resolve().parent
+    return parent.with_name(f"{parent.name}.catalog-autobackup")
+
+
+def _copy_verified(path: Path, dest: Path) -> None:
     part = dest.with_name(dest.name + ".part")
     try:
-        _backup_dir.mkdir(parents=True, exist_ok=True)
+        dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(path, part)
         if not filecmp.cmp(path, part, shallow=False):
             raise CatalogBackupError(f"backup of {path} does not match it")
@@ -490,7 +498,48 @@ def backup_catalog(path: Path) -> Path | None:
     except OSError as exc:
         with suppress(OSError):
             part.unlink()
-        raise CatalogBackupError(f"cannot back up {path} to {_backup_dir}: {exc}") from exc
+        raise CatalogBackupError(f"cannot back up {path} to {dest.parent}: {exc}") from exc
+
+
+def _backup_unscoped(path: Path) -> Path | None:
+    """Outside a scope: one stamped pre-image per catalog per process, newest kept.
+
+    Covers every write that no tool's `catalog_backup` scope covers (an ad-hoc
+    script, a downloader), so no catalog edit runs without a pre-change copy.
+    Once per process, so a downloader writing node by node copies each catalog
+    once, and only the newest `UNSCOPED_KEEP` copies of each are kept.
+    """
+    key = path.resolve()
+    if key in _unscoped_done:
+        return None
+    directory = unscoped_backup_dir(path)
+    stamp = datetime.now(tz=timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
+    dest = directory / f"{path.name}.{stamp}.{os.getpid()}"
+    _copy_verified(path, dest)
+    _unscoped_done.add(key)
+    for old in sorted(directory.glob(f"{path.name}.*"))[:-UNSCOPED_KEEP]:
+        if not old.name.endswith(".part"):
+            with suppress(OSError):
+                old.unlink()
+    return dest
+
+
+def backup_catalog(path: Path) -> Path | None:
+    """Copy `path` into the active backup directory, once per scope; verify the bytes.
+
+    The first copy wins, so the directory holds each catalog as it was before
+    the run touched it. Outside a scope the copy goes to the rotating
+    `unscoped_backup_dir` instead (`_backup_unscoped`). No-op for a catalog
+    that does not exist yet. Raises `CatalogBackupError` on any failure.
+    """
+    if not path.exists():
+        return None
+    if _backup_dir is None:
+        return _backup_unscoped(path)
+    dest = _backup_dir / path.name
+    if dest.exists():
+        return dest
+    _copy_verified(path, dest)
     return dest
 
 

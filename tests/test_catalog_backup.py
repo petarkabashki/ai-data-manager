@@ -99,7 +99,31 @@ def test_a_failed_backup_blocks_the_write_itself(data, tmp_path):
     assert (data / "sp500.yaml").read_text() == CATALOG
 
 
-def test_outside_a_scope_nothing_is_copied(data, tmp_path):
+def test_outside_a_scope_the_first_write_keeps_a_pre_image_beside_the_data_root(data, tmp_path):
     with cat.stock_catalog_txn("sp500") as fresh:
         fresh["VZ"]["name"] = "changed"
+    with cat.stock_catalog_txn("sp500") as fresh:
+        fresh["VZ"]["name"] = "changed again"
+    copies = list((tmp_path / "data.catalog-autobackup").glob("sp500.yaml.*"))
+    assert len(copies) == 1                                   # once per process
+    assert copies[0].read_text() == CATALOG                   # the pre-image
     assert not (tmp_path / "tmp").exists()
+
+
+def test_outside_a_scope_only_the_newest_copies_are_kept(data, tmp_path, monkeypatch):
+    monkeypatch.setattr(cat, "UNSCOPED_KEEP", 2)
+    for i in range(4):
+        cat._unscoped_done.clear()                            # as if a new process
+        with cat.stock_catalog_txn("sp500") as fresh:
+            fresh["VZ"]["name"] = f"v{i}"
+    copies = sorted((tmp_path / "data.catalog-autobackup").glob("sp500.yaml.*"))
+    assert len(copies) == 2
+    assert "name: v2" in copies[-1].read_text()               # newest pre-image kept
+
+
+def test_outside_a_scope_a_failed_backup_blocks_the_write(data, tmp_path):
+    (tmp_path / "data.catalog-autobackup").write_text("")     # a file where the dir goes
+    with pytest.raises(cat.CatalogBackupError):
+        with cat.stock_catalog_txn("sp500") as fresh:
+            fresh["VZ"]["name"] = "changed"
+    assert (data / "sp500.yaml").read_text() == CATALOG

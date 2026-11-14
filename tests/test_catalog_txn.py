@@ -173,7 +173,8 @@ def test_temp_names_are_unique_and_beside_the_catalog(env, tmp_path, monkeypatch
     real = Path.replace
 
     def spy(self, target):
-        temps.append(self)
+        if Path(target) == path:                       # not the pre-image backup's rename
+            temps.append(self)
         return real(self, target)
 
     monkeypatch.setattr(Path, "replace", spy)
