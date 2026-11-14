@@ -485,6 +485,12 @@ deploy can restart `pdm` without waiting for the queue to drain.
 - Kucoin BRISE/USDT is a live pair we aren't updating: kucoin serves bars to
   2026-11-01, and our file stops 2024-08-15. Cause unknown. The other 2
   stopped kucoin symbols are unchecked; don't mark any of them `retired`.
+- Stock universe dedupe conflicts. **CRWD closed 2026-11-14**: the stray
+  `ibkr/nasdaq100/CRWD` copy (1d 1h 4h 8h, 4x pre-split scale before
+  2026-06-15) was dropped on the owner's yes, via `dedupe_stock_universes.py
+  --drop-conflicts`, run `dedupe-drop-20261114-crwd` (revision record under
+  `<data root>/revisions/`). nasdaq100 now points at `ibkr/sp500/CRWD`, and
+  `stock_home_universe` keeps downloads there. **HON (0.954x) is still open.**
 - Not gaps: two expired options series (expected), and `Adj Close`, which
   the canonical schema drops anyway.
 
