@@ -52,12 +52,6 @@
   asked: '2026-11-14'
   review_by: '2026-12-11'
   ref: Product msg_8d8c24b1
-- file_path: price-data/stocks/ibkr/russell2000/NEXN/NEXN-all-1d.parquet
-  action: 'full rebuild (replace, not merge) of NEXN 1d 4h 8h 1w: append-path seam at the 2025-02-18 ADS ratio change (flagged break); py-qwant pre-notice first'
-  waits_on: ibkr_restart
-  asked: '2026-11-14'
-  review_by: '2026-12-11'
-  ref: Product msg_8d8c24b1
 - file_path: price-data/stocks/ibkr/sp500/WBD/WBD-all-1d.parquet
   action: 're-fetch try of WBD 2020-01-02..2022-04-08, all timeframes (flagged bad: pre-merger bars 1.4-2.2x YF, erratic); if still bad, keep the flag or delete with a recorded gap'
   waits_on: ibkr_restart
