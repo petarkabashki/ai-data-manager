@@ -531,6 +531,12 @@ def main() -> None:
                                   + (f"; REFUSED: {refusal}" if refusal else ""))
                             replace_rows.append({"symbol": symbol, "timeframe": timeframe,
                                                  "refused": refusal, **(report or {"path": str(dst)})})
+                            if args.dry_run and not df.empty:  # kept for review of the report
+                                sample = replace_backup.with_name(replace_backup.name.replace("backup", "dryrun"))
+                                rel = Path(*dst.parts[-4:])
+                                (sample / rel).parent.mkdir(parents=True, exist_ok=True)
+                                df.to_parquet(sample / rel, index=False)
+                                replace_rows[-1]["downloaded"] = str(sample / rel)
                             if refusal:
                                 overall_failures.append((universe, symbol, f"{timeframe}: replace refused: {refusal}"))
                                 continue
