@@ -154,6 +154,13 @@ TERMINAL = {"succeeded", "failed", "cancelled", "timed_out"}
 #: A run cut short by the server stopping; queued again on the next start.
 INTERRUPTED = "interrupted"
 
+#: A writer that sees a deploy change its code exits with this code
+#: (`utils.code_version.EXIT_CODE_CHANGED`) so a fresh process carries on.
+#: The runner queues such a job again at the head of its lane, at most
+#: `CODE_CHANGE_RELAUNCHES` times; past that it stays failed.
+EXIT_CODE_CHANGED = 75
+CODE_CHANGE_RELAUNCHES = 3
+
 
 @dataclass
 class Job:
@@ -338,12 +345,21 @@ class JobManager:
                 job.state, job.started_at = "running", time.time()
                 self._save()
             self.on_event(job)
-            self._run(job)
+            relaunch = self._run(job)
             with self._cond:
+                if relaunch and not self._stopping:
+                    job.requeued += 1
+                    job.error = f"code changed; relaunched after {job.log_path}"
+                    job.state = "queued"
+                    job.started_at = job.finished_at = job.returncode = job.result = None
+                    self._queues.setdefault(lane, deque()).appendleft(job.id)
+                    self._cond.notify_all()
                 self._save()
             self.on_event(job)
 
-    def _run(self, job: Job) -> None:
+    def _run(self, job: Job) -> bool:
+        """Run the tool; True when it exited on a code change and may run again
+        (the job is then left `running` for `_work` to queue)."""
         self.log_dir.mkdir(parents=True, exist_ok=True)
         log_path = self.log_dir / f"{time.strftime('%Y%m%d-%H%M%S')}-{job.tool}-{job.id}.log"
         job.log_path = str(log_path)
@@ -397,8 +413,11 @@ class JobManager:
             job.state = "cancelled"
         elif self._stopping:
             job.state = INTERRUPTED   # stop() terminated it: not the tool's verdict
+        elif job.returncode == EXIT_CODE_CHANGED and job.requeued < CODE_CHANGE_RELAUNCHES:
+            return True
         else:
             job.state = "succeeded" if job.returncode == 0 else "failed"
+        return False
 
     # --- persistence ----------------------------------------------------------
 

@@ -186,6 +186,32 @@ def test_job_runs_logs_and_reports_exit_codes(tmp_path):
     jm.stop()
 
 
+def test_a_job_that_exits_on_a_code_change_runs_again(tmp_path):
+    # 2026-11-14: three futures nightlies exited 75 on a deploy and were never resumed
+    from pdm.jobs import CODE_CHANGE_RELAUNCHES, EXIT_CODE_CHANGED
+    from utils.code_version import EXIT_CODE_CHANGED as WRITER_CODE
+    assert EXIT_CODE_CHANGED == WRITER_CODE
+    tools = _fake_tools(tmp_path)
+    runs = tmp_path / "runs"
+    (tools / "download_crypto.py").write_text(textwrap.dedent(f"""
+        import sys
+        p = {str(runs)!r}
+        n = len(open(p).read()) if __import__("os").path.exists(p) else 0
+        open(p, "a").write("x")
+        sys.exit(75 if n < 1 or "--always" in sys.argv else 0)
+    """))
+    jm = JobManager(tools, tmp_path / "logs")
+    job = jm.submit("download_crypto", ["--exchange", "bybit"])
+    done = _wait_state(jm, job.id, {"succeeded", "failed"})
+    assert (done.state, done.requeued, runs.read_text()) == ("succeeded", 1, "xx")
+    runs.unlink()
+    stuck = jm.submit("download_crypto", ["--exchange", "bybit", "--always"])
+    done = _wait_state(jm, stuck.id, {"failed"})
+    assert (done.returncode, done.requeued) == (75, CODE_CHANGE_RELAUNCHES)
+    assert runs.read_text() == "x" * (CODE_CHANGE_RELAUNCHES + 1)
+    jm.stop()
+
+
 def test_cancel_queued_and_running_jobs(tmp_path):
     jm = JobManager(_fake_tools(tmp_path), tmp_path / "logs")
     first = jm.submit("download_yf", [])
