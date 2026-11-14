@@ -1,3 +1,4 @@
+#!/usr/bin/env -S uv run python
 """Exit 0 if the Gateway serves historical data, 1 if it does not.
 
 A bare API handshake succeeds even while the historical-data farm is down, so

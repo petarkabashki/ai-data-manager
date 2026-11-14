@@ -100,6 +100,7 @@ TOOL_LANES: dict[str, str] = {
     "check_splits": "audit",
     "check_twins": "audit",
     "check_adjustment": "audit",
+    "check_rulings": "audit",
     "backup_delta": "backup",
 }
 
@@ -146,7 +147,7 @@ def all_lanes() -> list[str]:
 
 #: Tools whose completion cannot have written bars — skip the disk diff.
 READ_ONLY_TOOLS = {"status", "query", "check_gaps", "check_schema", "check_splits", "check_twins",
-                   "check_adjustment"}
+                   "check_adjustment", "check_rulings"}
 
 TERMINAL = {"succeeded", "failed", "cancelled", "timed_out"}
 

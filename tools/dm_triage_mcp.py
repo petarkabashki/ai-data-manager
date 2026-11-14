@@ -54,5 +54,9 @@ def dm_remediate(name: Literal["ibkr-workers-restart"]) -> str:
     return f"exit {code}: " + (out.getvalue() + err.getvalue()).strip()[-500:]
 
 
-if __name__ == "__main__":
+def main() -> None:
     mcp.run("stdio")
+
+
+if __name__ == "__main__":
+    main()

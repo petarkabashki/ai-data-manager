@@ -23,6 +23,10 @@ first when one is offered.
 | [`delete_stock_bars.py`](#delete_stock_barspy) | writes (with `--apply`) | Delete a date range from stock files, leaving a recorded gap that no download refills |
 | [`flag_unadjusted_splits.py`](#flag_unadjusted_splitspy) | writes catalogs (with `--apply`) | Record IBKR's unadjusted split dates on its catalog nodes (`unadjusted_splits`) |
 | [`check_twins.py`](#check_twinspy) | read-only | Find blocks of crypto bars identical to another venue's (bars from the wrong venue) |
+| [`check_rulings.py`](#check_rulingspy) | read-only (own baseline in `TMP_ROOT`) | Fail when deleted or exchange-empty windows hold rows, or a catalog annotation was lost |
+| [`dm_triage.py`](#dm_triagepy) | writes its own state dir | Data-management alerting: events, dispatch to the triage agent, relay to the owner |
+| [`dm_triage_mcp.py`](#dm_triage_mcppy) | MCP server | The triage agent's two tools: relay and one allow-listed remediation |
+| [`ibkr_hmds_probe.py`](#ibkr_hmds_probepy) | read-only | Does the IBKR Gateway serve historical data right now? |
 | [`fix_daily_stamps.py`](#fix_daily_stampspy) | write | Restamp daily+ bars to 00:00 UTC of their date; drop duplicate dates |
 | [`backup_delta.py`](#backup_deltapy) | write (`.deltas/`, a restore dir) | Row-level backup deltas: export what changed, restore any night |
 | [`download_crypto.py`](#download_cryptopy) | write | Download via freqtrade, merge parquet, update catalog |
@@ -485,6 +489,75 @@ can't stay quiet for good. The file is in git, so the open list is reviewed
 like code, and it doesn't depend on catalog annotations that an IBKR worker on
 old code could drop. Read-only: the fix is a re-download under the owner's
 chosen convention.
+
+## `check_rulings.py`
+
+```
+uv run python tools/check_rulings.py [--against DIR | --accept] [--json]
+```
+
+| Flag | Meaning |
+|---|---|
+| `--against` | Compare annotations with the catalog yamls of a backup directory (`<DIR>/<catalog>.yaml`) instead of the baseline |
+| `--accept` | Take the current annotations as the baseline, after a reviewed, intended removal |
+| `--json` | Emit `{"findings": [...], "note": ...}` |
+
+```bash
+uv run python tools/check_rulings.py
+uv run python tools/check_rulings.py --against tmp/catalog-backup-delete_stock_bars-20261114T010516Z
+```
+
+Fails (exit 1) when a recorded ruling has been undone:
+
+- **rows inside a `deleted_bars.yaml` window**: bars removed on purpose are back;
+- **rows inside an `exchange_empty.yaml` window**: the venue answered empty
+  there, so the record is wrong or the bars came from elsewhere;
+- **a lost annotation**: a `data_flags`, `unadjusted_splits` or
+  `known_adjustment` item in the baseline is missing from its node now. A
+  `bad`/`uncertain` flag whose range a `deleted` flag now covers is the delete
+  path working and does not count.
+
+The baseline (`TMP_ROOT/check_rulings/annotations.json`) is the last clean
+run; a clean run extends it with every new annotation, a run with losses
+leaves it unchanged until `--accept`. A recorded series whose file is missing
+is listed too. Twin blocks are `check_twins.py`'s. PDM runs it in the `audit`
+lane, daily after `check_adjustment`. It came out of the 2026-11-13 incident,
+where a worker on 11-04 code refilled deleted bars and dropped flags.
+
+## `dm_triage.py`
+
+```
+tools/dm_triage.py {emit,pdm-poll,dispatch,relay,remediate} ...
+```
+
+One event format for data-management alerts. `emit` appends an event to the
+spool, `pdm-poll` turns PDM server alerts into events, `dispatch` batches them
+and wakes the triage agent, relaying directly when it stays silent, `relay`
+messages the owner (desktop + Slack webhook) and acknowledges event ids, and
+`remediate` runs one allow-listed fix with a shared cooldown. State lives under
+`$DM_STATE_DIR`; the webhook URL is read from `$DM_SLACK_WEBHOOK_FILE`, never
+from the command line. See the module docstring for event fields.
+
+## `dm_triage_mcp.py`
+
+```
+tools/dm_triage_mcp.py      # stdio MCP server
+```
+
+The triage agent's only tools: `dm_relay` (tell the owner, acknowledge
+events) and `dm_remediate` (one allow-listed fix from `dm_triage.py`). It gets
+these instead of a shell.
+
+## `ibkr_hmds_probe.py`
+
+```
+uv run python tools/ibkr_hmds_probe.py
+```
+
+Asks the Gateway for five days of SPY daily bars with a spare client id (198).
+Exit 0 when bars come back, 1 otherwise. A bare API handshake succeeds while
+the historical-data farm is down, so monitors use this before restarting
+workers.
 
 ## `check_twins.py`
 

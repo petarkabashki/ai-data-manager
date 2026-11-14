@@ -297,6 +297,10 @@ uv run python tools/convert_crypto.py [--exchange X] [--dry-run]
 | `tools/delete_stock_bars.py` | Delete a date range from stored stock files, leaving a recorded gap: originals backed up, the deleted-bars record keeps every writer from refilling it, a revision record per bar, a `deleted` flag on the catalog nodes (dry run by default) |
 | `tools/flag_unadjusted_splits.py` | Write IBKR's unadjusted split dates from a `check_adjustment.py` report to `unadjusted_splits` on its catalog nodes (dry run by default); data unchanged |
 | `tools/check_twins.py` | Find blocks of crypto bars identical (close and volume) to another venue's: bars copied from the wrong venue, never agreement |
+| `tools/check_rulings.py` | Fail when a ruling was undone: rows inside a `deleted_bars.yaml` or `exchange_empty.yaml` window, or a catalog annotation (`data_flags`, `unadjusted_splits`, `known_adjustment`) lost against its baseline; daily under PDM |
+| `tools/dm_triage.py` | Data-management alerting: `emit` events to a spool, `pdm-poll` PDM alerts, `dispatch` to the triage agent with a direct-relay fallback, `relay` to desktop + Slack, `remediate` one allow-listed fix |
+| `tools/dm_triage_mcp.py` | MCP server for the triage agent: `dm_relay` and `dm_remediate` only, no shell |
+| `tools/ibkr_hmds_probe.py` | Exit 0 when the IBKR Gateway serves historical bars (5 days of SPY), 1 when its data farm is down |
 | `tools/fix_daily_stamps.py` | Restamp a provider's daily/weekly/monthly bars to 00:00 UTC of their date and drop duplicate dates, with backups |
 | `tools/backup_delta.py` | Row-level backup deltas: export the rows that changed each night (host), plan, prune and restore from a base plus deltas (hub) |
 | `tools/download_crypto.py` | Download via freqtrade, merge parquet, update YAML metadata |
