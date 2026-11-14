@@ -35,7 +35,7 @@
   review_by: '2026-12-11'
   ref: Product msg_d3d90042
 - file_path: price-data/stocks/ibkr/russell2000/SUNS/SUNS-all-1d.parquet
-  action: 're-fetch the range from IBKR (2024-07-11..2024-08-19, flagged bad); if IBKR still serves bad bars, delete_stock_bars.py with a recorded gap; py-qwant pre-notice first'
+  action: 're-fetch the range from IBKR (2024-07-10..2024-08-19, flagged bad); if IBKR still serves bad bars, delete_stock_bars.py with a recorded gap; py-qwant pre-notice first'
   waits_on: ibkr_restart
   asked: '2026-11-13'
   review_by: '2026-12-11'
@@ -44,55 +44,6 @@
   action: 'check the conid, then re-fetch the whole file (2023-06-12..2026-11-13, flagged bad); if IBKR still serves bad bars, delete_stock_bars.py with a recorded gap; py-qwant pre-notice first'
   waits_on: ibkr_restart
   asked: '2026-11-13'
-  review_by: '2026-12-11'
-  ref: Product msg_d3d90042
-- file_path: price-data/stocks/ibkr/russell2000/BMRC/BMRC-all-1d.parquet
-  split_dates: ['2004-05-25']
-  reason: IBKR split jump; flag with flag_unadjusted_splits after the owner restarts the IBKR workers
-  asked: '2026-11-13'
-  waits_on: ibkr_restart
-  review_by: '2026-12-11'
-  ref: Product msg_d3d90042
-- file_path: price-data/stocks/ibkr/russell2000/CBAN/CBAN-all-1d.parquet
-  split_dates: ['2003-09-16']
-  reason: IBKR split jump; flag with flag_unadjusted_splits after the owner restarts the IBKR workers
-  asked: '2026-11-13'
-  waits_on: ibkr_restart
-  review_by: '2026-12-11'
-  ref: Product msg_d3d90042
-- file_path: price-data/stocks/ibkr/russell2000/IBOC/IBOC-all-1d.parquet
-  split_dates: ['2004-06-01']
-  reason: IBKR split jump; flag with flag_unadjusted_splits after the owner restarts the IBKR workers
-  asked: '2026-11-13'
-  waits_on: ibkr_restart
-  review_by: '2026-12-11'
-  ref: Product msg_d3d90042
-- file_path: price-data/stocks/ibkr/russell2000/LYTS/LYTS-all-1d.parquet
-  split_dates: ['2003-11-17']
-  reason: IBKR split jump; flag with flag_unadjusted_splits after the owner restarts the IBKR workers
-  asked: '2026-11-13'
-  waits_on: ibkr_restart
-  review_by: '2026-12-11'
-  ref: Product msg_d3d90042
-- file_path: price-data/stocks/ibkr/russell2000/MYE/MYE-all-1d.parquet
-  split_dates: ['2002-09-03']
-  reason: IBKR split jump; flag with flag_unadjusted_splits after the owner restarts the IBKR workers
-  asked: '2026-11-13'
-  waits_on: ibkr_restart
-  review_by: '2026-12-11'
-  ref: Product msg_d3d90042
-- file_path: price-data/stocks/ibkr/russell2000/NECB/NECB-all-1d.parquet
-  split_dates: ['2021-07-13']
-  reason: IBKR split jump; flag with flag_unadjusted_splits after the owner restarts the IBKR workers
-  asked: '2026-11-13'
-  waits_on: ibkr_restart
-  review_by: '2026-12-11'
-  ref: Product msg_d3d90042
-- file_path: price-data/stocks/ibkr/russell2000/OVBC/OVBC-all-1d.parquet
-  split_dates: ['2005-05-11']
-  reason: IBKR split jump; flag with flag_unadjusted_splits after the owner restarts the IBKR workers
-  asked: '2026-11-13'
-  waits_on: ibkr_restart
   review_by: '2026-12-11'
   ref: Product msg_d3d90042
 - file_path: price-data/stocks/ibkr/sp500/MNST/MNST-all-1d.parquet
@@ -129,14 +80,7 @@
   verdict: anomaly
   drift: -0.00728
   split_dates: ['2024-07-11']
-  reason: 'artefact of the IBKR bad flag: IBKR is stuck at 11.00 from 2024-07-10, one day before the flagged range; YF''s +25% on 2024-07-11 (listing week) is genuine. Proposed: extend the IBKR SUNS bad range to 2024-07-10..2024-08-19'
+  reason: 'IBKR bad range extended to 2024-07-10..2024-08-19 (2026-11-14); after the IBKR range re-fetch, re-check: if both providers show the +25% on 2024-07-11, record verified_move'
   asked: '2026-11-14'
   review_by: '2026-11-28'
-  ref: Architect -> Product, 2026-11-14 (CRWD drop report)
-- file_path: price-data/stocks/yf/russell2000/HAIN/HAIN-1d.parquet
-  verdict: anomaly
-  drift: -0.0031
-  reason: 'new on 2026-11-14: drift -0.31% over 2000-01-03..2026-11-12, just past DRIFT_TOL 0.003, no steps; proposed: record known (small unexplained, as the 2026-11-13 ruling)'
-  asked: '2026-11-14'
-  review_by: '2026-11-28'
-  ref: Architect -> Product, 2026-11-14 (CRWD drop report)
+  ref: Product msg_cd8ed1ae
