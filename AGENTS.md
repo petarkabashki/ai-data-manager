@@ -300,7 +300,7 @@ uv run python tools/convert_crypto.py [--exchange X] [--dry-run]
 | `tools/download_ibkr_index.py` | Download IBKR intraday index bars (e.g. 1h) for US indices, merged alongside YF's daily data |
 | `tools/retry_ibkr_failed_sequentially.py` | Re-run the symbols an IBKR stock download failed on, one timeframe at a time |
 | `tools/ibkr_progress.py` | One-line status of a running IBKR stock download, read from its progress snapshot |
-| `tools/dedupe_stock_universes.py` | Fold a later stock universe's IBKR files into the universe that already holds the symbol; backs up first, repoints the catalog. Not while workers are on that universe: the catalog lock doesn't cover the files it moves |
+| `tools/dedupe_stock_universes.py` | Fold a later stock universe's IBKR files into the universe that already holds the symbol; backs up first, repoints the catalog; `--drop-conflicts --symbols X` drops a ruled-against conflict copy with a revision record. Not while workers are on that universe: the catalog lock doesn't cover the files it moves |
 | `tools/download_yf.py` | Download Yahoo bars for stock universes, indexes and commodities |
 | `tools/import_futures.py` | Import a bulk per-contract futures archive from any vendor into `futures/<provider>/` |
 | `tools/download_deribit_options.py` | Download Deribit crypto option history (the only venue serving expired options) into `options/<provider>/` |

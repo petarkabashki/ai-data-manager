@@ -997,19 +997,22 @@ are recorded or the run looks stalled, 2 when there is no snapshot.
 ```
 uv run python tools/dedupe_stock_universes.py
     [--universe nasdaq100|russell2000|delisted_stocks] [--symbols SYM...]
-    [--apply] [--backup-dir DIR]
+    [--drop-conflicts [--run-id ID]] [--apply] [--backup-dir DIR]
 ```
 
 | Flag | Meaning |
 |---|---|
 | `--universe` | Later universe to fold into the earlier one that lists the symbol (default `nasdaq100`) |
 | `--symbols` | Limit to these symbols |
+| `--drop-conflicts` | Drop **conflict** copies in favour of the home copy (needs `--symbols`: only after an owner ruling) |
+| `--run-id` | Revision record name for `--drop-conflicts` (default `dedupe-drop-<UTC stamp>`) |
 | `--apply` | Make the changes; without it the tool only prints the plan |
 | `--backup-dir` | Where originals are copied first (default `TMP_ROOT/dedupe_<universe>_<UTC stamp>`) |
 
 ```bash
 uv run python tools/dedupe_stock_universes.py                       # plan
 uv run python tools/dedupe_stock_universes.py --apply --backup-dir /path/to/backup
+uv run python tools/dedupe_stock_universes.py --symbols CRWD --drop-conflicts          # plan the drop
 ```
 
 Do not run it while workers are on that universe: the catalog lock does not cover
@@ -1022,7 +1025,12 @@ the home lacks, or **drop** when the home already has everything. Where both
 carry a row for one timestamp with different values the home's row is kept and the
 count is reported. A file whose two copies sit on **different price scales** (more
 than 5% of shared bars differ in `close` by over 0.5% — a split or spin-off adjusted
-in only one) is a **conflict**: both copies are left untouched and listed. Order per symbol: back up, fold, verify the home holds every
+in only one) is a **conflict**: both copies are left untouched and listed. With
+`--drop-conflicts` the later copy is dropped instead: backed up, every row written
+to the revision record `<data root>/revisions/<run id>.parquet` (action
+`dropped_conflict_copy`, with `row_hash`) and `.yaml`, the catalog nodes
+repointed at the home file with their `data_flags` and `unadjusted_splits`
+removed (they described the dropped copy), then the file deleted. Order per symbol: back up, fold, verify the home holds every
 timestamp, repoint the catalog nodes, then delete. Run it while no IBKR download is
 writing.
 

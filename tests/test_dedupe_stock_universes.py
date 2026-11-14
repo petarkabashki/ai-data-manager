@@ -102,3 +102,63 @@ def test_split_name_handles_sessions():
     assert dd._split_name(Path("AAPL-all-1h.parquet"), "AAPL") == ("all", "1h")
     assert dd._split_name(Path("AAPL-overnight-4h.parquet"), "AAPL") == ("overnight", "4h")
     assert dd._split_name(Path("AAPL-1d.parquet"), "AAPL") == (None, "1d")
+
+
+def _drop_setup(tmp_path, monkeypatch, ohlcv):
+    """A conflict copy under nq/ and its home under sp/, wired into dd's module globals."""
+    import argparse
+    import contextlib
+
+    data = tmp_path / "data"
+    monkeypatch.setattr(dd, "DATA_ROOT", data)
+    monkeypatch.setattr(dd, "relative_to_repo", lambda p: str(Path(p).relative_to(tmp_path)))
+    src = _write(ohlcv(0, 6, HOUR, close=50.0), data / "stocks" / "ibkr" / "nasdaq100" / "A" / "A-all-1h.parquet")
+    dst = _write(ohlcv(0, 6, HOUR, close=12.5), data / "stocks" / "ibkr" / "sp500" / "A" / "A-all-1h.parquet")
+    catalog = {"A": {"timeframe_dates": {"1h": {"IBKR": {
+        "file_path": str(src.relative_to(tmp_path)), "start_date": "x", "end_date": "y", "session": "all",
+        "data_flags": [{"kind": "bad", "from": "2020-01-01", "to": "2020-01-02"}]}}}}}
+    monkeypatch.setattr(dd, "load_stock_catalog", lambda u: catalog)
+    monkeypatch.setattr(dd, "stock_home_universe", lambda s, u, c: "sp500")
+    monkeypatch.setattr(dd, "stock_catalog_txn", lambda u: contextlib.nullcontext(catalog))
+
+    def args(**kw):
+        base = dict(universe="nasdaq100", symbols=["A"], apply=False, backup_dir=tmp_path / "bk",
+                    drop_conflicts=True, run_id="dedupe-drop-test")
+        return argparse.Namespace(**{**base, **kw})
+    return data, src, dst, catalog, args
+
+
+def test_drop_conflicts_dry_run_changes_nothing(tmp_path, monkeypatch, ohlcv):
+    data, src, dst, catalog, args = _drop_setup(tmp_path, monkeypatch, ohlcv)
+    assert dd.run(args()) == 0
+    assert src.exists() and "nasdaq100" in catalog["A"]["timeframe_dates"]["1h"]["IBKR"]["file_path"]
+    assert not (data / "revisions").exists()
+
+
+def test_without_drop_conflicts_a_conflict_is_left_alone(tmp_path, monkeypatch, ohlcv):
+    data, src, dst, catalog, args = _drop_setup(tmp_path, monkeypatch, ohlcv)
+    assert dd.run(args(apply=True, drop_conflicts=False)) == 0
+    assert src.exists() and "data_flags" in catalog["A"]["timeframe_dates"]["1h"]["IBKR"]
+
+
+def test_drop_conflicts_backs_up_records_repoints_and_removes(tmp_path, monkeypatch, ohlcv):
+    data, src, dst, catalog, args = _drop_setup(tmp_path, monkeypatch, ohlcv)
+    original = pd.read_parquet(src)
+    assert dd.run(args(apply=True)) == 0
+
+    assert not src.exists() and not src.parent.exists()
+    assert len(pd.read_parquet(dst)) == 6 and pd.read_parquet(dst)["close"].eq(12.5).all(), "home untouched"
+    backup = tmp_path / "bk" / "stocks" / "ibkr" / "nasdaq100" / "A" / "A-all-1h.parquet"
+    pd.testing.assert_frame_equal(pd.read_parquet(backup), original)
+    record = pd.read_parquet(data / "revisions" / "dedupe-drop-test.parquet")
+    assert len(record) == 6 and set(record["action"]) == {"dropped_conflict_copy"}
+    assert record["close"].eq(50.0).all() and record["row_hash"].str.len().eq(64).all()
+    node = catalog["A"]["timeframe_dates"]["1h"]["IBKR"]
+    assert node["file_path"] == str(dst.relative_to(tmp_path))
+    assert "data_flags" not in node and node["start_date"] != "x"
+
+
+def test_drop_conflicts_needs_symbols():
+    import pytest
+    with pytest.raises(SystemExit):
+        dd.main(["--drop-conflicts"])

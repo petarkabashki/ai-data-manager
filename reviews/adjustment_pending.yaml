@@ -125,9 +125,3 @@
   asked: '2026-11-14'
   review_by: '2026-12-11'
   ref: Product msg_8d8c24b1
-- file_path: price-data/stocks/ibkr/nasdaq100/CRWD/CRWD-all-1d.parquet
-  action: 'owner decides whether to delete the stray ibkr/nasdaq100/CRWD copy (1d 1h 4h 8h; flagged bad before 2026-06-15, 4x pre-split scale) and point nasdaq100 at ibkr/sp500/CRWD'
-  waits_on: owner_crwd_dedupe
-  asked: '2026-11-14'
-  review_by: '2026-11-28'
-  ref: Product msg_8d8c24b1
