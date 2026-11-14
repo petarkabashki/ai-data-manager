@@ -553,6 +553,25 @@ def chunk_days_for_timeframe(timeframe: str, configured: int | None = None) -> i
         raise ValueError(f"No default chunk size for timeframe {timeframe!r}") from exc
 
 
+DATE_LABELLED_TIMEFRAMES = {"1d", "1w"}
+
+
+def chunk_filter_start_ms(chunk_start: datetime, timeframe: str) -> int:
+    """Lower bound for keeping a chunk's bars.
+
+    Daily and weekly bars are stamped at 00:00 UTC of their date, so a chunk
+    starting at 01:30 UTC would drop that day's bar even though IBKR returned
+    it (a "365 D" request covers 365 trading days, well past the chunk start),
+    and the previous chunk ends before the bar closes. That lost one daily bar
+    per chunk boundary on every multi-chunk 1d fetch. Floor to the UTC day;
+    overlapping bars are dropped as duplicates when chunks are merged.
+    """
+    ms = int(chunk_start.timestamp() * 1000)
+    if timeframe in DATE_LABELLED_TIMEFRAMES:
+        ms -= ms % 86_400_000
+    return ms
+
+
 def ibkr_duration_str(chunk_start: datetime, chunk_end: datetime) -> str:
     """IBKR `durationStr` for a window, in days or whole years."""
     return duration_days_or_years(chunk_start, chunk_end)
@@ -659,7 +678,7 @@ def download_ranges(
 
             df = bars_to_dataframe(bars)
             if not df.empty:
-                start_ms = int(chunk_start.timestamp() * 1000)
+                start_ms = chunk_filter_start_ms(chunk_start, timeframe)
                 end_ms = int(chunk_end.timestamp() * 1000)
                 df = df[(df["timestamp"] >= start_ms) & (df["timestamp"] <= end_ms)]
                 if post_filter is not None and not df.empty:

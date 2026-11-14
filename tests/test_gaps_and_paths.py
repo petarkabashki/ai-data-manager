@@ -184,3 +184,16 @@ def test_read_timestamp_bounds(tmp_path, ohlcv):
     path = _write(tmp_path, ohlcv, start_ms=0, n=5)
     assert read_timestamp_bounds(path) == (0, 4 * DAY)
     assert read_timestamp_bounds(tmp_path / "nope.parquet") is None
+
+
+def test_chunk_filter_keeps_the_daily_bar_at_a_chunk_boundary():
+    from datetime import datetime, timezone
+
+    from utils.ibkr import chunk_filter_start_ms
+
+    start = datetime(2025, 11, 14, 1, 30, tzinfo=timezone.utc)
+    day = int(datetime(2025, 11, 14, tzinfo=timezone.utc).timestamp() * 1000)
+    assert chunk_filter_start_ms(start, "1d") == day
+    assert chunk_filter_start_ms(start, "1w") == day
+    # Intraday bars carry their real open time: keep the exact bound.
+    assert chunk_filter_start_ms(start, "1h") == int(start.timestamp() * 1000)
