@@ -919,7 +919,7 @@ uv run python tools/download_ibkr_stock_overnight.py --universe UNIV... [UNIV...
     [--symbols SYM...] [--timeframes TF...] [--since DATE] [--full]
     [--host H] [--port P] [--client-id N] [--chunk-days N] [--overlap-days N]
     [--what-to-show TRADES|ADJUSTED_LAST] [--use-rth auto|always|never]
-    [--session all|overnight] [--no-share]
+    [--session all|overnight] [--no-share] [--replace]
     [--sleep-seconds S] [--request-timeout S] [--max-chunk-retries N]
     [--limit N] [--resume-log PATH] [--progress-file PATH] [--dry-run]
 ```
@@ -932,6 +932,7 @@ uv run python tools/download_ibkr_stock_overnight.py --universe UNIV... [UNIV...
 | `--timeframes` | `1h 4h 8h 1d 1w`, default `1h 4h` |
 | `--since` | Start date for new symbols / full refresh |
 | `--full` | Ignore existing files, rebuild from `--since` (requires `--since`) |
+| `--replace` | With `--full --since D`: stored rows from `D` on are **replaced** by the download instead of merged with it, so no bar survives on a pre-split price scale. Backs each file up to `TMP_ROOT/ibkr_replace_backup_<stamp>/` first; refuses (no write, listed as a failure) an empty download, one that starts more than 7 days after the stored span, or one missing more than 2% of the stored span's rows. Prints rows before/after, changed closes, lost and added rows per file, and writes `TMP_ROOT/ibkr_replace_report_<stamp>.json`. With `--dry-run` it downloads and reports only |
 | `--host` / `--port` / `--client-id` | TWS/Gateway connection (defaults `127.0.0.1:7497`, client id `73`) |
 | `--chunk-days` | Historical-request chunk size; default adapts per timeframe (`1h`→365d, `4h`/`8h`→730d, `1d`→365d, `1w`→3650d) |
 | `--overlap-days` | Overlap window when appending (default 5) |
@@ -958,6 +959,10 @@ uv run python tools/download_ibkr_stock_overnight.py \
 # Resume/fill only missing 8h + 1d bars
 uv run python tools/download_ibkr_stock_overnight.py \
   --universe nasdaq100 --timeframes 8h 1d --since 2020-01-01 --port 4001
+
+# Replace a file with a split seam (whole file: --since before its first bar); dry run first
+uv run python tools/download_ibkr_stock_overnight.py \
+  --universe sp500 --symbols MNST --timeframes 1d --full --since 1990-01-01 --replace --dry-run
 ```
 
 Requires TWS or IB Gateway running first, pointed at by `--host`/`--port`.

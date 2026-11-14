@@ -156,7 +156,10 @@ def is_date_labelled(path: Path | str) -> bool:
     return any(Path(path).name.endswith(f"-{tf}.parquet") for tf in DATE_LABELLED_TIMEFRAMES)
 
 
-def merge_ohlcv_parquet(src: pd.DataFrame | Path | str, dst: Path, daily: bool | None = None) -> tuple[int, int]:
+def merge_ohlcv_parquet(
+    src: pd.DataFrame | Path | str, dst: Path, daily: bool | None = None,
+    replace_from: int | None = None,
+) -> tuple[int, int]:
     """Merge OHLCV data into `dst`, returning (rows_before, rows_after).
 
     Both sides are normalized to the canonical schema first, concatenated,
@@ -171,6 +174,12 @@ def merge_ohlcv_parquet(src: pd.DataFrame | Path | str, dst: Path, daily: bool |
 
     Rows inside a window of the deleted-bars record (`utils/deleted_bars.py`)
     are dropped, so a deleted range can't be refilled by any downloader.
+
+    `replace_from` (epoch ms) makes it a replace from that bar on: stored rows
+    at or after it are dropped before the merge, so only `src` speaks there.
+    A plain merge keeps stored rows the source no longer serves, which after
+    a split leaves them on the old price scale. A `replace_from` before the
+    first stored bar rebuilds the file from `src` alone.
     """
     if daily is None:
         daily = is_date_labelled(dst)
@@ -184,6 +193,8 @@ def merge_ohlcv_parquet(src: pd.DataFrame | Path | str, dst: Path, daily: bool |
         if daily:
             old_df = old_df.assign(timestamp=date_label_ms(old_df["timestamp"]))
         old_rows = len(old_df)
+        if replace_from is not None:
+            old_df = old_df[old_df["timestamp"] < int(replace_from)]
         merged = (
             pd.concat([old_df, new_df])
             .drop_duplicates(subset=["timestamp"], keep="last")
@@ -192,13 +203,50 @@ def merge_ohlcv_parquet(src: pd.DataFrame | Path | str, dst: Path, daily: bool |
         )
     else:
         old_rows = 0
-        merged = new_df
+        merged = new_df.drop_duplicates(subset=["timestamp"], keep="last").sort_values("timestamp") \
+            .reset_index(drop=True)
 
     # Bars deleted on purpose (utils/deleted_bars.py) stay out, whoever serves them.
     from utils.deleted_bars import drop_deleted
     merged = drop_deleted(merged, dst)
     write_parquet_atomic(merged, dst)
     return old_rows, len(merged)
+
+
+def replace_report(new: pd.DataFrame, dst: Path, replace_from: int, daily: bool | None = None) -> dict:
+    """What `merge_ohlcv_parquet(new, dst, replace_from=...)` would change, without writing.
+
+    rows_before/rows_after for the file; in the replaced span: stored rows,
+    downloaded rows, rows only the old file has (lost), rows only the download
+    has (added), rows on both sides whose close differs by more than 0.01%
+    (changed), and the first stored and first downloaded bar.
+    """
+    from utils.deleted_bars import drop_deleted
+    if daily is None:
+        daily = is_date_labelled(dst)
+    new_df = normalize_ohlcv(new)
+    if daily:
+        new_df = new_df.assign(timestamp=date_label_ms(new_df["timestamp"]))
+    new_df = drop_deleted(new_df.drop_duplicates(subset=["timestamp"], keep="last"), dst)
+    old_df = normalize_ohlcv(pd.read_parquet(dst)) if Path(dst).exists() else new_df.iloc[0:0]
+    if daily:
+        old_df = old_df.assign(timestamp=date_label_ms(old_df["timestamp"]))
+    keep = old_df[old_df["timestamp"] < int(replace_from)]
+    span = old_df[old_df["timestamp"] >= int(replace_from)]
+    both = span.merge(new_df[["timestamp", "close"]], on="timestamp", suffixes=("_old", "_new"))
+    changed = int(((both["close_new"] - both["close_old"]).abs()
+                   > 1e-4 * both["close_old"].abs()).sum())
+    after = len(set(keep["timestamp"]) | set(new_df["timestamp"]))
+    first = lambda df: (int(df["timestamp"].min()) if len(df) else None)  # noqa: E731
+    return {
+        "path": str(dst), "replace_from": int(replace_from),
+        "rows_before": len(old_df), "rows_after": after,
+        "span_old": len(span), "span_new": len(new_df),
+        "lost": int((~span["timestamp"].isin(new_df["timestamp"])).sum()),
+        "added": int((~new_df["timestamp"].isin(span["timestamp"])).sum()),
+        "changed": changed,
+        "first_old": first(span), "first_new": first(new_df),
+    }
 
 
 def _datetime_to_ms_int64(s: pd.Series) -> pd.Series:

@@ -7,6 +7,10 @@ Usage examples:
   uv run python tools/download_ibkr_stock_overnight.py --universe nasdaq100 --symbols AAPL MSFT NVDA --full --timeframes 1h
 
   uv run python tools/download_ibkr_stock_overnight.py --universe sp500 nasdaq100 --limit 25 --sleep-seconds 0.5
+
+  # replace, not merge, from --since on (a split seam on the old scale); dry run first
+  uv run python tools/download_ibkr_stock_overnight.py --universe sp500 --symbols MNST --timeframes 1d \\
+      --full --since 2000-01-01 --replace --dry-run
 """
 
 from __future__ import annotations
@@ -34,6 +38,7 @@ from utils.catalog import (
     PendingStockWrites,
     load_stock_catalog,
     merge_ohlcv_parquet,
+    replace_report,
     read_parquet_range,
     stock_file_path,
     stock_home_universe,
@@ -214,6 +219,46 @@ def _resolve_use_rth(mode: str, timeframe: str) -> bool:
     return timeframe in ("1d", "1w")
 
 
+#: --replace refuses when the download starts this much later than the stored span ...
+REPLACE_MAX_LATE_START = timedelta(days=7)
+#: ... or when more than this share of the stored span's rows would go unreplaced.
+REPLACE_MAX_LOST = 0.02
+
+
+def replace_refusal(report: dict) -> str | None:
+    """Why a replace must not be written, or None. A short or late download must
+    never shrink a file: it would drop history IBKR still holds but did not send."""
+    if report["span_new"] == 0:
+        return "download is empty"
+    if report["first_old"] is not None and report["first_new"] is not None and \
+            report["first_new"] - report["first_old"] > REPLACE_MAX_LATE_START.total_seconds() * 1000:
+        return (f"download starts {dt_from_ms(report['first_new']).date()}, stored span "
+                f"{dt_from_ms(report['first_old']).date()} (> {REPLACE_MAX_LATE_START.days} days later)")
+    if report["span_old"] and report["lost"] > REPLACE_MAX_LOST * report["span_old"]:
+        return (f"{report['lost']} of {report['span_old']} stored rows are not in the download "
+                f"(> {REPLACE_MAX_LOST:.0%})")
+    return None
+
+
+def format_replace(report: dict) -> str:
+    return (f"rows {report['rows_before']} -> {report['rows_after']}; replaced span "
+            f"{report['span_old']} stored / {report['span_new']} downloaded, "
+            f"{report['changed']} changed close, {report['lost']} lost, {report['added']} added")
+
+
+def backup_before_replace(dst: Path, backup_dir: Path, data_root: Path | None = None) -> Path:
+    """Copy `dst` under `backup_dir`, keeping its path below the data root."""
+    import shutil
+    try:
+        rel = dst.resolve().relative_to((data_root or DATA_ROOT).resolve())
+    except ValueError:
+        rel = Path(dst.name)
+    target = backup_dir / rel
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(dst, target)
+    return target
+
+
 def _stop_for_code_change(args: argparse.Namespace, progress_state: dict) -> None:
     """Record why the run stops; the catalog flush happens as the `with` unwinds."""
     progress_state.update({"status": "code_changed", "updated_at": utc_now().isoformat()})
@@ -232,6 +277,11 @@ def main() -> None:
     p.add_argument("--since", help="Start date for new symbols or full refreshes (YYYY-MM-DD)")
     p.add_argument("--full", action="store_true",
                    help="Ignore existing intraday files and rebuild from --since")
+    p.add_argument("--replace", action="store_true",
+                   help="With --full and --since: stored rows from --since on are replaced by the "
+                        "download, not merged with it (a split seam on the old price scale). "
+                        "Backs the file up first, refuses a short or late download, prints "
+                        "rows before/after; with --dry-run prints that report only")
     p.add_argument("--no-share", action="store_true",
                    help="Keep files under the requested universe even when an earlier universe "
                         "(sp500 before nasdaq100) already lists the symbol")
@@ -281,6 +331,12 @@ def main() -> None:
     p.add_argument("--dry-run", action="store_true",
                    help="Show what would be downloaded without writing files or catalogs")
     args = p.parse_args()
+    if args.replace and not (args.full and args.since):
+        p.error("--replace needs --full and --since (the first bar to replace)")
+    replace_from = (int(pd.Timestamp(args.since, tz="UTC").value // 1_000_000)
+                    if args.replace else None)
+    replace_backup = TMP_ROOT / f"ibkr_replace_backup_{utc_now():%Y%m%dT%H%M%SZ}"
+    replace_rows: list[dict] = []
 
     if args.progress_file is None:
         args.progress_file = progress_file_for(args.timeframes, args.session)
@@ -398,7 +454,8 @@ def main() -> None:
                         # tighter than IBKR's head timestamp, which is not per bar size.
                         tf_earliest = hints.floor.get(f"{symbol}/{timeframe}") or earliest
                         ranges = trim_redundant_ranges(
-                            clip_ranges_to_earliest(ranges, tf_earliest), dst, args.refresh_hours
+                            clip_ranges_to_earliest(ranges, tf_earliest), dst,
+                            0 if args.replace else args.refresh_hours,  # a replace needs every bar
                         )
                         chunk_days = chunk_days_for_timeframe(timeframe, args.chunk_days)
                         if not ranges:
@@ -464,6 +521,19 @@ def main() -> None:
                                 else None
                             ),
                         )
+                        report = None
+                        if args.replace:
+                            report = replace_report(df, dst, replace_from) if dst.exists() else None
+                            refusal = replace_refusal(report) if report else (
+                                "download is empty" if df.empty else None)
+                            line = format_replace(report) if report else f"new file, {len(df)} rows"
+                            print(f"    replace {'[dry-run] ' if args.dry_run else ''}{line}"
+                                  + (f"; REFUSED: {refusal}" if refusal else ""))
+                            replace_rows.append({"symbol": symbol, "timeframe": timeframe,
+                                                 "refused": refusal, **(report or {"path": str(dst)})})
+                            if refusal:
+                                overall_failures.append((universe, symbol, f"{timeframe}: replace refused: {refusal}"))
+                                continue
                         if df.empty:
                             completed_items += 1
                             progress_state.update({
@@ -504,7 +574,10 @@ def main() -> None:
                             _write_progress_file(args.progress_file, progress_state)
                             continue
 
-                        old_rows, new_rows = merge_ohlcv_parquet(df, dst)
+                        if args.replace and dst.exists():
+                            saved = backup_before_replace(dst, replace_backup)
+                            print(f"    backup {relative_to_repo(saved)}")
+                        old_rows, new_rows = merge_ohlcv_parquet(df, dst, replace_from=replace_from)
                         result = read_parquet_range(dst)
                         if result is None:
                             raise RuntimeError(f"Could not read back merged parquet {dst}")
@@ -643,6 +716,14 @@ def main() -> None:
         "updated_at": utc_now().isoformat(),
     })
     _write_progress_file(args.progress_file, progress_state)
+    if replace_rows:
+        out = TMP_ROOT / f"ibkr_replace_report_{utc_now():%Y%m%dT%H%M%SZ}.json"
+        _ensure_parent(out)
+        out.write_text(json.dumps({"dry_run": args.dry_run, "since": args.since,
+                                   "backup_dir": None if args.dry_run else str(replace_backup),
+                                   "files": replace_rows}, indent=2))
+        print(f"\nreplace report: {relative_to_repo(out)}")
+
     print("\nSummary")
     print(f"  updated timeframes: {overall_updates}")
     print(f"  failures: {len(overall_failures)}")
