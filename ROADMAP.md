@@ -735,6 +735,21 @@ listing, kept current by the nightly schedules. Approved by the owner
   download in July (an external `ai-quant` script in April-May wrote binance
   spot only). So the writer of the 2026-07-02 to 07-26 blocks is unknown and
   could recur; the twin check below is the guard.
+  **Status 2026-11-14:** the twin repair is complete above 24 bars
+  (2026-11-13, check_twins 0 blocks). Sub-threshold residue was found
+  2026-11-14 and is being removed: kucoin spot 1w, 116 Monday-grid copies
+  of binance perps (2026-06-29 to 07-20) plus 98 UXLINK rows resampled from
+  our own 1d (pair delisted at kucoin); bybit perps 1d 232 and 1w 90;
+  bitget spot 1w 42. The lowered sweep (every venue pair, 15m-1w) also
+  found binance perps bars in binance spot 3d (22 files, 204 bars,
+  2026-06-28 to 07-22), binance spot 15m (9 files, 99 bars,
+  2024-08-07 21:00-23:45 UTC, the YF seam's date too: probable
+  bulk/incremental boundary, unproven), kucoin spot ADA 15m (1,500 bars,
+  2025-02), bybit spot LTC 15m (4) and
+  STG 1w in binance spot and bybit perps; 0 blocks at 1h-12h except three
+  scattered chance singles. check_twins now calls 3 equal bars in a row a
+  block at every timeframe (24 scattered as a backstop) and scans 15m; the
+  merge refuses crypto 1w rows off the venue's weekly grid.
   Delete tool requirements (py-qwant via Product, 2026-11-11): the dry run
   prints exact ranges per venue, series and timeframe; the real run writes
   every deleted and later refetched row to the revision record with old and

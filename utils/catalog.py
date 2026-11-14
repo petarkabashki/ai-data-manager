@@ -178,11 +178,44 @@ def one_row_per_week(df: pd.DataFrame) -> pd.DataFrame:
 def is_one_per_week(path: Path | str) -> bool:
     """IBKR weekly files keep one row per week (owner decision 2026-11-14).
 
-    Other providers' 1w files are only reported (tools/check_weekly_rows.py)
-    until a fix there is decided.
+    Other providers' 1w files are only reported
+    (`tools/dedupe_weekly_bars.py --report-only`) until a fix there is decided.
     """
     path = Path(path)
     return path.name.endswith("-1w.parquet") and "ibkr" in path.parts
+
+
+#: Weekday a crypto venue opens its weekly bar on (0 = Monday), at 00:00 UTC.
+#: KuCoin spot bars are epoch-aligned (Thursday); every other venue stored
+#: here, KuCoin perps included, opens on Monday (host scan 2026-11-14).
+CRYPTO_WEEK_OPEN = {("cryptos", "kucoin"): 3}
+CRYPTO_ROOTS = ("cryptos", "crypto-futures")
+
+
+def crypto_week_open(path: Path | str) -> int | None:
+    """Weekday a crypto 1w file's bars must open on, or None for other files."""
+    path = Path(path)
+    if not path.name.endswith("-1w.parquet"):
+        return None
+    parts = path.parts
+    for i, part in enumerate(parts[:-3]):
+        if part in CRYPTO_ROOTS:
+            return CRYPTO_WEEK_OPEN.get((part, parts[i + 1]), 0)
+    return None
+
+
+def off_week_grid(df: pd.DataFrame, path: Path | str) -> pd.Series:
+    """Rows of a crypto 1w frame that are not on the venue's weekly grid.
+
+    A Monday-anchored row in a KuCoin spot file is another venue's bar or a
+    resample of our own 1d (both found 2026-11-14), never KuCoin's.
+    """
+    weekday = crypto_week_open(path)
+    if weekday is None or df.empty:
+        return pd.Series(False, index=df.index)
+    ts = df["timestamp"].astype("int64")
+    day = ts // 86_400_000
+    return (ts % 86_400_000 != 0) | ((day + 3) % 7 != weekday)
 
 
 def merge_ohlcv_parquet(
@@ -215,6 +248,10 @@ def merge_ohlcv_parquet(
     new_df = normalize_ohlcv(src if isinstance(src, pd.DataFrame) else pd.read_parquet(src))
     if daily:
         new_df = new_df.assign(timestamp=date_label_ms(new_df["timestamp"]))
+    off = off_week_grid(new_df, dst)
+    if off.any():  # never write a bar the venue can't have served
+        print(f"merge: dropped {int(off.sum())} row(s) off {Path(dst).name}'s weekly grid", file=sys.stderr)
+        new_df = new_df[~off]
 
     dst = Path(dst)
     if dst.exists():

@@ -71,17 +71,18 @@ def test_a_block_copied_from_another_venue_is_found_with_its_extent(root):
     assert by_pair[("binance-perps", "bitget-spot")].bars == 30
 
 
-def test_fewer_than_min_bars_or_untraded_bars_do_not_count(root):
+def test_scattered_or_untraded_equal_bars_do_not_count(root):
     a = bars(100, 1.0)
     b = bars(100, 2.0)
-    b.loc[0:22, ["close", "volume"]] = a.loc[0:22, ["close", "volume"]].to_numpy()  # 23 bars
+    b.loc[0:45:2, ["close", "volume"]] = a.loc[0:45:2, ["close", "volume"]].to_numpy()  # 23, none adjacent
     # 40 more bars equal but with zero volume on both sides: a flat, untraded stretch.
     a.loc[50:89, ["close", "volume"]] = [5.0, 0.0]
     b.loc[50:89, ["close", "volume"]] = [5.0, 0.0]
-    write(root, "cryptos", "binance", "X_USDT", "1d", a)
-    write(root, "cryptos", "bybit", "X_USDT", "1d", b)
-    assert check_twins.scan(root, ["1d"])[0] == []
-    assert check_twins.scan(root, ["1d"], min_bars=23)[0][0].bars == 23
+    write(root, "cryptos", "binance", "X_USDT", "1h", a)
+    write(root, "cryptos", "bybit", "X_USDT", "1h", b)
+    assert check_twins.scan(root, ["1h"])[0] == []
+    assert check_twins.scan(root, ["1h"], min_bars=23)[0][0].bars == 23
+    assert check_twins.scan(root, ["1h"], min_run=1)[0][0].run == 1
 
 
 def test_known_blocks_are_reported_apart_and_do_not_fail_until_they_grow(root, monkeypatch, capsys):
@@ -125,3 +126,19 @@ def test_a_clean_root_exits_zero_and_says_so(root, monkeypatch, capsys):
 def test_record_refuses_a_partial_scan(root, monkeypatch, capsys):
     with pytest.raises(SystemExit):
         run(monkeypatch, capsys, "--record", "--symbol", "BTC_USDT")
+
+
+def test_three_copied_bars_in_a_row_are_a_block_at_any_timeframe(root):
+    week = 7 * 86_400_000
+    binance = bars(30, 1.0, step_ms=week)
+    kucoin = bars(30, 2.0, step_ms=week)
+    kucoin.loc[10:12, ["close", "volume"]] = binance.loc[10:12, ["close", "volume"]].to_numpy()
+    write(root, "crypto-futures", "binance", "AAVE_USDT", "1w", binance)
+    write(root, "cryptos", "kucoin", "AAVE_USDT", "1w", kucoin)
+    write(root, "crypto-futures", "binance", "AAVE_USDT", "1h", binance.assign(timestamp=binance.timestamp // 168))
+    write(root, "cryptos", "kucoin", "AAVE_USDT", "1h", kucoin.assign(timestamp=kucoin.timestamp // 168))
+    blocks, _ = check_twins.scan(root, ["1h", "1w"])
+    assert sorted((b.timeframe, b.bars, b.run) for b in blocks) == [("1h", 3, 3), ("1w", 3, 3)]
+    kucoin.loc[11, "volume"] += 1  # bars 10 and 12 still equal, but not in a row
+    write(root, "cryptos", "kucoin", "AAVE_USDT", "1w", kucoin)
+    assert check_twins.scan(root, ["1w"])[0] == []

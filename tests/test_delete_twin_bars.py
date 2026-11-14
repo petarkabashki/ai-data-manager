@@ -163,3 +163,48 @@ def test_off_anchor_bars_go_with_a_backup_and_record(root):
 def test_no_anchor_majority_deletes_nothing():
     ts = pd.Series([0, 86_400_000, 3 * 86_400_000, 4 * 86_400_000])
     assert not dtb.off_anchor_rows(ts, 3 * 86_400_000).any()
+
+
+def test_a_crypto_weekly_file_keeps_its_venue_grid_even_when_strays_are_the_majority(root):
+    """kucoin spot weeks open on Thursday; 5 Monday rows beside 2 Thursday bars go, not the reverse."""
+    day = 86_400_000
+    mon = 4 * day  # 1970-01-05 was a Monday
+    frame = bars(7, 1.0)
+    frame["timestamp"] = [mon + i * 7 * day for i in range(5)] + [70 * day, 77 * day]  # Thursdays
+    write(root, "cryptos", "kucoin", "UXLINK_USDT", "1w", frame)
+    spans = dtb.plan_off_anchor(root, "kucoin-spot", ["1w"])
+    assert [s.first for s in spans] == frame["timestamp"].iloc[:5].tolist()
+
+
+def test_not_served_bars_go_on_the_exchange_empty_record_with_the_reason(root, copied, tmp_path):
+    path, _ = copied
+    dtb.main(["--exchange", "bybit", "--trading-mode", "futures", "--apply", "--backup-dir", str(tmp_path / "b")])
+    run_id = next((root / "revisions").glob("*.parquet")).stem
+    refill = bars(300, 9.0).loc[100:149]  # the venue serves 50; 150-159 stay empty
+    pd.concat([pd.read_parquet(path), refill]).sort_values("timestamp").to_parquet(path, index=False)
+    # The fill already recorded 155-159 as empty, without a reason.
+    from utils.exchange_empty import ExchangeEmptyRecord
+    rec = ExchangeEmptyRecord(root / "exchange_empty.yaml")
+    rec.add(path, 155 * HOUR, 159 * HOUR, 5)
+    rec.save()
+
+    result = dtb.log_refill(root, run_id, empty_reason="binance-perps copy deleted; venue serves no bar")
+    assert result["not_served"] == 10 and result["empty_windows"] == 1
+    windows = ExchangeEmptyRecord(root / "exchange_empty.yaml").windows(path)
+    reason = "binance-perps copy deleted; venue serves no bar"
+    assert [(w["start_ms"] // HOUR, w["end_ms"] // HOUR, w.get("reason")) for w in windows] == [
+        (150, 154, reason), (155, 159, reason)]
+
+
+def test_deleted_reason_records_runs_split_around_kept_rows(root, tmp_path):
+    day = 86_400_000
+    frame = bars(7, 1.0)
+    # Monday rows 0,1 | Thursday bar | Monday rows 3..5 | Thursday bar
+    frame["timestamp"] = [4 * day, 11 * day, 14 * day, 18 * day, 25 * day, 32 * day, 35 * day]
+    path = write(root, "cryptos", "kucoin", "UXLINK_USDT", "1w", frame)
+    spans = dtb.plan_off_anchor(root, "kucoin-spot", ["1w"])
+    dtb.apply(root, spans, "run", tmp_path / "bk", {}, deleted_reason="delisted resample")
+    from utils import deleted_bars
+    windows = deleted_bars.windows(path, root / "deleted_bars.yaml")
+    assert [(w["start_ms"] // day, w["end_ms"] // day, w["rows"]) for w in windows] == [(4, 11, 2), (18, 32, 3)]
+    assert pd.read_parquet(path)["timestamp"].tolist() == [14 * day, 35 * day]

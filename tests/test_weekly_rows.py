@@ -91,3 +91,16 @@ def test_dedupe_tool_refuses_a_universe_with_a_running_download(tmp_path, monkey
     monkeypatch.setattr(dwb, "running_universes", lambda: {"russell2000"})
     assert dwb.main(["--data-root", str(tmp_path), "--apply", "--backup-dir", str(tmp_path / "b")]) == 2
     assert len(pd.read_parquet(dst)) == 2
+
+
+def test_crypto_weekly_merge_refuses_rows_off_the_venue_grid(tmp_path):
+    thu = MON + 3  # KuCoin spot weeks open on Thursday (epoch-aligned)
+    kucoin = tmp_path / "cryptos" / "kucoin" / "AAVE_USDT" / "AAVE_USDT-1w.parquet"
+    merge_ohlcv_parquet(frame((thu, 10.0), (MON + 7, 99.0), (thu + 7, 11.0)), kucoin)
+    assert list(pd.read_parquet(kucoin)["timestamp"]) == [thu * DAY, (thu + 7) * DAY]
+    perps = tmp_path / "crypto-futures" / "kucoin" / "AAVE_USDT" / "AAVE_USDT-1w.parquet"
+    merge_ohlcv_parquet(frame((MON, 10.0), (thu, 99.0)), perps)  # perps open on Monday
+    assert list(pd.read_parquet(perps)["timestamp"]) == [MON * DAY]
+    daily = tmp_path / "cryptos" / "kucoin" / "AAVE_USDT" / "AAVE_USDT-1d.parquet"
+    merge_ohlcv_parquet(frame((MON, 10.0), (thu, 11.0)), daily)  # other timeframes untouched
+    assert len(pd.read_parquet(daily)) == 2

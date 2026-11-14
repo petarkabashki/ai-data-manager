@@ -34,6 +34,14 @@ After the refill, `--log-refill <run id>` adds to that record one row per
 deleted bar with what the file holds now: `refetched` with the new values
 and hash, or `not_served` when the venue has no bar there. Then run
 `check_twins.py --record` so the known list shrinks to what remains.
+With `--empty-reason TEXT` the `not_served` bars also go on the exchange-empty
+record with that reason (a window the fill already wrote just gets the
+reason), so check_rulings guards them and nothing refills them from elsewhere.
+
+`--deleted-reason TEXT` with `--apply` records each run of deleted rows in the
+deleted-bars record (`utils/deleted_bars.py`), split around the rows that stay,
+so the merge never writes them back: for bars the venue can't serve again
+(a delisted pair).
 
 Rule (product rule, 2026-11-12): a bar the venue doesn't serve stays a
 recorded gap (`not_served` here, the exchange-empty record for the fill),
@@ -48,7 +56,10 @@ Usage examples:
 
 `--off-anchor` instead deletes the bars of a file that sit off the anchor most
 of its bars share (e.g. two 3d bars a day off bitget's grid, left at the edges
-of a deleted span). The refill measures a hole from its stored neighbours, so
+of a deleted span). A crypto 1w file is held to its venue's known weekly grid
+(`utils.catalog.crypto_week_open`) instead of the majority, so a file that is
+mostly off-grid rows (kucoin UXLINK, 98 Monday rows beside 4 Thursday bars)
+loses the off-grid rows, not the venue's own. The refill measures a hole from its stored neighbours, so
 one such bar makes the venue's own bars look off-grid and the fill refuses
 them. Same dry run, backup, revision record and `--log-refill`; no source.
 """
@@ -69,8 +80,13 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from utils.catalog import CRYPTO_EXCHANGES, TF_TO_MS, refresh_dates_for_files, write_parquet_atomic  # noqa: E402
+from utils import deleted_bars  # noqa: E402
+from utils.catalog import (  # noqa: E402
+    CRYPTO_EXCHANGES, TF_TO_MS, crypto_week_open, off_week_grid, refresh_dates_for_files, write_parquet_atomic,
+)
 from utils.config import DATA_ROOT  # noqa: E402
+from utils.exchange_empty import RECORD_NAME as EMPTY_RECORD  # noqa: E402
+from utils.exchange_empty import ExchangeEmptyRecord, bar_runs, split_bars  # noqa: E402
 from utils.report import allow_broken_pipe, print_table  # noqa: E402
 
 SUBDIRS = {"spot": "cryptos", "perps": "crypto-futures"}
@@ -197,9 +213,13 @@ def plan_off_anchor(data_root: Path, target: str, timeframes: list[str],
         symbol, timeframe = stem.rsplit("-", 1)
         if timeframe not in wanted or (symbols and symbol not in symbols) or not TF_TO_MS.get(timeframe):
             continue
-        ts = pd.read_parquet(file, columns=["timestamp"])["timestamp"]
+        frame = pd.read_parquet(file, columns=["timestamp"])
+        ts = frame["timestamp"]
         rel = str(file.relative_to(data_root))
-        for t in ts[off_anchor_rows(ts, TF_TO_MS[timeframe])]:
+        # The venue's weekly grid is known: never let a majority of strays redefine it.
+        off = off_week_grid(frame, file) if crypto_week_open(file) is not None \
+            else off_anchor_rows(ts, TF_TO_MS[timeframe])
+        for t in ts[off]:
             spans.append(Span(rel, "", symbol, timeframe, int(t), int(t), 1, 0))
     return spans
 
@@ -208,7 +228,22 @@ def revisions_dir(data_root: Path) -> Path:
     return data_root / "revisions"
 
 
-def apply(data_root: Path, spans: list[Span], run_id: str, backup_dir: Path, meta: dict) -> dict:
+def deleted_runs(frame: pd.DataFrame, drop: pd.Series) -> list[tuple[int, int, int]]:
+    """(first, last, rows) for each run of dropped rows with no kept row between."""
+    order = frame["timestamp"].sort_values().index
+    runs: list[tuple[int, int, int]] = []
+    open_run = False
+    for t, d in zip(frame.loc[order, "timestamp"], drop.loc[order]):
+        if d and open_run:
+            runs[-1] = (runs[-1][0], int(t), runs[-1][2] + 1)
+        elif d:
+            runs.append((int(t), int(t), 1))
+        open_run = bool(d)
+    return runs
+
+
+def apply(data_root: Path, spans: list[Span], run_id: str, backup_dir: Path, meta: dict,
+          deleted_reason: str | None = None) -> dict:
     """Back up, delete the spans, write the revision record. Returns the summary."""
     by_file: dict[str, list[Span]] = {}
     for span in spans:
@@ -237,6 +272,12 @@ def apply(data_root: Path, spans: list[Span], run_id: str, backup_dir: Path, met
                                  "row_hash": row_hash(row)})
         write_parquet_atomic(frame[~drop].reset_index(drop=True), path)
         rewritten.append(path)
+        if deleted_reason:
+            today = date.today().isoformat()
+            for first, last, n in deleted_runs(frame, drop):
+                deleted_bars.add(deleted_bars.record_path(data_root), rel, {
+                    "start_ms": first, "end_ms": last, "start": _utc(first), "end": _utc(last),
+                    "rows": n, "run_id": run_id, "reason": deleted_reason, "deleted": today})
 
     out = revisions_dir(data_root)
     out.mkdir(parents=True, exist_ok=True)
@@ -252,7 +293,27 @@ def apply(data_root: Path, spans: list[Span], run_id: str, backup_dir: Path, met
     return summary
 
 
-def log_refill(data_root: Path, run_id: str) -> dict:
+def record_empty(data_root: Path, not_served: dict[str, list[int]], reason: str) -> int:
+    """Put not-served bars on the exchange-empty record with `reason`; windows written."""
+    record = ExchangeEmptyRecord(data_root / EMPTY_RECORD)
+    written = 0
+    for rel, stamps in not_served.items():
+        tf = Path(rel).name[: -len(".parquet")].rsplit("-", 1)[1]
+        interval = TF_TO_MS[tf]
+        for first, last, _ in bar_runs(sorted(stamps), interval):
+            for w in record.windows(rel):  # windows the fill already wrote: give them the reason
+                if w["start_ms"] <= last and w["end_ms"] >= first and "reason" not in w:
+                    w["reason"] = reason
+                    record.dirty = True
+            outside, _ = split_bars(first, last, interval, record.windows(rel))
+            for start, end, n in outside:
+                record.add(rel, start, end, n, reason=reason)
+                written += 1
+    record.save()
+    return written
+
+
+def log_refill(data_root: Path, run_id: str, empty_reason: str | None = None) -> dict:
     """Add `refetched` / `not_served` rows for every deleted bar of a run."""
     path = revisions_dir(data_root) / f"{run_id}.parquet"
     record = pd.read_parquet(path)
@@ -273,8 +334,14 @@ def log_refill(data_root: Path, run_id: str) -> dict:
     added = pd.DataFrame(rows, columns=record.columns)
     pd.concat([record, added], ignore_index=True).to_parquet(path, index=False)
     refetched = int((added["action"] == "refetched").sum())
-    return {"run_id": run_id, "deleted": len(record), "refetched": refetched,
-            "not_served": len(added) - refetched}
+    result = {"run_id": run_id, "deleted": len(record), "refetched": refetched,
+              "not_served": len(added) - refetched}
+    if empty_reason:
+        missing: dict[str, list[int]] = {}
+        for row in added[added["action"] == "not_served"].itertuples(index=False):
+            missing.setdefault(row.file, []).append(int(row.timestamp))
+        result["empty_windows"] = record_empty(data_root, missing, empty_reason)
+    return result
 
 
 def report(spans: list[Span], target: str, source: str) -> None:
@@ -314,11 +381,15 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--off-anchor", action="store_true",
                    help="Delete bars off the anchor most of the file's bars share (no --source)")
     p.add_argument("--log-refill", metavar="RUN_ID", help="Record what the refill put back for a run")
+    p.add_argument("--empty-reason", metavar="TEXT",
+                   help="With --log-refill: put not-served bars on the exchange-empty record with this reason")
+    p.add_argument("--deleted-reason", metavar="TEXT",
+                   help="With --apply: record the deleted rows in the deleted-bars record, never merged back")
     p.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
     args = p.parse_args(argv)
 
     if args.log_refill:
-        result = log_refill(DATA_ROOT, args.log_refill)
+        result = log_refill(DATA_ROOT, args.log_refill, args.empty_reason)
         print(json.dumps(result, indent=2) if args.json else
               f"{result['run_id']}: {result['deleted']} deleted, {result['refetched']} refetched, "
               f"{result['not_served']} not served")
@@ -359,7 +430,7 @@ def main(argv: list[str] | None = None) -> int:
     run_id = f"{kind}-{datetime.now(tz=timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-{target}"
     meta = {"target": target, "source": args.source, "timeframes": args.timeframes,
             "min_bars": args.min_bars, "max_gap": args.max_gap}
-    summary = apply(DATA_ROOT, spans, run_id, backup_dir, meta)
+    summary = apply(DATA_ROOT, spans, run_id, backup_dir, meta, args.deleted_reason)
     if args.json:
         print(json.dumps({k: v for k, v in summary.items() if k != "spans"}, indent=2))
     else:

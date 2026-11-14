@@ -17,6 +17,7 @@ below the data root:
         start: 2024-01-01 00:00      # the same two, for a reader
         end: 2024-01-01 19:00
         checked: '2026-11-06'        # the day the exchange returned nothing
+        reason: ...                  # optional: why the window is empty
 
 Only an answer from the exchange belongs here. An error is not an answer, and a
 window in the record is never requested again: delete its entry to retry it.
@@ -90,10 +91,13 @@ class ExchangeEmptyRecord:
     def windows(self, file_path: Path | str) -> list[dict]:
         return self.series.get(series_key(file_path), [])
 
-    def add(self, file_path: Path | str, start_ms: int, end_ms: int, candles: int) -> None:
+    def add(self, file_path: Path | str, start_ms: int, end_ms: int, candles: int,
+            reason: str | None = None) -> None:
         today = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
         window = {"start_ms": int(start_ms), "end_ms": int(end_ms), "candles": int(candles),
                   "start": _stamp(start_ms), "end": _stamp(end_ms), "checked": today}
+        if reason:
+            window["reason"] = reason
         windows = self.series.setdefault(series_key(file_path), [])
         windows.append(window)
         windows.sort(key=lambda w: w["start_ms"])
