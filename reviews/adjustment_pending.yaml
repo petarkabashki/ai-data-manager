@@ -46,18 +46,6 @@
   asked: '2026-11-13'
   review_by: '2026-12-11'
   ref: Product msg_d3d90042
-- file_path: price-data/stocks/ibkr/sp500/MNST/MNST-all-1d.parquet
-  action: 'full rebuild (replace, not merge) of MNST 1d 1h 4h 8h 1w: append-path split seam 2026-06-29 (flagged break); py-qwant pre-notice first'
-  waits_on: ibkr_restart
-  asked: '2026-11-14'
-  review_by: '2026-12-11'
-  ref: Product msg_8d8c24b1
-- file_path: price-data/stocks/ibkr/sp500/APH/APH-all-1d.parquet
-  action: 'full rebuild (replace, not merge) of APH 1d 1h 4h 8h 1w: append-path split seam 2026-06-29 (flagged break); py-qwant pre-notice first'
-  waits_on: ibkr_restart
-  asked: '2026-11-14'
-  review_by: '2026-12-11'
-  ref: Product msg_8d8c24b1
 - file_path: price-data/stocks/ibkr/sp500/DD/DD-all-1d.parquet
   action: 'full rebuild (replace, not merge) of DD 1d 8h: append-path split seam 2026-06-22 (flagged break); py-qwant pre-notice first'
   waits_on: ibkr_restart
