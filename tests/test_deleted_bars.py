@@ -118,3 +118,11 @@ def test_flags_are_set_and_cleared(data, tmp_path):
 def test_a_range_flag_needs_both_dates(data):
     with pytest.raises(SystemExit):
         flag_data_range.main(["--file", FP, "--kind", "bad", "--from", "2005-01-03", "--reason", "x"])
+
+
+def test_the_end_date_includes_its_intraday_bars():
+    cut = delete_stock_bars.Cut("price-data/stocks/ibkr/x/X/X-all-4h.parquet", "2026-10-12", "2026-10-23", "r")
+    last_4h = int(pd.Timestamp("2026-10-23 20:00", tz="UTC").value // 1_000_000)
+    next_day = int(pd.Timestamp("2026-10-24", tz="UTC").value // 1_000_000)
+    frame = pd.DataFrame({"timestamp": [last_4h, next_day]})
+    assert list(delete_stock_bars.rows_in(frame, cut)) == [True, False]

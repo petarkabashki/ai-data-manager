@@ -75,7 +75,8 @@ class Cut:
 
     @property
     def end_ms(self) -> int:
-        return int(pd.Timestamp(self.end, tz="UTC").value // 1_000_000)
+        """Last millisecond of the end date, so intraday bars on that date go too."""
+        return int((pd.Timestamp(self.end, tz="UTC") + pd.Timedelta(days=1)).value // 1_000_000) - 1
 
 
 def resolve(data_root: Path, file_path: str) -> Path:
