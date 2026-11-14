@@ -125,3 +125,18 @@
   asked: '2026-11-14'
   review_by: '2026-12-11'
   ref: Product msg_8d8c24b1
+- file_path: price-data/stocks/yf/russell2000/SUNS/SUNS-1d.parquet
+  verdict: anomaly
+  drift: -0.00728
+  split_dates: ['2024-07-11']
+  reason: 'artefact of the IBKR bad flag: IBKR is stuck at 11.00 from 2024-07-10, one day before the flagged range; YF''s +25% on 2024-07-11 (listing week) is genuine. Proposed: extend the IBKR SUNS bad range to 2024-07-10..2024-08-19'
+  asked: '2026-11-14'
+  review_by: '2026-11-28'
+  ref: Architect -> Product, 2026-11-14 (CRWD drop report)
+- file_path: price-data/stocks/yf/russell2000/HAIN/HAIN-1d.parquet
+  verdict: anomaly
+  drift: -0.0031
+  reason: 'new on 2026-11-14: drift -0.31% over 2000-01-03..2026-11-12, just past DRIFT_TOL 0.003, no steps; proposed: record known (small unexplained, as the 2026-11-13 ruling)'
+  asked: '2026-11-14'
+  review_by: '2026-11-28'
+  ref: Architect -> Product, 2026-11-14 (CRWD drop report)
