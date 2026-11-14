@@ -46,3 +46,12 @@ def test_jumps_are_set_and_stale_flags_cleared():
     assert "unadjusted_splits" not in nodes["KO"]["IBKR"]
     assert len(changes) == 2
     assert apply_flags(catalog, flags) == []          # idempotent
+
+
+def test_add_only_keeps_a_recorded_date_the_detector_missed():
+    catalog = _catalog()
+    flags = {KO: ["2003-09-16"], XOM: []}
+    changes = apply_flags(catalog, flags, add_only=True)
+    assert catalog["KO"]["timeframe_dates"]["1d"]["IBKR"]["unadjusted_splits"] == ["2003-09-16", "2012-08-13"]
+    assert "unadjusted_splits" not in catalog["XOM"]["timeframe_dates"]["1d"]["IBKR"]
+    assert len(changes) == 1

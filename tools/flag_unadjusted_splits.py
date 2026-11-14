@@ -22,6 +22,10 @@ catalogs, each under its lock.
 
     uv run python tools/flag_unadjusted_splits.py --audit adj.json
     uv run python tools/flag_unadjusted_splits.py --audit adj.json --apply
+    uv run python tools/flag_unadjusted_splits.py --audit adj.json --add-only --apply
+
+`--add-only` never removes a date: use it when flagging new jumps, since the
+jump detector can miss one already on record (CBAN 2005-05-17, 2026-11-14).
 """
 
 from __future__ import annotations
@@ -52,8 +56,14 @@ def splits_by_file(report: dict) -> dict[str, list[str]]:
     return out
 
 
-def apply_flags(catalog: dict, flags: dict[str, list[str]]) -> list[tuple[str, str, list | None, list]]:
-    """Set or clear the field on matching IBKR nodes. Returns (symbol, file, old, new) per change."""
+def apply_flags(
+    catalog: dict, flags: dict[str, list[str]], add_only: bool = False,
+) -> list[tuple[str, str, list | None, list]]:
+    """Set or clear the field on matching IBKR nodes. Returns (symbol, file, old, new) per change.
+
+    `add_only` keeps every date already on the node and only adds the report's:
+    the jump detector can miss a recorded jump, which must not be dropped.
+    """
     changes = []
     for key, entry in catalog.items():
         if not isinstance(entry, dict):
@@ -64,6 +74,8 @@ def apply_flags(catalog: dict, flags: dict[str, list[str]]) -> list[tuple[str, s
             if provider != "IBKR" or fp not in flags:
                 continue
             old, new = node.get(FIELD), flags[fp]
+            if add_only:
+                new = sorted(set(old or []) | set(new))
             if (old or []) == new:
                 continue
             if new:
@@ -78,6 +90,8 @@ def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--audit", type=Path, required=True, help="A check_adjustment.py --json report")
     p.add_argument("--catalog", nargs="+", choices=STOCK_UNIVERSES, default=STOCK_UNIVERSES)
+    p.add_argument("--add-only", action="store_true",
+                   help="Only add dates; keep every date already recorded (the detector can miss one)")
     p.add_argument("--apply", action="store_true", help="Back up, then write the catalogs")
     p.add_argument("--catalog-backup-dir", type=Path,
                    help="Default: TMP_ROOT/catalog-backup-flag_unadjusted_splits-<UTC stamp>")
@@ -96,9 +110,9 @@ def write(args: argparse.Namespace, flags: dict[str, list[str]]) -> int:
     for universe in args.catalog:
         if args.apply:
             with stock_catalog_txn(universe) as fresh:
-                changes = apply_flags(fresh, flags)
+                changes = apply_flags(fresh, flags, args.add_only)
         else:
-            changes = apply_flags(load_stock_catalog(universe), flags)
+            changes = apply_flags(load_stock_catalog(universe), flags, args.add_only)
         for symbol, fp, old, new in changes:
             print(f"{universe:<16} {symbol:<8} {old or '-'} -> {new or '-'}  {fp}")
         total += len(changes)
