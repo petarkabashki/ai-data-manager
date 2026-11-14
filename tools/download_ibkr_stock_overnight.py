@@ -40,6 +40,7 @@ from utils.catalog import (
     update_stock_timeframe_entry,
 )
 from utils.calendars import UsEquityCalendar
+from utils.code_version import CodeVersion
 from utils.gaps import detect_gaps
 from utils.ibkr import (
     clip_ranges_to_earliest,
@@ -213,6 +214,13 @@ def _resolve_use_rth(mode: str, timeframe: str) -> bool:
     return timeframe in ("1d", "1w")
 
 
+def _stop_for_code_change(args: argparse.Namespace, progress_state: dict) -> None:
+    """Record why the run stops; the catalog flush happens as the `with` unwinds."""
+    progress_state.update({"status": "code_changed", "updated_at": utc_now().isoformat()})
+    _write_progress_file(args.progress_file, progress_state)
+    _write_resume_event(args.resume_log, {"event": "code_changed", "updated_at": utc_now().isoformat()})
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--universe", nargs="+", choices=UNIVERSE_CHOICES, required=True,
@@ -302,6 +310,7 @@ def main() -> None:
     _write_progress_file(args.progress_file, progress_state)
 
     hints = SymbolHints(args.hints_file)
+    code = CodeVersion()
     reconnects = 0
     dead_hits: dict[str, int] = {}
     with IbkrHistoricalClient(
@@ -324,6 +333,8 @@ def main() -> None:
 
             queue = deque(symbols)
             while queue:
+                # Between symbols: a process on old code must not write another item.
+                code.exit_if_changed(before_exit=lambda: _stop_for_code_change(args, progress_state))
                 symbol = queue.popleft()
                 if symbol in hints.unresolvable:
                     print(f"  {symbol}: skipped (IBKR has no contract: {hints.unresolvable[symbol][:60]})")

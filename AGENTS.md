@@ -84,6 +84,14 @@ directory level under the class:
   Never nest two txns. `migrate_price_data_layout.py` is the one exception, an
   offline migration. Index, commodity and macro catalogs still rely on the
   `equity` lane for one writer at a time.
+- **A long-running writer checks its code version between items**
+  (`utils/code_version.py`). Create a `CodeVersion()` at start and call
+  `exit_if_changed(before_exit=<save state>)` before each symbol or pair. When
+  a deploy changed the python it runs on (the repo modules it imported, plus
+  `utils/` and `pdm/`), it saves, logs and exits 75; `tools/ibkr_worker.sh`
+  relaunches on 75. Other commits move its baseline. The IBKR, YF and crypto
+  downloaders and `fill_crypto_holes.py` already do this; a new writer that
+  loops for more than a few minutes must too.
   **A tool that changes catalogs backs them up before it applies anything**:
   wrap the apply in `run_with_catalog_backup()` (a `catalog_backup()` scope).
   It copies the catalogs to `TMP_ROOT/catalog-backup-<tool>-<stamp>/` and checks
@@ -319,6 +327,10 @@ uv run python tools/status.py --json        # for an agent
 The roll-up across `check_gaps.py`, `check_schema.py` and `check_catalog.py`.
 Fast by default — YAML loads, no parquet reads; `--deep` opens every file and
 exits non-zero on any problem, so it works as a cron/CI health check.
+It also lists running writers: every python process running a script of this
+repo, with its start time, the HEAD it started on (from the reflog) and
+whether python it runs on changed since (`STALE`), plus any other process seen
+holding a file under the data root open for writing (`FOREIGN`).
 
 ### query.py
 
@@ -679,6 +691,7 @@ to every harness (untracked copies/symlinks), so never add one to a harness's di
 | `utils/semantics.py` | `Semantics`, `semantics_for()`, `validate_node_semantics()`, `apply_semantics()` |
 | `utils/data_flags.py` | `make_flag()`, `set_flag()`, `clear_flag()`, `masked_ranges()`, `break_dates()`, `drop_masked()` — the `data_flags` node field: known-bad, uncertain and deleted ranges, and breaks |
 | `utils/deleted_bars.py` | `drop_deleted()`, `windows()`, `add()`, `record_path()` — the deleted-bars record that keeps deleted stock ranges from being refilled |
+| `utils/code_version.py` | `CodeVersion` (`changed()`, `exit_if_changed()`), `EXIT_CODE_CHANGED` (75), `git_head()`, `running_writers()` — a long-running writer stops between items after a deploy changed its python; `status.py` lists running and foreign writers |
 | `utils/exchange_empty.py` | `ExchangeEmptyRecord` (`windows()`, `add()`, `save()`), `record_path()`, `split_bars()`, `bar_runs()` — the record of windows an exchange answered with nothing |
 | `utils/calendars.py` | `CONTINUOUS`, `CME_FUTURES`, `UsEquityCalendar`, `CmeFuturesCalendar`, `calendar_for()`, `calendar_by_name()`, `us_market_holidays()` |
 | `utils/planning.py` | `DownloadRange`, `plan_download_ranges()`, `merge_ranges()`, `daterange_chunks()` — provider-neutral |

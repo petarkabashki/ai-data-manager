@@ -6,7 +6,8 @@
 # Symbols are split by index modulo worker-count. Each pass runs twice: the
 # second round only retries what the first left (the planner reads the files,
 # so finished work is skipped). When the downloader exits 75 (Gateway session
-# dead and not coming back) this waits for the API to answer and relaunches.
+# dead and not coming back, or the deployed python code changed under it) this
+# waits for the API to answer and relaunches, so the next item runs on new code.
 set -u
 cd "$(dirname "$0")/.."
 W=${1:?worker index}; N=${2:?worker count}; UNIVERSE=${3:-russell2000}
@@ -46,7 +47,7 @@ run_pass() {  # run_pass <tag> <downloader args...>
       "$@" --symbols $SYMS >> "$log" 2>&1
     rc=$?
     [ $rc -ne 75 ] && return $rc
-    echo "$(date -u +%FT%TZ) exit 75: waiting for the Gateway API" >> "$log"
+    echo "$(date -u +%FT%TZ) exit 75 (Gateway or code change): waiting for the Gateway API" >> "$log"
     until gateway_answers; do sleep 30; done
     echo "$(date -u +%FT%TZ) Gateway answers again, relaunching" >> "$log"
   done

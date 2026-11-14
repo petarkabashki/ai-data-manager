@@ -44,6 +44,7 @@ from utils.catalog import (
     iter_timeframe_nodes,
     resolve_from_repo,
 )
+from utils.code_version import running_writers
 from utils.planning import days_behind
 from utils.report import allow_broken_pipe, print_table
 from utils.semantics import validate_node_semantics
@@ -205,6 +206,8 @@ def main() -> None:
         "problems": sum(s.problems for s in statuses),
     }
 
+    writers = running_writers()
+
     if args.json:
         json.dump(
             {
@@ -213,6 +216,9 @@ def main() -> None:
                 "deep": args.deep,
                 "totals": totals,
                 "catalogs": [s.as_dict() for s in statuses],
+                # Every running python of this repo and the code it loaded;
+                # stale=True means it runs code older than the checkout's.
+                "writers": writers,
             },
             sys.stdout, indent=2,
         )
@@ -247,6 +253,14 @@ def main() -> None:
                 print("No file or metadata problems found.")
         else:
             print("Pass --deep to also check files, schema and semantics.")
+
+        if writers:
+            print(f"\nRunning writers ({len(writers)}):")
+            print_table(["PID", "Script", "Started (UTC)", "Code", "Stale"], [
+                [w["pid"], w["script"], (w["started_at"] or "?")[:19], (w["code_head"] or "?")[:9],
+                 "FOREIGN" if w.get("kind") == "foreign" else {True: "STALE", False: "no", None: "?"}[w["stale"]]]
+                for w in writers
+            ])
 
     if args.deep and totals["problems"]:
         sys.exit(1)

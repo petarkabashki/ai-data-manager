@@ -64,6 +64,15 @@ stale while its next bar is still forming, whatever its venue's grid.
 **Retired** series (a crypto pair the venue delisted, marked by
 `download_crypto.py --universe`) are counted apart and never stale.
 
+**Running writers** (`writers` in `--json`): each python process whose script
+is in this repo, with PID, script, start time and the HEAD it started on.
+`STALE` means python it runs on (`utils/`, `pdm/` or its own script) changed
+between that HEAD and the checkout's; such a process predates the deploy and
+should be let finish and restarted. A writer using `CodeVersion` exits 75 by
+itself between items. `FOREIGN` is any other process seen with a file under
+the data root open for writing, or its cwd there; only processes this user
+may inspect are visible.
+
 The roll-up over the three audits. Shallow by default — a few YAML loads, no
 parquet reads — so it's cheap enough to run constantly. `--deep` opens every
 file and exits non-zero if anything is wrong, which makes it usable as a cron

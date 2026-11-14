@@ -47,6 +47,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from utils.calendars import calendar_for
+from utils.code_version import CodeVersion
 from utils.config import relative_to_repo
 from utils.catalog import (
     DATE_LABELLED_TIMEFRAMES,
@@ -291,8 +292,11 @@ def main() -> None:
         say(f"Closes  : {'adjusted' if args.adjusted else 'as-traded (raw)'}")
     say(f"Calendar: {calendar_name}\n")
 
+    code = None if args.dry_run else CodeVersion()
     with PendingStockWrites(STOCK_FLUSH_SECONDS) as pending:
         for symbol in symbols:
+            if code is not None:  # old code must not write another symbol; pending flushes on exit
+                code.exit_if_changed()
             for timeframe in args.timeframes:
                 dst = path_for(symbol, timeframe)
                 stored = stored_adjustment(catalog, symbol, timeframe)

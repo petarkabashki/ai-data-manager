@@ -60,6 +60,7 @@ from utils.catalog import (  # noqa: E402
     save_crypto_futures_catalog,
     update_catalog_entry,
 )
+from utils.code_version import CodeVersion  # noqa: E402
 from utils.config import relative_to_repo  # noqa: E402
 from utils.crypto_universe import ccxt_exchange  # noqa: E402
 from utils.exchange_empty import ExchangeEmptyRecord, bar_runs, split_bars  # noqa: E402
@@ -332,7 +333,7 @@ def main(argv: list[str] | None = None) -> int:
         result = fill_holes(
             selected, args.exchange, args.trading_mode, catalog, record,
             ccxt_exchange(args.exchange, args.trading_mode),
-            checkpoint=CatalogCheckpoint(save_state),
+            checkpoint=CatalogCheckpoint(save_state, code=CodeVersion()),
             on_catalog_change=lambda: catalog_changed.__setitem__(0, True),
         )
     finally:

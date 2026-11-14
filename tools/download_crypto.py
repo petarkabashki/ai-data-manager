@@ -56,6 +56,7 @@ from utils.catalog import (
     save_crypto_futures_catalog,
     update_catalog_entry,
 )
+from utils.code_version import CodeVersion
 from utils.config import TMP_ROOT, relative_to_repo
 from utils.crypto_universe import (
     EARLIEST,
@@ -291,14 +292,21 @@ class CatalogCheckpoint:
     meant a crash, or a backup taken mid-merge, left files on disk that no
     catalog node pointed at. Call it after each pair; main still saves once
     more when the run ends.
+
+    It is also where a run on old code stops: with `code` given, a deploy that
+    changed python makes it save the catalog and exit 75 after the pair it just
+    finished (see utils/code_version.py). The next scheduled run carries on.
     """
 
-    def __init__(self, save: Callable[[], None] | None, every_s: float = 60.0):
-        self.save, self.every_s = save, every_s
+    def __init__(self, save: Callable[[], None] | None, every_s: float = 60.0,
+                 code: CodeVersion | None = None):
+        self.save, self.every_s, self.code = save, every_s, code
         self.last = time.monotonic()
         self.saves = 0
 
     def __call__(self) -> None:
+        if self.code is not None:
+            self.code.exit_if_changed(before_exit=self.save)
         if self.save and time.monotonic() - self.last >= self.every_s:
             self.save()
             self.saves += 1
@@ -787,7 +795,7 @@ def main() -> None:
     def save_catalog() -> None:
         (save_crypto_futures_catalog if is_futures else save_crypto_catalog)(args.exchange, catalog)
 
-    checkpoint = CatalogCheckpoint(save_catalog)
+    checkpoint = CatalogCheckpoint(save_catalog, code=None if args.dry_run else CodeVersion())
 
     # (pairs, timeframes) per backend: freqtrade takes what it can page; ccxt
     # takes the routed timeframes for every pair and whole pairs freqtrade can't.
