@@ -52,9 +52,13 @@ BASELINE = Path("check_rulings") / "annotations.json"
 # ── rows inside recorded windows ─────────────────────────────────────────────
 
 def index_files(data_root: Path) -> dict[str, Path]:
-    """Every parquet under the data root by its record key (the path's last four parts)."""
+    """Every parquet under the data root by its record key (the path's last four parts).
+
+    Hidden directories (`.deltas/` backups hold copies under the same keys) are skipped.
+    """
     out: dict[str, Path] = {}
-    for dirpath, _, names in os.walk(data_root):
+    for dirpath, dirs, names in os.walk(data_root):
+        dirs[:] = [d for d in dirs if not d.startswith(".")]
         for name in names:
             if name.endswith(".parquet"):
                 path = Path(dirpath) / name

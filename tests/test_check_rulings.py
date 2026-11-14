@@ -58,6 +58,14 @@ def test_a_deleted_window_without_rows_is_clean(tmp_path):
     assert check_rulings.run(tmp_path, tmp_path / "b.json", None, False, catalogs={})[0] == []
 
 
+def test_backup_copies_under_hidden_dirs_are_not_the_series(tmp_path):
+    key = "ibkr/russell2000/RCAT/RCAT-1d.parquet"
+    write_bars(tmp_path, f"stocks/{key}", range(10, 30))
+    write_bars(tmp_path, f".deltas/20261103T071501Z/data/stocks/{key}", range(0, 30))
+    record(tmp_path, "deleted_bars.yaml", key, 5, 9)
+    assert check_rulings.run(tmp_path, tmp_path / "b.json", None, False, catalogs={})[0] == []
+
+
 def test_rows_inside_an_exchange_empty_window_fail(tmp_path):
     key = "cryptos/kucoin/ABC_USDT/ABC_USDT-1d.parquet"
     write_bars(tmp_path, key, range(0, 30))
