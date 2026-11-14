@@ -11,6 +11,8 @@ against their own schema, `utils.catalog.FUNDING_COLS`, instead.
 
 Date-labelled files (`-1d`, `-1w`, `-1Mo`) must also follow the stamp rule:
 every `timestamp` at 00:00 UTC of the date it labels, one row per date.
+IBKR `-1w` files must also hold one row per Monday-to-Sunday week
+(`tools/dedupe_weekly_bars.py` repairs them).
 `tools/fix_daily_stamps.py --provider <p>` repairs a file that breaks it.
 
 Read-only: never modifies files. Run it after adding a new tool/provider to
@@ -41,6 +43,7 @@ from utils.catalog import (
     FUNDING_TIMEFRAME,
     REPO_ROOT,
     is_date_labelled,
+    is_one_per_week,
 )
 from utils.report import allow_broken_pipe
 
@@ -98,11 +101,19 @@ def check_stamps(path: Path) -> str | None:
     ts = pq.read_table(path, columns=["timestamp"]).column(0).to_numpy()
     off = int((ts % DAY_MS != 0).sum())
     repeats = len(ts) - len(set(((ts + DAY_MS // 2) // DAY_MS).tolist()))
-    if not off and not repeats:
+    weeks = 0
+    if is_one_per_week(path):
+        days = ts // DAY_MS
+        weeks = len(ts) - len(set(((days + 3) // 7).tolist()))
+    if not off and not repeats and not weeks:
         return None
     issue = [f"{off} bar(s) not at 00:00 UTC"] if off else []
     issue += [f"{repeats} repeated date(s)"] if repeats else []
-    return "; ".join(issue) + " (fix_daily_stamps)"
+    fix = ["fix_daily_stamps"] if issue else []
+    if weeks:
+        issue.append(f"{weeks} extra row(s) in a week already stored")
+        fix.append("dedupe_weekly_bars")
+    return "; ".join(issue) + f" ({', '.join(fix)})"
 
 
 def main() -> None:

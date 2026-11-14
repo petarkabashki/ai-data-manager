@@ -243,7 +243,8 @@ def replace_refusal(report: dict) -> str | None:
 def format_replace(report: dict) -> str:
     return (f"rows {report['rows_before']} -> {report['rows_after']}; replaced span "
             f"{report['span_old']} stored / {report['span_new']} downloaded, "
-            f"{report['changed']} changed close, {report['lost']} lost, {report['added']} added")
+            f"{report['changed']} changed close, {report['lost']} lost, {report['added']} added"
+            + (f", {report['partial_weeks']} partial-week rows superseded" if report.get("partial_weeks") else ""))
 
 
 def backup_before_replace(dst: Path, backup_dir: Path, data_root: Path | None = None) -> Path:

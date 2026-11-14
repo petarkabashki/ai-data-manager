@@ -20,6 +20,7 @@ first when one is offered.
 | [`record_known_adjustment.py`](#record_known_adjustmentpy) | writes catalogs (with `--apply`) | Record an explained adjustment finding on its YF node (`known_adjustment`) |
 | [`relabel_adjustment.py`](#relabel_adjustmentpy) | writes catalogs (with `--apply`) | Set the `adjustment` label on the nodes of named files |
 | [`flag_data_range.py`](#flag_data_rangepy) | writes catalogs (with `--apply`) | Flag known-bad or uncertain ranges and breaks on the nodes of named files (`data_flags`) |
+| [`dedupe_weekly_bars.py`](#dedupe_weekly_barspy) | writes (with `--apply`) | Keep one row per week in IBKR weekly files (drop superseded partial-week bars) |
 | [`delete_stock_bars.py`](#delete_stock_barspy) | writes (with `--apply`) | Delete a date range from stock files, leaving a recorded gap that no download refills |
 | [`flag_unadjusted_splits.py`](#flag_unadjusted_splitspy) | writes catalogs (with `--apply`) | Record IBKR's unadjusted split dates on its catalog nodes (`unadjusted_splits`) |
 | [`check_twins.py`](#check_twinspy) | read-only | Find blocks of crypto bars identical to another venue's (bars from the wrong venue) |
@@ -400,6 +401,24 @@ dates again replaces the flag; `--clear` removes it. The bars are not touched.
 `check_adjustment.py` leaves flagged ranges out of its comparisons and reads a
 split jump on a flagged break as `known_split_jump`. Dry run by default. Equity
 lane.
+
+## `dedupe_weekly_bars.py`
+
+```
+uv run python tools/dedupe_weekly_bars.py [--universe U ...] [--apply] [--run-id ID] [--backup-dir DIR]
+uv run python tools/dedupe_weekly_bars.py --report-only --provider yf|<crypto venue>
+```
+
+IBKR stamps a weekly bar with the last trading day it covers, so a mid-week
+fetch stored a partial bar that the next fetch did not replace. The IBKR 1w
+merge now keeps the last row of each Monday-to-Sunday week; this repairs older
+files. Dry run by default: files and rows by universe and the busiest weeks.
+`--apply` refuses a universe while an IBKR stock download for it runs, copies
+the originals to `<data root>.weekly-dedupe-backup-<stamp>`, writes
+`revisions/<run id>.parquet` (one row per removed bar, with the stamp that
+superseded it) and `.yaml`, and rewrites each file atomically. Removed rows are
+not deleted bars: the week keeps its final bar. `check_schema.py` fails on an
+IBKR 1w file with two rows in one week.
 
 ## `delete_stock_bars.py`
 

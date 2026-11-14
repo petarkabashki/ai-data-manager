@@ -156,6 +156,35 @@ def is_date_labelled(path: Path | str) -> bool:
     return any(Path(path).name.endswith(f"-{tf}.parquet") for tf in DATE_LABELLED_TIMEFRAMES)
 
 
+def week_key(ts: pd.Series) -> pd.Series:
+    """int64 ms timestamps -> index of the Monday-to-Sunday UTC week they fall in."""
+    day = ts.astype("int64") // 86_400_000
+    return (day + 3) // 7  # 1970-01-01 was a Thursday
+
+
+def one_row_per_week(df: pd.DataFrame) -> pd.DataFrame:
+    """Keep the last row of each Monday-to-Sunday week (the most complete bar).
+
+    IBKR stamps a weekly bar with the last trading day it covers, so a fetch in
+    mid-week stores a partial bar stamped that day, and the next fetch adds the
+    fuller bar under a later stamp instead of replacing it.
+    """
+    if df.empty:
+        return df
+    df = df.sort_values("timestamp")
+    return df[~week_key(df["timestamp"]).duplicated(keep="last")].reset_index(drop=True)
+
+
+def is_one_per_week(path: Path | str) -> bool:
+    """IBKR weekly files keep one row per week (owner decision 2026-11-14).
+
+    Other providers' 1w files are only reported (tools/check_weekly_rows.py)
+    until a fix there is decided.
+    """
+    path = Path(path)
+    return path.name.endswith("-1w.parquet") and "ibkr" in path.parts
+
+
 def merge_ohlcv_parquet(
     src: pd.DataFrame | Path | str, dst: Path, daily: bool | None = None,
     replace_from: int | None = None,
@@ -206,6 +235,8 @@ def merge_ohlcv_parquet(
         merged = new_df.drop_duplicates(subset=["timestamp"], keep="last").sort_values("timestamp") \
             .reset_index(drop=True)
 
+    if is_one_per_week(dst):
+        merged = one_row_per_week(merged)
     # Bars deleted on purpose (utils/deleted_bars.py) stay out, whoever serves them.
     from utils.deleted_bars import drop_deleted
     merged = drop_deleted(merged, dst)
@@ -231,6 +262,14 @@ def replace_report(new: pd.DataFrame, dst: Path, replace_from: int, daily: bool 
     old_df = normalize_ohlcv(pd.read_parquet(dst)) if Path(dst).exists() else new_df.iloc[0:0]
     if daily:
         old_df = old_df.assign(timestamp=date_label_ms(old_df["timestamp"]))
+    rows_stored = len(old_df)
+    partial_weeks = 0
+    if is_one_per_week(dst):
+        # A partial-week row is superseded within its week, not lost.
+        new_df = one_row_per_week(new_df)
+        collapsed = one_row_per_week(old_df)
+        partial_weeks = len(old_df) - len(collapsed)
+        old_df = collapsed
     keep = old_df[old_df["timestamp"] < int(replace_from)]
     span = old_df[old_df["timestamp"] >= int(replace_from)]
     both = span.merge(new_df[["timestamp", "close"]], on="timestamp", suffixes=("_old", "_new"))
@@ -240,7 +279,7 @@ def replace_report(new: pd.DataFrame, dst: Path, replace_from: int, daily: bool 
     first = lambda df: (int(df["timestamp"].min()) if len(df) else None)  # noqa: E731
     return {
         "path": str(dst), "replace_from": int(replace_from),
-        "rows_before": len(old_df), "rows_after": after,
+        "rows_before": rows_stored, "rows_after": after, "partial_weeks": partial_weeks,
         "span_old": len(span), "span_new": len(new_df),
         "lost": int((~span["timestamp"].isin(new_df["timestamp"])).sum()),
         "added": int((~new_df["timestamp"].isin(span["timestamp"])).sum()),
