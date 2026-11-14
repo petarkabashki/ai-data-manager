@@ -795,6 +795,10 @@ listing, kept current by the nightly schedules. Approved by the owner
   retired contracts too. Possible work: a final fetch on retirement, a one-off
   tail refill, and a truer meaning for retired. Why kucoin's retired series end
   2023-02 to 2025-06 is unexplained.
+- **Closed 2026-11-14:** delisted Binance (and bybit) USDT perps for a
+  point-in-time universe. flux-quant gave a final no (owner decision, their
+  msg_02fd4af1) and py-qwant only ever said "partly"; not scoped, not built.
+  The retired-tail item above is separate and stays a candidate.
 
 **Done when.** Each venue's catalog matches its listed universe, every new
 series reaches back to its listing, `status` shows them current, and
